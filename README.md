@@ -92,15 +92,47 @@ kein Kandidat 60 % Wortüberschneidung, bleibt der Eintrag lieber ohne
 Poster, statt ein falsches zu zeigen.
 
 Sind bereits falsche Poster gespeichert, lassen sie sich alle auf einmal
-zum Neusuchen freigeben:
+zum Neusuchen freigeben — per Button in der App oder von Hand:
 
 ```bash
 curl -X POST https://<deine-domain>/api/reset-posters
+# -> { "ok": true, "zurueckgesetzt": 42, "cleared": 42 }
 ```
 
 Das leert nur automatisch gefundene Poster — von Hand eingetragene
 (`posterSource: "manual"`) bleiben erhalten. Beim nächsten Öffnen der App
 werden die geleerten Einträge neu gesucht.
+
+### Wenn ein Poster fehlt
+
+Bleibt ein Eintrag ohne Poster, verrät `?debug=1`, woran es lag:
+
+```bash
+curl "https://<deine-domain>/api/poster?title=Severance&category=series&debug=1"
+```
+
+Die Antwort enthält dann pro Quelle den HTTP-Status (oder den Fehlertext,
+falls die Anfrage selbst scheiterte), die Zahl der Kandidaten, die ersten
+fünf Kandidatentitel und den höchsten erreichten Ähnlichkeitswert:
+
+```json
+{
+  "url": null,
+  "debug": {
+    "title": "Severance", "category": "series", "minSimilarity": 0.6,
+    "sources": [
+      { "source": "TVMaze", "status": 200, "error": null,
+        "candidates": 3, "titles": ["Severance", "..."], "bestScore": 1 }
+    ]
+  }
+}
+```
+
+Damit lässt sich unterscheiden, ob die Quelle gar nicht antwortete
+(`status`/`error`), nichts fand (`candidates: 0`) oder der Titel schlicht
+zu weit auseinanderlag (`bestScore` unter `minSimilarity`). Ein hoher
+`bestScore` bei `url: null` heißt: Titel gefunden, aber ohne Bild.
+Ohne `debug=1` bleibt die Antwort unverändert schlank.
 
 ---
 
@@ -124,7 +156,7 @@ vercel dev          # startet Frontend + API zusammen
 | POST | `/api/items` | Neuen Eintrag anlegen |
 | PUT | `/api/items?id=…` | Eintrag ändern |
 | DELETE | `/api/items?id=…` | Eintrag löschen |
-| GET | `/api/poster?title=…&category=…` | Poster-URL suchen |
+| GET | `/api/poster?title=…&category=…` | Poster-URL suchen (`&debug=1` für Diagnose) |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
