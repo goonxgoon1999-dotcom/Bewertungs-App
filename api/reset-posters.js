@@ -10,7 +10,10 @@ import { sql, ensureReady } from "./_db.js";
  *
  * Manuell gepflegte Poster bleiben unangetastet.
  *
- * -> { ok: true, cleared: <Anzahl> }
+ * -> { ok: true, zurueckgesetzt: <Anzahl>, cleared: <Anzahl> }
+ *
+ * Das Frontend liest `zurueckgesetzt`; `cleared` ist derselbe Wert unter
+ * dem in der README dokumentierten englischen Namen.
  */
 export default async function handler(req, res) {
   try {
@@ -33,7 +36,11 @@ export default async function handler(req, res) {
       RETURNING id
     `;
 
-    return res.status(200).json({ ok: true, cleared: rows.length });
+    return res.status(200).json({
+      ok: true,
+      zurueckgesetzt: rows.length,
+      cleared: rows.length,
+    });
   } catch (err) {
     console.error("API-Fehler:", err);
     return res.status(500).json({ error: "Serverfehler: " + (err.message || "unbekannt") });
