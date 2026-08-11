@@ -17,15 +17,38 @@ const CACHE = new Map(); // einfacher Cache pro laufender Funktion
 const RESULT_LIMIT = 15; // 10–15 Kandidaten pro Quelle
 const MIN_SIMILARITY = 0.6; // darunter: lieber null
 
+/**
+ * Holt JSON und meldet dabei IMMER, was passiert ist:
+ *   { data, status, error }
+ * - status: HTTP-Statuscode, oder null wenn fetch selbst scheiterte
+ * - error:  Fehlertext, oder null wenn alles glattlief
+ *
+ * Fehler werden bewusst nicht mehr verschluckt: `data` bleibt zwar null,
+ * damit die Suche wie bisher weiterläuft, aber der Grund geht nicht
+ * verloren und ist über ?debug=1 sichtbar.
+ */
 async function getJson(url) {
+  let res;
   try {
-    const res = await fetch(url, {
+    res = await fetch(url, {
       headers: { "User-Agent": "Bewertungs-App/1.0" },
     });
-    if (!res.ok) return null;
-    return await res.json();
   } catch (e) {
-    return null;
+    return { data: null, status: null, error: "fetch fehlgeschlagen: " + (e.message || String(e)) };
+  }
+
+  if (!res.ok) {
+    return { data: null, status: res.status, error: "HTTP " + res.status + " " + (res.statusText || "") };
+  }
+
+  try {
+    return { data: await res.json(), status: res.status, error: null };
+  } catch (e) {
+    return {
+      data: null,
+      status: res.status,
+      error: "Antwort war kein gültiges JSON: " + (e.message || String(e)),
+    };
   }
 }
 
@@ -113,13 +136,20 @@ function similarity(a, b) {
  * keiner die Mindestähnlichkeit erreicht.
  *
  * candidates: [{ titles: [...], url }]
+ * -> { url, bestScore }
+ *
+ * `bestScore` ist der höchste Wert über ALLE Kandidaten, auch über
+ * solche ohne Bild. Für die Auswahl zählen nur Kandidaten mit Bild —
+ * so verrät die Diagnose, ob ein Titel gar nicht gefunden wurde oder
+ * ob der passende Treffer bloß kein Poster mitbrachte.
  */
 function pickBestMatch(query, candidates) {
   let best = null;
+  let bestUsableScore = 0;
   let bestScore = 0;
 
   for (const candidate of candidates) {
-    if (!candidate || !candidate.url) continue;
+    if (!candidate) continue;
     // Manche Quellen liefern mehrere Schreibweisen (z. B. Anime auf
     // Japanisch und Englisch) — die beste zählt.
     let score = 0;
@@ -127,27 +157,50 @@ function pickBestMatch(query, candidates) {
       const s = similarity(query, title);
       if (s > score) score = s;
     }
-    if (score > bestScore) {
-      bestScore = score;
+    if (score > bestScore) bestScore = score;
+
+    if (!candidate.url) continue;
+    if (score > bestUsableScore) {
+      bestUsableScore = score;
       best = candidate;
     }
   }
 
-  if (!best || bestScore < MIN_SIMILARITY) return null;
-  return best.url;
+  const url = best && bestUsableScore >= MIN_SIMILARITY ? best.url : null;
+  return { url, bestScore };
 }
 
 /* ---------------------------------------------------------------- *
  * Quellen — liefern jeweils mehrere Kandidaten
+ *
+ * Jede Quelle gibt { url, debug } zurück. `url` ist das Ergebnis wie
+ * bisher; `debug` beschreibt, was die Quelle geantwortet hat.
  * ---------------------------------------------------------------- */
 
+const DEBUG_TITLE_SAMPLE = 5; // so viele Kandidatentitel zeigt die Diagnose
+
+/** Baut den Diagnose-Block einer Quelle. */
+function buildDebug(source, response, candidates, bestScore) {
+  return {
+    source,
+    status: response.status,
+    error: response.error,
+    candidates: candidates.length,
+    titles: candidates
+      .slice(0, DEBUG_TITLE_SAMPLE)
+      .map((c) => c.titles[0] || null),
+    bestScore: Math.round(bestScore * 100) / 100,
+  };
+}
+
 async function fromJikan(title) {
-  const data = await getJson(
+  const response = await getJson(
     "https://api.jikan.moe/v4/anime?limit=" +
       RESULT_LIMIT +
       "&sfw=true&q=" +
       encodeURIComponent(title)
   );
+  const data = response.data;
   const hits = (data && data.data) || [];
 
   const candidates = hits.map((hit) => {
@@ -163,14 +216,16 @@ async function fromJikan(title) {
     };
   });
 
-  return pickBestMatch(title, candidates);
+  const { url, bestScore } = pickBestMatch(title, candidates);
+  return { url, debug: buildDebug("Jikan", response, candidates, bestScore) };
 }
 
 async function fromTvmaze(title) {
   // `search/shows` liefert mehrere Treffer, `singlesearch` nur einen.
-  const data = await getJson(
+  const response = await getJson(
     "https://api.tvmaze.com/search/shows?q=" + encodeURIComponent(title)
   );
+  const data = response.data;
   const hits = Array.isArray(data) ? data.slice(0, RESULT_LIMIT) : [];
 
   const candidates = hits.map((entry) => {
@@ -182,12 +237,13 @@ async function fromTvmaze(title) {
     };
   });
 
-  return pickBestMatch(title, candidates);
+  const { url, bestScore } = pickBestMatch(title, candidates);
+  return { url, debug: buildDebug("TVMaze", response, candidates, bestScore) };
 }
 
 async function fromItunes(title, kind) {
   const isTv = kind !== "movie";
-  const data = await getJson(
+  const response = await getJson(
     "https://itunes.apple.com/search?limit=" +
       RESULT_LIMIT +
       "&media=" +
@@ -195,6 +251,7 @@ async function fromItunes(title, kind) {
       "&term=" +
       encodeURIComponent(title)
   );
+  const data = response.data;
   const hits = (data && data.results) || [];
 
   const candidates = hits.map((hit) => {
@@ -210,7 +267,9 @@ async function fromItunes(title, kind) {
     };
   });
 
-  return pickBestMatch(title, candidates);
+  const { url, bestScore } = pickBestMatch(title, candidates);
+  const label = "iTunes (" + (isTv ? "tvSeason" : "movie") + ")";
+  return { url, debug: buildDebug(label, response, candidates, bestScore) };
 }
 
 /** "Breaking Bad, Season 2" -> "Breaking Bad" */
@@ -226,11 +285,14 @@ function stripSeasonSuffix(name) {
 export default async function handler(req, res) {
   const title = (req.query.title || "").trim();
   const category = req.query.category || "movie";
+  const debug = req.query.debug === "1";
 
   if (!title) return res.status(400).json({ error: "title fehlt." });
 
   const cacheKey = category + "::" + title.toLowerCase();
-  if (CACHE.has(cacheKey)) {
+  // Im Diagnose-Modus wird der Cache übersprungen — sonst käme eine
+  // Antwort ohne jede Information darüber, was die Quellen gesagt haben.
+  if (!debug && CACHE.has(cacheKey)) {
     return res.status(200).json({ url: CACHE.get(cacheKey), cached: true });
   }
 
@@ -245,9 +307,26 @@ export default async function handler(req, res) {
   }
 
   let url = null;
+  const sources = [];
   for (const step of chain) {
-    url = await step();
-    if (url) break;
+    const result = await step();
+    sources.push(result.debug);
+    if (!url && result.url) {
+      url = result.url;
+      result.debug.used = true;
+      // Ohne Diagnose endet die Kette beim ersten Treffer; mit Diagnose
+      // laufen alle Quellen durch, damit man sie vergleichen kann.
+      if (!debug) break;
+    }
+  }
+
+  if (debug) {
+    // Diagnose-Antworten dürfen nicht im CDN hängenbleiben.
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({
+      url,
+      debug: { title, category, minSimilarity: MIN_SIMILARITY, sources },
+    });
   }
 
   CACHE.set(cacheKey, url);
