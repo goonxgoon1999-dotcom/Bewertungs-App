@@ -5,9 +5,17 @@
  * Die Suche läuft bewusst SERVERSEITIG:
  * - keine CORS-Probleme (der Browser spricht nur mit deiner eigenen Domain)
  * - kein API-Key nötig; alle Quellen sind frei nutzbar
+ *
+ * Es wird NICHT blind der erste Treffer genommen: Jede Quelle liefert
+ * mehrere Kandidaten, deren Titel mit dem gesuchten Titel verglichen
+ * werden. Nur wer nah genug dran ist, wird verwendet — sonst lieber
+ * gar kein Poster als ein falsches.
  */
 
 const CACHE = new Map(); // einfacher Cache pro laufender Funktion
+
+const RESULT_LIMIT = 15; // 10–15 Kandidaten pro Quelle
+const MIN_SIMILARITY = 0.6; // darunter: lieber null
 
 async function getJson(url) {
   try {
@@ -21,34 +29,199 @@ async function getJson(url) {
   }
 }
 
+/* ---------------------------------------------------------------- *
+ * Titel-Ähnlichkeit
+ * ---------------------------------------------------------------- */
+
+/**
+ * Vereinheitlicht einen Titel für den Vergleich:
+ * Kleinschreibung, Umlaute/Akzente ohne Diakritika, keine Jahreszahlen,
+ * keine Sonderzeichen.
+ *   "Der Herr der Ringe (2001)" -> "der herr der ringe"
+ */
+function normalizeTitle(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/ß/g, "ss")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // Akzente entfernen: é -> e, ä -> a
+    .replace(/\b(?:19|20)\d{2}\b/g, " ") // Jahreszahlen ignorieren
+    .replace(/[^a-z0-9]+/g, " ") // Sonderzeichen -> Leerzeichen
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function tokenize(title) {
+  const normalized = normalizeTitle(title);
+  return normalized ? normalized.split(" ") : [];
+}
+
+/**
+ * Füllwörter zählen nur zu einem Bruchteil. Sonst reicht bei Reihen
+ * schon der gemeinsame Namensteil für einen Treffer: "Der Herr der
+ * Ringe: Die zwei Türme" und "... Die Rückkehr des Königs" teilen sich
+ * vier Wörter, von denen drei nichts aussagen.
+ */
+const STOPWORDS = new Set([
+  "der", "die", "das", "den", "dem", "des",
+  "ein", "eine", "einen", "einem", "einer", "eines",
+  "und", "the", "a", "an", "of", "and",
+]);
+
+const STOPWORD_WEIGHT = 0.3;
+
+function weightOf(word) {
+  return STOPWORDS.has(word) ? STOPWORD_WEIGHT : 1;
+}
+
+function totalWeight(words) {
+  let sum = 0;
+  for (const word of words) sum += weightOf(word);
+  return sum;
+}
+
+/**
+ * Ähnlichkeit zweier Titel als gewichtete Wortüberschneidung
+ * (Dice-Koeffizient):
+ *   2 * gemeinsame Wörter / (Wörter A + Wörter B)  -> 0 … 1
+ *
+ * Symmetrisch, d. h. sowohl fehlende als auch überzählige Wörter
+ * senken den Wert. Damit fällt "Alien" vs. "Aliens vs. Predator"
+ * durch, "Herr der Ringe" vs. "Der Herr der Ringe" aber nicht.
+ */
+function similarity(a, b) {
+  const normA = normalizeTitle(a);
+  const normB = normalizeTitle(b);
+  if (!normA || !normB) return 0;
+  if (normA === normB) return 1;
+
+  const setA = new Set(tokenize(normA));
+  const setB = new Set(tokenize(normB));
+  if (!setA.size || !setB.size) return 0;
+
+  let shared = 0;
+  for (const word of setA) if (setB.has(word)) shared += weightOf(word);
+
+  const total = totalWeight(setA) + totalWeight(setB);
+  if (!total) return 0;
+
+  return (2 * shared) / total;
+}
+
+/**
+ * Wählt aus den Kandidaten den ähnlichsten aus — oder null, wenn
+ * keiner die Mindestähnlichkeit erreicht.
+ *
+ * candidates: [{ titles: [...], url }]
+ */
+function pickBestMatch(query, candidates) {
+  let best = null;
+  let bestScore = 0;
+
+  for (const candidate of candidates) {
+    if (!candidate || !candidate.url) continue;
+    // Manche Quellen liefern mehrere Schreibweisen (z. B. Anime auf
+    // Japanisch und Englisch) — die beste zählt.
+    let score = 0;
+    for (const title of candidate.titles) {
+      const s = similarity(query, title);
+      if (s > score) score = s;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate;
+    }
+  }
+
+  if (!best || bestScore < MIN_SIMILARITY) return null;
+  return best.url;
+}
+
+/* ---------------------------------------------------------------- *
+ * Quellen — liefern jeweils mehrere Kandidaten
+ * ---------------------------------------------------------------- */
+
 async function fromJikan(title) {
   const data = await getJson(
-    "https://api.jikan.moe/v4/anime?limit=1&sfw=true&q=" + encodeURIComponent(title)
+    "https://api.jikan.moe/v4/anime?limit=" +
+      RESULT_LIMIT +
+      "&sfw=true&q=" +
+      encodeURIComponent(title)
   );
-  const hit = data && data.data && data.data[0];
-  const img = hit && hit.images && hit.images.jpg;
-  return (img && (img.large_image_url || img.image_url)) || null;
+  const hits = (data && data.data) || [];
+
+  const candidates = hits.map((hit) => {
+    const img = hit && hit.images && hit.images.jpg;
+    const titles = [hit.title, hit.title_english, hit.title_japanese];
+    // `titles` enthält je nach Eintrag noch Synonyme.
+    if (Array.isArray(hit.titles)) {
+      for (const t of hit.titles) if (t && t.title) titles.push(t.title);
+    }
+    return {
+      titles: titles.filter(Boolean),
+      url: (img && (img.large_image_url || img.image_url)) || null,
+    };
+  });
+
+  return pickBestMatch(title, candidates);
 }
 
 async function fromTvmaze(title) {
+  // `search/shows` liefert mehrere Treffer, `singlesearch` nur einen.
   const data = await getJson(
-    "https://api.tvmaze.com/singlesearch/shows?q=" + encodeURIComponent(title)
+    "https://api.tvmaze.com/search/shows?q=" + encodeURIComponent(title)
   );
-  const img = data && data.image;
-  return (img && (img.original || img.medium)) || null;
+  const hits = Array.isArray(data) ? data.slice(0, RESULT_LIMIT) : [];
+
+  const candidates = hits.map((entry) => {
+    const show = entry && entry.show;
+    const img = show && show.image;
+    return {
+      titles: [show && show.name].filter(Boolean),
+      url: (img && (img.original || img.medium)) || null,
+    };
+  });
+
+  return pickBestMatch(title, candidates);
 }
 
 async function fromItunes(title, kind) {
+  const isTv = kind !== "movie";
   const data = await getJson(
-    "https://itunes.apple.com/search?limit=1&media=" +
-      (kind === "movie" ? "movie" : "tvShow") +
+    "https://itunes.apple.com/search?limit=" +
+      RESULT_LIMIT +
+      "&media=" +
+      (isTv ? "tvShow&entity=tvSeason" : "movie") +
       "&term=" +
       encodeURIComponent(title)
   );
-  const hit = data && data.results && data.results[0];
-  const art = hit && hit.artworkUrl100;
-  return art ? art.replace("100x100bb", "600x600bb") : null;
+  const hits = (data && data.results) || [];
+
+  const candidates = hits.map((hit) => {
+    const art = hit && hit.artworkUrl100;
+    // Bei Serien ist `artistName` der Serienname; `collectionName`
+    // trägt noch ein ", Season 2" o. ä. hinter sich her.
+    const titles = isTv
+      ? [hit.artistName, stripSeasonSuffix(hit.collectionName)]
+      : [hit.trackName, hit.collectionName];
+    return {
+      titles: titles.filter(Boolean),
+      url: art ? art.replace("100x100bb", "600x600bb") : null,
+    };
+  });
+
+  return pickBestMatch(title, candidates);
 }
+
+/** "Breaking Bad, Season 2" -> "Breaking Bad" */
+function stripSeasonSuffix(name) {
+  if (!name) return null;
+  return name.replace(/,?\s*(season|staffel|series)\s+\d+\s*$/i, "").trim();
+}
+
+/* ---------------------------------------------------------------- *
+ * Handler
+ * ---------------------------------------------------------------- */
 
 export default async function handler(req, res) {
   const title = (req.query.title || "").trim();
@@ -67,7 +240,8 @@ export default async function handler(req, res) {
   } else if (category === "series") {
     chain = [() => fromTvmaze(title), () => fromItunes(title, "tv")];
   } else {
-    chain = [() => fromItunes(title, "movie"), () => fromTvmaze(title)];
+    // Kein TVMaze für Filme — TVMaze kennt ausschließlich Serien.
+    chain = [() => fromItunes(title, "movie")];
   }
 
   let url = null;
