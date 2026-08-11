@@ -80,10 +80,27 @@ nachgeladen und dauerhaft am Eintrag gespeichert — auch für alle Altfilme.
 Du musst nichts manuell eintragen. Eine eigene Poster-URL kannst du im
 Formular trotzdem angeben; sie wird dann nie automatisch überschrieben.
 
-Quellen: Anime → Jikan, Serien → TVMaze, Filme → iTunes. Anime und Serien
-haben iTunes als Fallback; für Filme gibt es keinen, weil TVMaze
-ausschließlich Serien kennt. Alle Quellen sind ohne Anmeldung und ohne
-API-Key nutzbar.
+Quellen, jeweils in dieser Reihenfolge:
+
+| Kategorie | Reihenfolge |
+|-----------|-------------|
+| Filme | TMDB → iTunes |
+| Serien | TVMaze → TMDB → iTunes |
+| Anime | Jikan → TMDB |
+
+TVMaze taucht bei Filmen nicht auf, weil es ausschließlich Serien kennt.
+
+### TMDB-Schlüssel (optional, aber empfohlen)
+
+TMDB liefert deutsche Titel und die zuverlässigsten Filmposter, braucht
+aber einen kostenlosen API-Schlüssel. Auf
+[themoviedb.org](https://www.themoviedb.org/settings/api) anlegen und in
+Vercel unter **Settings → Environment Variables** als `TMDB_API_KEY`
+hinterlegen, danach einmal neu deployen.
+
+Ohne den Schlüssel funktioniert alles weiter: TMDB wird dann einfach
+übersprungen, Filme und Anime laufen wie zuvor über iTunes. Der
+Schlüssel bleibt auf dem Server und taucht nie im Browser auf.
 
 Es wird nicht einfach der erste Suchtreffer genommen: Jede Quelle liefert
 bis zu 15 Kandidaten, deren Titel mit dem gesuchten abgeglichen werden
@@ -120,9 +137,12 @@ fünf Kandidatentitel und den höchsten erreichten Ähnlichkeitswert:
   "url": null,
   "debug": {
     "title": "Severance", "category": "series", "minSimilarity": 0.6,
+    "tmdb": "aktiv",
     "sources": [
       { "source": "TVMaze", "status": 200, "error": null,
-        "candidates": 3, "titles": ["Severance", "..."], "bestScore": 1 }
+        "candidates": 3, "titles": ["Severance", "..."], "bestScore": 1 },
+      { "source": "TMDB (tv)", "status": 200, "error": null,
+        "candidates": 2, "titles": ["Severance", "..."], "bestScore": 1 }
     ]
   }
 }
@@ -130,7 +150,9 @@ fünf Kandidatentitel und den höchsten erreichten Ähnlichkeitswert:
 
 Damit lässt sich unterscheiden, ob die Quelle gar nicht antwortete
 (`status`/`error`), nichts fand (`candidates: 0`) oder der Titel schlicht
-zu weit auseinanderlag (`bestScore` unter `minSimilarity`). Ein hoher
+zu weit auseinanderlag (`bestScore` unter `minSimilarity`). Das Feld
+`tmdb` zeigt, ob der Schlüssel erkannt wurde; ein `status: 401` bei
+`TMDB` bedeutet, dass er nicht gültig ist. Ein hoher
 `bestScore` bei `url: null` heißt: Titel gefunden, aber ohne Bild.
 Ohne `debug=1` bleibt die Antwort unverändert schlank.
 

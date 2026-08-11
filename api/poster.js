@@ -4,7 +4,12 @@
  *
  * Die Suche läuft bewusst SERVERSEITIG:
  * - keine CORS-Probleme (der Browser spricht nur mit deiner eigenen Domain)
- * - kein API-Key nötig; alle Quellen sind frei nutzbar
+ * - der Schlüssel für TMDB bleibt auf dem Server
+ *
+ * Quellen: Filme -> TMDB, dann iTunes. Serien -> TVMaze, dann TMDB,
+ * dann iTunes. Anime -> Jikan, dann TMDB. TMDB braucht TMDB_API_KEY;
+ * fehlt der, wird TMDB übersprungen und alles läuft über die freien
+ * Quellen wie zuvor.
  *
  * Es wird NICHT blind der erste Treffer genommen: Jede Quelle liefert
  * mehrere Kandidaten, deren Titel mit dem gesuchten Titel verglichen
@@ -220,6 +225,56 @@ async function fromJikan(title) {
   return { url, debug: buildDebug("Jikan", response, candidates, bestScore) };
 }
 
+const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
+
+/**
+ * Der TMDB-Schlüssel ist optional. Fehlt er, wird die Quelle
+ * übersprungen und die Suche läuft wie zuvor über die freien APIs —
+ * die App darf daran nicht scheitern.
+ */
+function tmdbKey() {
+  const key = process.env.TMDB_API_KEY;
+  return key && key.trim() ? key.trim() : null;
+}
+
+/**
+ * TMDB kennt Filme und Serien, liefert deutsche Titel und meist auch
+ * ein Poster. Die Feldnamen unterscheiden sich je nach Suchtyp:
+ *   Filme:  title / original_title
+ *   Serien: name  / original_name
+ */
+async function fromTmdb(title, kind) {
+  const isTv = kind === "tv";
+  const response = await getJson(
+    "https://api.themoviedb.org/3/search/" +
+      (isTv ? "tv" : "movie") +
+      "?api_key=" +
+      encodeURIComponent(tmdbKey()) +
+      "&language=de-DE&query=" +
+      encodeURIComponent(title)
+  );
+  const data = response.data;
+  const hits = ((data && data.results) || []).slice(0, RESULT_LIMIT);
+
+  const candidates = hits.map((hit) => {
+    // Deutscher und Originaltitel weichen oft voneinander ab —
+    // beide werden abgeglichen, der bessere zählt.
+    const titles = isTv
+      ? [hit.name, hit.original_name]
+      : [hit.title, hit.original_title];
+    return {
+      titles: titles.filter(Boolean),
+      // Ohne poster_path gibt es kein Bild: Der Eintrag zählt für die
+      // Diagnose noch mit, kommt für die Auswahl aber nicht in Frage.
+      url: hit.poster_path ? TMDB_IMAGE_BASE + hit.poster_path : null,
+    };
+  });
+
+  const { url, bestScore } = pickBestMatch(title, candidates);
+  const label = "TMDB (" + (isTv ? "tv" : "movie") + ")";
+  return { url, debug: buildDebug(label, response, candidates, bestScore) };
+}
+
 async function fromTvmaze(title) {
   // `search/shows` liefert mehrere Treffer, `singlesearch` nur einen.
   const response = await getJson(
@@ -296,14 +351,25 @@ export default async function handler(req, res) {
     return res.status(200).json({ url: CACHE.get(cacheKey), cached: true });
   }
 
+  const hasTmdb = !!tmdbKey();
+
   let chain;
   if (category === "anime") {
-    chain = [() => fromJikan(title), () => fromItunes(title, "tv")];
+    // Jikan bleibt erste Wahl; als Fallback ersetzt TMDB das frühere
+    // iTunes — außer der Schlüssel fehlt, dann bleibt es bei iTunes.
+    chain = [() => fromJikan(title)];
+    chain.push(hasTmdb ? () => fromTmdb(title, "tv") : () => fromItunes(title, "tv"));
   } else if (category === "series") {
-    chain = [() => fromTvmaze(title), () => fromItunes(title, "tv")];
+    // TVMaze zuerst, dann TMDB als zusätzlicher Fallback, iTunes zuletzt.
+    chain = [() => fromTvmaze(title)];
+    if (hasTmdb) chain.push(() => fromTmdb(title, "tv"));
+    chain.push(() => fromItunes(title, "tv"));
   } else {
-    // Kein TVMaze für Filme — TVMaze kennt ausschließlich Serien.
-    chain = [() => fromItunes(title, "movie")];
+    // Filme laufen jetzt über TMDB; iTunes bleibt als Netz darunter.
+    // Kein TVMaze — TVMaze kennt ausschließlich Serien.
+    chain = [];
+    if (hasTmdb) chain.push(() => fromTmdb(title, "movie"));
+    chain.push(() => fromItunes(title, "movie"));
   }
 
   let url = null;
@@ -325,7 +391,13 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
       url,
-      debug: { title, category, minSimilarity: MIN_SIMILARITY, sources },
+      debug: {
+        title,
+        category,
+        minSimilarity: MIN_SIMILARITY,
+        tmdb: hasTmdb ? "aktiv" : "übersprungen (TMDB_API_KEY fehlt)",
+        sources,
+      },
     });
   }
 
