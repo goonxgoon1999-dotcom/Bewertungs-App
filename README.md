@@ -80,8 +80,27 @@ nachgeladen und dauerhaft am Eintrag gespeichert — auch für alle Altfilme.
 Du musst nichts manuell eintragen. Eine eigene Poster-URL kannst du im
 Formular trotzdem angeben; sie wird dann nie automatisch überschrieben.
 
-Quellen: Anime → Jikan, Serien → TVMaze, Filme → iTunes (jeweils mit Fallback).
-Alle drei sind ohne Anmeldung und ohne API-Key nutzbar.
+Quellen: Anime → Jikan, Serien → TVMaze, Filme → iTunes. Anime und Serien
+haben iTunes als Fallback; für Filme gibt es keinen, weil TVMaze
+ausschließlich Serien kennt. Alle Quellen sind ohne Anmeldung und ohne
+API-Key nutzbar.
+
+Es wird nicht einfach der erste Suchtreffer genommen: Jede Quelle liefert
+bis zu 15 Kandidaten, deren Titel mit dem gesuchten abgeglichen werden
+(ohne Groß-/Kleinschreibung, Sonderzeichen und Jahreszahlen). Erreicht
+kein Kandidat 60 % Wortüberschneidung, bleibt der Eintrag lieber ohne
+Poster, statt ein falsches zu zeigen.
+
+Sind bereits falsche Poster gespeichert, lassen sie sich alle auf einmal
+zum Neusuchen freigeben:
+
+```bash
+curl -X POST https://<deine-domain>/api/reset-posters
+```
+
+Das leert nur automatisch gefundene Poster — von Hand eingetragene
+(`posterSource: "manual"`) bleiben erhalten. Beim nächsten Öffnen der App
+werden die geleerten Einträge neu gesucht.
 
 ---
 
@@ -106,6 +125,7 @@ vercel dev          # startet Frontend + API zusammen
 | PUT | `/api/items?id=…` | Eintrag ändern |
 | DELETE | `/api/items?id=…` | Eintrag löschen |
 | GET | `/api/poster?title=…&category=…` | Poster-URL suchen |
+| POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
 alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
