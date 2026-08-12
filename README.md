@@ -112,17 +112,24 @@ dieselben gespeicherten Werte.
 
 Serien und Anime lassen sich optional in Staffeln unterteilen. Jede
 Staffel hat dieselben sieben Kriterien, ein eigenes Bauchgefühl und
-einen **Gewichtungsfaktor** zwischen 0 und 3 (Voreinstellung 1.0, in
-0.1-Schritten). Die Endnote ist der gewichtete Durchschnitt:
+eine **Gewichtung in Prozent** zwischen 0 % und 200 % (Voreinstellung
+100 %, in 5-Prozent-Schritten). Gerechnet wird intern mit Faktoren
+(Prozent ÷ 100); die Endnote ist der gewichtete Durchschnitt:
 
 ```
 Endnote = Σ(Staffelnote × Faktor) / Σ(Faktoren)
 ```
 
-Ein Faktor von 0 blendet eine Staffel aus der Wertung aus. Sind alle
-Faktoren 0, gilt der Eintrag als unbewertet und wird mit „–" statt
-einer Note angezeigt. Bestehende Staffeln haben den Faktor 1.0 und
-ändern ihre Note dadurch nicht.
+0 % blendet eine Staffel aus der Wertung aus, 200 % zählt sie doppelt.
+Stehen alle Staffeln auf 0 %, gilt der Eintrag als unbewertet und wird
+mit „–" statt einer Note angezeigt. Bestehende Staffeln stehen auf
+100 % (Faktor 1.0) und ändern ihre Note dadurch nicht. Angezeigt wird
+die Prozentangabe nur, wenn sie von 100 % abweicht.
+
+Die Staffeln liegen in einer eigenen Tabelle `seasons`; ihre ID vergibt
+Postgres (Identity). Beim Speichern werden bestehende Staffeln per ID
+aktualisiert, neue eingefügt und entfernte gelöscht — Eintrag und
+Staffeln gemeinsam in einer Transaktion.
 
 In der Statistik werden Kriterien-Durchschnitte nur innerhalb einer
 Kategorie gebildet. Bei „Alle" erscheint deshalb ein Block je Kategorie
