@@ -108,9 +108,46 @@ dieselben gespeicherten Werte.
 | Sound | 5 % |
 | Wiederspielwert | 5 % |
 
+### Staffeln (Serien und Anime)
+
+Serien und Anime lassen sich optional in Staffeln unterteilen. Jede
+Staffel hat dieselben sieben Kriterien, ein eigenes Bauchgefühl und
+einen **Gewichtungsfaktor** zwischen 0 und 3 (Voreinstellung 1.0, in
+0.1-Schritten). Die Endnote ist der gewichtete Durchschnitt:
+
+```
+Endnote = Σ(Staffelnote × Faktor) / Σ(Faktoren)
+```
+
+Ein Faktor von 0 blendet eine Staffel aus der Wertung aus. Sind alle
+Faktoren 0, gilt der Eintrag als unbewertet und wird mit „–" statt
+einer Note angezeigt. Bestehende Staffeln haben den Faktor 1.0 und
+ändern ihre Note dadurch nicht.
+
 In der Statistik werden Kriterien-Durchschnitte nur innerhalb einer
 Kategorie gebildet. Bei „Alle" erscheint deshalb ein Block je Kategorie
 statt eines gemeinsamen — die Kriterien sind schlicht nicht dieselben.
+
+---
+
+## Kopfbereich
+
+Oben zeigt die App einen festen 16:9-Ausschnitt über die volle Breite.
+Die Bilder dafür werden **von Hand** gepflegt — dafür gibt es keine
+automatische Suche.
+
+Im Daten-Panel (⤓) unter „Bilder im Kopfbereich" lassen sich beliebig
+viele Adressen eintragen und einzeln wieder entfernen. Sie liegen in
+einer eigenen Tabelle und bleiben dauerhaft erhalten.
+
+- Mehrere Adressen wechseln alle 8 Sekunden mit einer Gleit-Animation.
+- Eine einzelne Adresse steht fest.
+- Ohne Adresse bleibt der Bereich schlicht dunkel.
+
+Die Bilder füllen den Ausschnitt formatfüllend und zentriert
+(`object-fit: cover`) bei 90 % Deckkraft; darüber liegt ein Verlauf,
+der Titel und Tabs lesbar hält. Eine Adresse, die sich nicht laden
+lässt, wird übersprungen.
 
 ---
 
@@ -242,6 +279,9 @@ vercel dev          # startet Frontend + API zusammen
 | DELETE | `/api/items?id=…` | Eintrag löschen |
 | GET | `/api/poster?title=…&category=…` | Poster-URL suchen (`&debug=1` für Diagnose) |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
+| GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
+| POST | `/api/header-images` | Bild-Adresse hinzufügen |
+| DELETE | `/api/header-images?id=…` | Bild-Adresse entfernen |
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
 alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.

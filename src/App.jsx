@@ -123,18 +123,50 @@ function seasonScore(season, category) {
   return computeFinalScore(season.values, season.personal, category);
 }
 
-/** Endnote eines Eintrags: mit Staffeln deren Mittel, sonst wie bisher. */
-function entryScore(entry, category) {
-  if (!hasSeasons(entry)) return computeFinalScore(entry.values, entry.personal, category);
-  const noten = entry.seasons.map((s) => seasonScore(s, category));
-  return Math.round((noten.reduce((a, b) => a + b, 0) / noten.length) * 100) / 100;
+/* Gewichtung einer Staffel. Fehlt sie, gilt 1.0 — bestehende Staffeln
+   aendern ihre Note dadurch nicht. */
+const SEASON_WEIGHT_DEFAULT = 1;
+const SEASON_WEIGHT_MIN = 0;
+const SEASON_WEIGHT_MAX = 3;
+const SEASON_WEIGHT_STEP = 0.1;
+
+function seasonWeight(season) {
+  const w = season ? season.weight : undefined;
+  if (typeof w !== "number" || Number.isNaN(w)) return SEASON_WEIGHT_DEFAULT;
+  return Math.min(SEASON_WEIGHT_MAX, Math.max(SEASON_WEIGHT_MIN, w));
 }
 
-/** Kriterien-Note eines Eintrags (ohne Bauchgefuehl), analog gemittelt. */
+/** Summe aller Gewichte. Ist sie 0, gilt der Eintrag als unbewertet. */
+function seasonWeightSum(entry) {
+  return entry.seasons.reduce((s, sn) => s + seasonWeight(sn), 0);
+}
+
+/**
+ * Gewichteter Durchschnitt ueber die Staffeln:
+ *   Summe(Wert x Faktor) / Summe(Faktoren)
+ * Ohne Gewichte (alle 1.0) ist das exakt der bisherige Mittelwert.
+ * Bei Gewichtssumme 0 gibt es kein Ergebnis -> null.
+ */
+function gewichtetesMittel(entry, wertVon) {
+  const summe = seasonWeightSum(entry);
+  if (summe <= 0) return null;
+  const gewichtet = entry.seasons.reduce((s, sn) => s + wertVon(sn) * seasonWeight(sn), 0);
+  return Math.round((gewichtet / summe) * 100) / 100;
+}
+
+/**
+ * Endnote eines Eintrags: mit Staffeln deren gewichtetes Mittel, sonst
+ * wie bisher. `null` bedeutet unbewertet (Gewichtssumme 0).
+ */
+function entryScore(entry, category) {
+  if (!hasSeasons(entry)) return computeFinalScore(entry.values, entry.personal, category);
+  return gewichtetesMittel(entry, (sn) => seasonScore(sn, category));
+}
+
+/** Kriterien-Note eines Eintrags (ohne Bauchgefuehl), analog gewichtet. */
 function entryCriteriaScore(entry, category) {
   if (!hasSeasons(entry)) return computeCriteriaScore(entry.values, category);
-  const noten = entry.seasons.map((s) => computeCriteriaScore(s.values, category));
-  return Math.round((noten.reduce((a, b) => a + b, 0) / noten.length) * 100) / 100;
+  return gewichtetesMittel(entry, (sn) => computeCriteriaScore(sn.values, category));
 }
 
 /** Wert eines Kriteriums fuer die Statistik — je Eintrag genau einmal. */
@@ -143,17 +175,19 @@ function entryCriterionValue(entry, key) {
     const v = entry.values ? entry.values[key] : undefined;
     return typeof v === "number" ? v : null;
   }
-  const werte = entry.seasons.map((s) => s.values[key]).filter((v) => typeof v === "number");
-  if (!werte.length) return null;
-  return werte.reduce((a, b) => a + b, 0) / werte.length;
+  const brauchbar = entry.seasons.filter((s) => typeof s.values[key] === "number");
+  const summe = brauchbar.reduce((s, sn) => s + seasonWeight(sn), 0);
+  if (!brauchbar.length || summe <= 0) return null;
+  return brauchbar.reduce((s, sn) => s + sn.values[key] * seasonWeight(sn), 0) / summe;
 }
 
 /** Bauchgefuehl eines Eintrags — bei Staffeln deren Mittel. */
 function entryPersonal(entry) {
   if (!hasSeasons(entry)) return typeof entry.personal === "number" ? entry.personal : null;
-  const werte = entry.seasons.map((s) => s.personal).filter((v) => typeof v === "number");
-  if (!werte.length) return null;
-  return werte.reduce((a, b) => a + b, 0) / werte.length;
+  const brauchbar = entry.seasons.filter((s) => typeof s.personal === "number");
+  const summe = brauchbar.reduce((s, sn) => s + seasonWeight(sn), 0);
+  if (!brauchbar.length || summe <= 0) return null;
+  return brauchbar.reduce((s, sn) => s + sn.personal * seasonWeight(sn), 0) / summe;
 }
 
 /** Leere Staffel mit den Werten eines Eintrags vorbelegen. */
@@ -162,6 +196,7 @@ function seasonFromEntry(entry, nummer) {
     seasonNumber: nummer,
     values: { ...(entry.values || {}) },
     personal: typeof entry.personal === "number" ? entry.personal : null,
+    weight: SEASON_WEIGHT_DEFAULT,
   };
 }
 
@@ -179,8 +214,20 @@ const SCORE_COLOR_STOPS = [
   { at: 10.0, rgb: [37, 46, 190] },
 ];
 
+/* Anteil, um den der Nachkommabereich gestaucht wird. Dadurch entsteht
+   an jeder ganzen Zahl ein sichtbarer Sprung — 8.99 und 9.00 sind klar
+   unterscheidbar —, waehrend die Zehntel innerhalb einer Zahl weiterhin
+   auseinanderzuhalten sind. */
+const GANZZAHL_SPRUNG = 0.35;
+
 function scoreToColor(score) {
-  const v = Math.min(10, Math.max(0, typeof score === "number" && !Number.isNaN(score) ? score : 0));
+  const roh = Math.min(10, Math.max(0, typeof score === "number" && !Number.isNaN(score) ? score : 0));
+
+  // Der Nachkommaanteil deckt nur noch (1 - Sprung) des Abstands zur
+  // naechsten ganzen Zahl ab; der Rest wird beim Uebergang uebersprungen.
+  const n = Math.floor(roh);
+  const frac = roh - n;
+  const v = Math.min(10, n + frac * (1 - GANZZAHL_SPRUNG));
 
   let lo = SCORE_COLOR_STOPS[0];
   let hi = SCORE_COLOR_STOPS[SCORE_COLOR_STOPS.length - 1];
@@ -253,6 +300,8 @@ function gueltigeStaffeln(seasons, category) {
     seasonNumber: i + 1,
     values: sn.values,
     personal: sn.personal,
+    // Fehlt das Gewicht (aeltere Backups), gilt 1.0.
+    weight: typeof sn.weight === "number" ? sn.weight : SEASON_WEIGHT_DEFAULT,
   }));
 }
 
@@ -276,16 +325,6 @@ function downloadFile(filename, content, mime) {
 
 function isLikelyUrl(s) {
   return typeof s === "string" && /^https?:\/\//i.test(s.trim());
-}
-
-/** Kopie der Liste in zufaelliger Reihenfolge (Fisher-Yates). */
-function shuffled(list) {
-  const out = [...list];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
 }
 
 /* Wie viele Bilder je Seitenaufruf hoechstens nachgeladen werden.
@@ -322,13 +361,7 @@ function vergissErfolglose() {
   } catch (e) {}
 }
 
-/** Unter diesem Wert lohnt der Bildwechsel nicht — dann nur dunkler Grund. */
-const MIN_BACKDROP_BILDER = 3;
-
-/** Breites Szenenbild bevorzugt; fehlt es, tut es das Hochkant-Poster. */
-function backdropUrlOf(entry) {
-  return (entry && (entry.backdrop || entry.poster)) || "";
-}
+/** Wechselabstand der Kopfbilder. */
 const BACKDROP_INTERVAL = 8000;
 
 function usePrefersReducedMotion() {
@@ -351,90 +384,79 @@ function usePrefersReducedMotion() {
    von rechts herein. Bei prefers-reduced-motion steht das Bild
    still — kein Wechsel, keine Bewegung.
    ------------------------------------------------------------ */
-/* Eine Bildebene des Kopfbereichs.
+/* ------------------------------------------------------------
+   Kopfbereich-Bilder
 
-   Liegt ein echtes Breitbild vor, fuellt es die Flaeche aus. Gibt es
-   nur ein Hochkant-Poster, wuerde "cover" es stark beschneiden —
-   stattdessen steht es mittig und unverzerrt, und dahinter fuellt eine
-   unscharf vergroesserte Kopie desselben Bildes die Raender. */
-function BackdropBild({ entry, className }) {
-  const url = backdropUrlOf(entry);
-  const nurPoster = !(entry && entry.backdrop);
-
-  const basis = {
-    position: "absolute",
-    inset: 0,
-    backgroundRepeat: "no-repeat",
-    backgroundPosition: "center",
-    backgroundImage: `url("${url}")`,
-  };
-
-  if (!nurPoster) {
-    return <div className={className} style={{ ...basis, backgroundSize: "cover", opacity: 0.8 }} />;
-  }
-
-  return (
-    <div className={className} style={{ position: "absolute", inset: 0, opacity: 0.8 }}>
-      {/* Fuellung: dasselbe Bild formatfuellend, stark vergroessert und
-          unscharf. Der Weichzeichner laesst die Kanten ausfransen —
-          deshalb wird deutlich ueber den Rand hinaus skaliert, sonst
-          blieben helle Streifen an den Seiten stehen. */}
-      <div
-        style={{
-          ...basis,
-          backgroundSize: "cover",
-          filter: "blur(30px)",
-          transform: "scale(1.45)",
-        }}
-      />
-      {/* Darueber dasselbe Bild mittig, unverzerrt und in voller Hoehe. */}
-      <div style={{ ...basis, backgroundSize: "auto 100%" }} />
-    </div>
-  );
-}
-
-function PosterBackdrop({ list, onTitleChange }) {
+   Feste Adressen, von Hand im Daten-Panel gepflegt — es gibt dafuer
+   keine automatische Suche. Mehrere Bilder wechseln alle 8 Sekunden
+   mit derselben Gleit-Animation wie zuvor; bei einem Bild steht es
+   fest, bei keinem bleibt der Bereich schlicht dunkel.
+   ------------------------------------------------------------ */
+function HeaderSlideshow({ urls }) {
   const reducedMotion = usePrefersReducedMotion();
   const [index, setIndex] = useState(0);
   const [prevIndex, setPrevIndex] = useState(null);
   const [tick, setTick] = useState(0);
+  // Adressen, die sich nicht laden liessen, werden uebersprungen.
+  const [kaputt, setKaputt] = useState(() => new Set());
 
-  const genug = list.length >= MIN_BACKDROP_BILDER;
+  const brauchbar = urls.filter((u) => !kaputt.has(u));
+  const mehrere = brauchbar.length > 1;
 
   useEffect(() => {
     setIndex(0);
     setPrevIndex(null);
-  }, [list]);
+  }, [urls.length]);
 
   useEffect(() => {
-    if (!genug || reducedMotion) return;
+    if (!mehrere || reducedMotion) return;
     const timer = setInterval(() => {
       setIndex((i) => {
         setPrevIndex(i);
-        return (i + 1) % list.length;
+        return (i + 1) % brauchbar.length;
       });
       setTick((t) => t + 1);
     }, BACKDROP_INTERVAL);
     return () => clearInterval(timer);
-  }, [genug, reducedMotion, list.length]);
+  }, [mehrere, reducedMotion, brauchbar.length]);
 
-  const current = genug ? list[index] : null;
+  if (!brauchbar.length) return null;
 
-  useEffect(() => {
-    if (onTitleChange) onTitleChange(current ? current.title : "");
-  }, [current, onTitleChange]);
+  const aktuell = brauchbar[index % brauchbar.length];
+  const vorher = prevIndex === null ? null : brauchbar[prevIndex % brauchbar.length];
 
-  if (!genug) return null;
+  const bild = {
+    position: "absolute",
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    objectFit: "cover",
+    objectPosition: "center",
+    opacity: 0.9,
+  };
+
+  const kaputtMerken = (url) =>
+    setKaputt((alt) => (alt.has(url) ? alt : new Set([...alt, url])));
 
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden" }} aria-hidden="true">
-      {prevIndex !== null && !reducedMotion && (
-        <BackdropBild key={"weg" + tick} entry={list[prevIndex]} className="backdrop-layer backdrop-out" />
+      {vorher && vorher !== aktuell && !reducedMotion && (
+        <img
+          key={"weg" + tick}
+          src={vorher}
+          alt=""
+          className="backdrop-layer backdrop-out"
+          style={bild}
+          onError={() => kaputtMerken(vorher)}
+        />
       )}
-      <BackdropBild
+      <img
         key={"da" + tick}
-        entry={current}
-        className={"backdrop-layer" + (reducedMotion ? "" : " backdrop-in")}
+        src={aktuell}
+        alt=""
+        className={"backdrop-layer" + (reducedMotion || !mehrere ? "" : " backdrop-in")}
+        style={bild}
+        onError={() => kaputtMerken(aktuell)}
       />
       {/* Abdunkelung: oben genug Kontrast fuer den Titel, unten weicher
           Uebergang in die Seitenfarbe. */}
@@ -455,10 +477,13 @@ function PosterBackdrop({ list, onTitleChange }) {
    ============================================================ */
 function ScoreBadge({ score, size = "md" }) {
   const big = size === "lg";
+  // null = unbewertet (bei Staffeln: Summe der Gewichte ist 0)
+  const unbewertet = typeof score !== "number";
   return (
     <span
+      title={unbewertet ? "Unbewertet — die Summe der Staffelgewichte ist 0" : undefined}
       style={{
-        background: scoreToColor(score),
+        background: unbewertet ? "#2A2A2E" : scoreToColor(score),
         color: "#faf7f0",
         borderRadius: 4,
         padding: big ? "6px 14px" : "3px 9px",
@@ -471,7 +496,7 @@ function ScoreBadge({ score, size = "md" }) {
         flexShrink: 0,
       }}
     >
-      {score.toFixed(2)}
+      {unbewertet ? "–" : score.toFixed(2)}
     </span>
   );
 }
@@ -529,9 +554,29 @@ const api = {
     const res = await fetch(
       "/api/poster?title=" + encodeURIComponent(title) + "&category=" + encodeURIComponent(category)
     );
-    if (!res.ok) return { url: null, backdrop: null };
+    if (!res.ok) return null;
     const data = await res.json();
-    return { url: data.url || null, backdrop: data.backdrop || null };
+    return data.url || null;
+  },
+  async loadHeaderImages() {
+    const res = await fetch("/api/header-images");
+    if (!res.ok) throw new Error("Kopfbilder konnten nicht geladen werden (" + res.status + ")");
+    const data = await res.json();
+    return Array.isArray(data.images) ? data.images : [];
+  },
+  async addHeaderImage(url) {
+    const res = await fetch("/api/header-images", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Hinzufügen fehlgeschlagen");
+    return res.json();
+  },
+  async removeHeaderImage(id) {
+    const res = await fetch("/api/header-images?id=" + encodeURIComponent(id), { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Löschen fehlgeschlagen");
+    return res.json();
   },
 };
 
@@ -624,6 +669,48 @@ function Slider({ label, weightLabel, hint, value, onChange }) {
         onChange={(e) => onChange(parseFloat(e.target.value))}
         style={{ width: "100%", height: 32, accentColor: "var(--accent, #C9A227)", touchAction: "pan-y" }}
       />
+    </div>
+  );
+}
+
+/* Eingabefeld fuer eine neue Kopfbild-Adresse. Eigener Zustand, damit
+   das Tippen nicht bei jedem Zeichen die ganze App neu rendert. */
+function HeaderBildFormular({ onAdd, busy }) {
+  const [wert, setWert] = useState("");
+
+  async function absenden() {
+    const url = wert.trim();
+    if (!url) return;
+    const ok = await onAdd(url);
+    if (ok) setWert("");
+  }
+
+  return (
+    <div style={{ display: "flex", gap: 8 }}>
+      <input
+        type="url"
+        inputMode="url"
+        placeholder="https://..."
+        value={wert}
+        onChange={(e) => setWert(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") absenden(); }}
+        style={{
+          flex: "1 1 auto", minWidth: 0, background: "#141416", border: "1px solid #33333a",
+          borderRadius: 8, padding: "11px 12px", color: "#EDEAE3", fontSize: 14, boxSizing: "border-box",
+        }}
+      />
+      <button
+        onClick={absenden}
+        disabled={busy || !wert.trim()}
+        style={{
+          flex: "0 0 auto", padding: "0 16px", borderRadius: 8, fontSize: 13.5, fontWeight: 700,
+          background: wert.trim() ? "var(--accent, #C9A227)" : "#2A2A2E",
+          color: wert.trim() ? "#17171A" : "#77746c",
+          border: "none", cursor: wert.trim() ? "pointer" : "default",
+        }}
+      >
+        Hinzufügen
+      </button>
     </div>
   );
 }
@@ -742,7 +829,7 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
   const previewCount = useMemo(() => {
     const lo = Math.min(min, max);
     const hi = Math.max(min, max);
-    return allInCategory.filter((f) => f.score >= lo && f.score <= hi).length;
+    return allInCategory.filter((f) => typeof f.score === "number" && f.score >= lo && f.score <= hi).length;
   }, [min, max, allInCategory]);
 
   function applyPreset(p) {
@@ -865,7 +952,7 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
     setSeasons((prev) => {
       const nummer = prev.length + 1;
       const neue = prev.length
-        ? { seasonNumber: nummer, values: emptyValues(category), personal: null }
+        ? { seasonNumber: nummer, values: emptyValues(category), personal: null, weight: SEASON_WEIGHT_DEFAULT }
         : seasonFromEntry({ values, personal }, nummer);
       setOffen(prev.length);
       return [...prev, neue];
@@ -913,7 +1000,7 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
       poster: poster.trim(),
       values: werte,
       personal: bauch,
-      seasons: seasons.map((sn, i) => ({ ...sn, seasonNumber: i + 1 })),
+      seasons: seasons.map((sn, i) => ({ ...sn, seasonNumber: i + 1, weight: seasonWeight(sn) })),
     });
   }
 
@@ -1020,6 +1107,11 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
                         style={{ flex: 1, textAlign: "left", background: "transparent", border: "none", color: "#EDEAE3", fontSize: 14.5, fontWeight: 600, cursor: "pointer", padding: 0 }}
                       >
                         {aufgeklappt ? "▾" : "▸"} Staffel {i + 1}
+                        {seasonWeight(sn) !== SEASON_WEIGHT_DEFAULT && (
+                          <span style={{ color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, marginLeft: 8 }}>
+                            ×{seasonWeight(sn).toFixed(1)}
+                          </span>
+                        )}
                       </button>
                       {fertig ? (
                         <ScoreBadge score={seasonScore(sn, category)} />
@@ -1059,6 +1151,37 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
                             onChange={(v) => staffelAendern(i, { personal: v })}
                           />
                         </div>
+
+                        {/* Gewichtungsfaktor: wie stark diese Staffel in die
+                            Endnote eingeht. 1.0 = wie alle anderen. */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14 }}>
+                          <label style={{ fontSize: 13.5, fontWeight: 600, flex: 1 }}>
+                            Gewichtung
+                            <span style={{ display: "block", fontSize: 11.5, color: "#77746c", fontWeight: 400, marginTop: 2 }}>
+                              Anteil an der Endnote · 1.0 = normal, 0 = zählt nicht
+                            </span>
+                          </label>
+                          <input
+                            type="number"
+                            min={SEASON_WEIGHT_MIN}
+                            max={SEASON_WEIGHT_MAX}
+                            step={SEASON_WEIGHT_STEP}
+                            value={seasonWeight(sn)}
+                            onChange={(e) => {
+                              const roh = parseFloat(e.target.value);
+                              const begrenzt = Number.isNaN(roh)
+                                ? SEASON_WEIGHT_DEFAULT
+                                : Math.min(SEASON_WEIGHT_MAX, Math.max(SEASON_WEIGHT_MIN, roh));
+                              staffelAendern(i, { weight: Math.round(begrenzt * 10) / 10 });
+                            }}
+                            style={{
+                              width: 84, boxSizing: "border-box", background: "#141416",
+                              border: "1px solid #33333a", borderRadius: 8, padding: "10px 12px",
+                              color: "#EDEAE3", fontSize: 15, textAlign: "center",
+                              fontFamily: "'JetBrains Mono', monospace",
+                            }}
+                          />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1070,11 +1193,16 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
       )}
 
       <div style={{ fontSize: 13.5, color: "#9A968C", marginTop: 12, lineHeight: 1.8 }}>
-        Kriterien-Note: <strong style={{ color: "#EDEAE3" }}>{criteriaScore.toFixed(2)}</strong>
+        Kriterien-Note:{" "}
+        <strong style={{ color: "#EDEAE3" }}>
+          {typeof criteriaScore === "number" ? criteriaScore.toFixed(2) : "–"}
+        </strong>
         {complete && (
           <>
             {" "}· Endnote (live):{" "}
-            <strong style={{ color: "var(--accent, #C9A227)", fontSize: 16 }}>{finalScore.toFixed(2)}</strong>
+            <strong style={{ color: "var(--accent, #C9A227)", fontSize: 16 }}>
+              {typeof finalScore === "number" ? finalScore.toFixed(2) : "unbewertet"}
+            </strong>
           </>
         )}
       </div>
@@ -1096,7 +1224,7 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
             fontWeight: 700, fontSize: 15.5, cursor: "pointer",
           }}
         >
-          Speichern{complete && ` — ${finalScore.toFixed(2)}`}
+          Speichern{complete && typeof finalScore === "number" ? ` — ${finalScore.toFixed(2)}` : ""}
         </button>
         <button
           onClick={onCancel}
@@ -1149,7 +1277,12 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
         </div>
 
         <div style={{ display: "flex", gap: 20, marginBottom: 20, fontSize: 14, color: "#9A968C", flexWrap: "wrap" }}>
-          <div>Kriterien-Note: <strong style={{ color: "#EDEAE3" }}>{criteriaScore.toFixed(2)}</strong></div>
+          <div>
+            Kriterien-Note:{" "}
+            <strong style={{ color: "#EDEAE3" }}>
+              {typeof criteriaScore === "number" ? criteriaScore.toFixed(2) : "–"}
+            </strong>
+          </div>
           <div>
             Bauchgefühl:{" "}
             <strong style={{ color: "#EDEAE3" }}>
@@ -1169,13 +1302,25 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
                 key={sn.seasonNumber || i}
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid #232326" }}
               >
-                <span style={{ fontSize: 14.5 }}>Staffel {sn.seasonNumber || i + 1}</span>
+                <span style={{ fontSize: 14.5 }}>
+                  Staffel {sn.seasonNumber || i + 1}
+                  {seasonWeight(sn) !== SEASON_WEIGHT_DEFAULT && (
+                    <span
+                      title="Gewichtungsfaktor dieser Staffel"
+                      style={{ color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, marginLeft: 8 }}
+                    >
+                      ×{seasonWeight(sn).toFixed(1)}
+                    </span>
+                  )}
+                </span>
                 <ScoreBadge score={seasonScore(sn, category)} />
               </div>
             ))}
             <div style={{ fontSize: 11.5, color: "#77746c", marginTop: 10, lineHeight: 1.5 }}>
-              Die Endnote ist der Durchschnitt aller Staffelnoten. Die Werte
-              darunter sind die Mittelwerte über alle Staffeln.
+              Die Endnote ist der nach den Faktoren gewichtete Durchschnitt
+              aller Staffelnoten. Die Werte darunter sind entsprechend
+              gewichtete Mittel.
+              {seasonWeightSum(entry) <= 0 && " Alle Faktoren sind 0 — der Eintrag gilt als unbewertet."}
             </div>
           </div>
         )}
@@ -1232,13 +1377,19 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
 /* ============================================================
    STATISTIK — eigener Hauptbereich (kein Overlay, sondern Tab)
    ============================================================ */
+/* Vergleichswert fuer Sortierungen: unbewertete Eintraege ganz ans Ende. */
+function sortWert(score) {
+  return typeof score === "number" ? score : -Infinity;
+}
+
 /* Kennzahlen einer Liste: Anzahl, Durchschnitt, höchste und
-   niedrigste Endnote. Wird von der Statistik-Seite genutzt. */
+   niedrigste Endnote. Unbewertete Einträge fließen nicht ein. */
 function statsFor(list) {
+  const noten = list.map((f) => f.score).filter((v) => typeof v === "number");
   const count = list.length;
-  const avg = count ? list.reduce((s, f) => s + f.score, 0) / count : 0;
-  const max = count ? Math.max(...list.map((f) => f.score)) : 0;
-  const min = count ? Math.min(...list.map((f) => f.score)) : 0;
+  const avg = noten.length ? noten.reduce((s, v) => s + v, 0) / noten.length : 0;
+  const max = noten.length ? Math.max(...noten) : 0;
+  const min = noten.length ? Math.min(...noten) : 0;
   return { count, avg, max, min };
 }
 
@@ -1294,7 +1445,7 @@ function StatsPage({ ranked }) {
 
   const bands = DISTRIBUTION_BANDS.map((b) => ({
     ...b,
-    count: scopedList.filter((f) => f.score >= b.min && f.score < b.max).length,
+    count: scopedList.filter((f) => typeof f.score === "number" && f.score >= b.min && f.score < b.max).length,
   }));
   const maxBandCount = Math.max(1, ...bands.map((b) => b.count));
 
@@ -1308,15 +1459,15 @@ function StatsPage({ ranked }) {
             label: "Top 10 insgesamt",
             mitKategorie: true,
             list: CATEGORY_KEYS.flatMap((k) => ranked[k])
-              .sort((a, b) => b.score - a.score)
+              .sort((a, b) => sortWert(b.score) - sortWert(a.score))
               .slice(0, 10),
           },
           ...CATEGORIES.map((c) => ({
             label: "Top 10 " + c.label,
-            list: [...ranked[c.key]].sort((a, b) => b.score - a.score).slice(0, 10),
+            list: [...ranked[c.key]].sort((a, b) => sortWert(b.score) - sortWert(a.score)).slice(0, 10),
           })),
         ]
-      : [{ label: "Top 10", list: [...scopedList].sort((a, b) => b.score - a.score).slice(0, 10) }];
+      : [{ label: "Top 10", list: [...scopedList].sort((a, b) => sortWert(b.score) - sortWert(a.score)).slice(0, 10) }];
 
   return (
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
@@ -1548,8 +1699,9 @@ export default function App() {
       const todo = [];
       for (const catKey of CATEGORY_KEYS) {
         for (const entry of items[catKey] || []) {
-          // Nachgeladen wird, was fehlt: Poster, Backdrop oder beides.
-          if (entry.poster && entry.backdrop) continue;
+          // Nachgeladen werden nur noch fehlende Poster. Die Bilder des
+          // Kopfbereichs werden von Hand gepflegt.
+          if (entry.poster) continue;
           if (posterAttempted.current.has(entry.id)) continue;
           if (erfolglos.has(entry.id)) continue;
           todo.push({ catKey, entry });
@@ -1569,18 +1721,11 @@ export default function App() {
         const gefunden = await api.findPoster(job.entry.title, job.catKey);
         if (cancelled) return;
 
-        // Ein von Hand gesetztes Poster wird nie ueberschrieben; das
-        // Backdrop darf trotzdem dazukommen.
-        //
-        // Wichtig: leere Felder sind "" , die Suche liefert aber null.
-        // Ohne Vereinheitlichung schlaegt der Vergleich unten immer fehl
-        // und es wird gespeichert, obwohl sich nichts geaendert hat.
-        const altPoster = job.entry.poster || "";
-        const altBackdrop = job.entry.backdrop || "";
-        const neuesPoster = altPoster || gefunden.url || "";
-        const neuesBackdrop = altBackdrop || gefunden.backdrop || "";
-
-        if (neuesPoster === altPoster && neuesBackdrop === altBackdrop) {
+        // Leere Felder sind "", die Suche liefert aber null. Ohne
+        // Vereinheitlichung schlaegt der Vergleich fehl und es wird
+        // gespeichert, obwohl sich nichts geaendert hat.
+        const neuesPoster = gefunden || "";
+        if (!neuesPoster) {
           // Nichts gefunden: merken, damit der Eintrag beim naechsten
           // Besuch nicht wieder abgefragt wird.
           merkeErfolglos(job.entry.id);
@@ -1592,9 +1737,8 @@ export default function App() {
             ...job.entry,
             seasons: job.entry.seasons || [],
             category: job.catKey,
-            poster: neuesPoster || "",
-            backdrop: neuesBackdrop || "",
-            posterSource: job.entry.poster ? job.entry.posterSource : "auto",
+            poster: neuesPoster,
+            posterSource: "auto",
           });
           if (cancelled) return;
           setItems((prev) => ({
@@ -1620,7 +1764,7 @@ export default function App() {
         ...f,
         score: entryScore(f, cat.key),
       }));
-      list.sort((a, b) => b.score - a.score);
+      list.sort((a, b) => sortWert(b.score) - sortWert(a.score));
       result[cat.key] = list;
     }
     return result;
@@ -1638,47 +1782,45 @@ export default function App() {
      einmalig nachtraeglich, falls beim Wechsel noch keine Daten da
      waren. Bei spaeteren Aenderungen (z. B. neue Bewertung) bleibt sie
      stehen, sonst wuerde der Hintergrund beim Bewerten springen. */
-  /* Gespeichert wird nur die gemischte REIHENFOLGE (als IDs), nicht
-     die Eintraege selbst. Wuerde man die Objekte festhalten, blieben
-     sie auf dem Stand des ersten Ladens stehen — und genau dann sind
-     die Backdrops noch nicht nachgeladen, sodass der Kopfbereich
-     dauerhaft auf die Poster zurueckfiele. */
-  const backdropRef = useRef({ cat: null, ids: [] });
-  const [backdropIds, setBackdropIds] = useState([]);
-  const [backdropTitle, setBackdropTitle] = useState("");
+  /* Kopfbereich-Bilder: fest hinterlegte Adressen aus der Datenbank.
+     Keine automatische Suche mehr — gepflegt wird im Daten-Panel. */
+  const [headerImages, setHeaderImages] = useState([]);
+  const [headerFehler, setHeaderFehler] = useState("");
 
   useEffect(() => {
-    const infrage = (rankedByCategory[category] || [])
-      .filter((f) => f.backdrop || f.poster)
-      .map((f) => f.id);
-    const bisher = backdropRef.current.ids;
+    let abgebrochen = false;
+    (async () => {
+      try {
+        const bilder = await api.loadHeaderImages();
+        if (!abgebrochen) setHeaderImages(bilder);
+      } catch (e) {
+        // Der Kopfbereich ist Beiwerk — ein Fehler hier bleibt still.
+      }
+    })();
+    return () => { abgebrochen = true; };
+  }, []);
 
-    let ids;
-    if (backdropRef.current.cat !== category) {
-      // Kategoriewechsel: komplett neu mischen.
-      ids = shuffled(infrage);
-    } else {
-      // Sonst Reihenfolge behalten und nur Zu- und Abgaenge pflegen —
-      // so springt der Hintergrund beim Bewerten nicht.
-      const erlaubt = new Set(infrage);
-      const behalten = bisher.filter((id) => erlaubt.has(id));
-      const bekannt = new Set(bisher);
-      const neu = shuffled(infrage.filter((id) => !bekannt.has(id)));
-      if (!neu.length && behalten.length === bisher.length) return;
-      ids = [...behalten, ...neu];
+  async function headerBildHinzufuegen(url) {
+    setHeaderFehler("");
+    try {
+      const angelegt = await api.addHeaderImage(url);
+      setHeaderImages((prev) => [...prev, angelegt]);
+      return true;
+    } catch (e) {
+      setHeaderFehler(e.message);
+      return false;
     }
+  }
 
-    backdropRef.current = { cat: category, ids };
-    setBackdropIds(ids);
-  }, [category, rankedByCategory]);
-
-  /* Die Eintraege werden bei jedem Rendern frisch aufgeloest. Dadurch
-     wirkt ein nachgeladenes Backdrop sofort, ohne die Reihenfolge zu
-     veraendern. */
-  const backdropList = useMemo(() => {
-    const nach = new Map((rankedByCategory[category] || []).map((f) => [f.id, f]));
-    return backdropIds.map((id) => nach.get(id)).filter(Boolean);
-  }, [backdropIds, rankedByCategory, category]);
+  async function headerBildLoeschen(id) {
+    setHeaderFehler("");
+    try {
+      await api.removeHeaderImage(id);
+      setHeaderImages((prev) => prev.filter((b) => b.id !== id));
+    } catch (e) {
+      setHeaderFehler(e.message);
+    }
+  }
 
   // ---- Angezeigte Liste: Suche + Filter (Bereich + Sortierung) ----
   const filtered = useMemo(() => {
@@ -1687,12 +1829,21 @@ export default function App() {
       const q = search.toLowerCase();
       list = list.filter((f) => f.title.toLowerCase().includes(q));
     }
-    list = list.filter((f) => f.score >= filterState.min && f.score <= filterState.max);
+    // Unbewertete Eintraege haben keine Note. Sie bleiben sichtbar,
+    // solange der Bereich nicht eingeschraenkt ist — sonst waeren sie
+    // unauffindbar, obwohl gerade sie Aufmerksamkeit brauchen.
+    const bereichOffen =
+      filterState.min === DEFAULT_FILTER.min && filterState.max === DEFAULT_FILTER.max;
+    list = list.filter((f) =>
+      typeof f.score === "number"
+        ? f.score >= filterState.min && f.score <= filterState.max
+        : bereichOffen
+    );
 
     const sorted = [...list];
     switch (filterState.sort) {
       case "score-asc":
-        sorted.sort((a, b) => a.score - b.score);
+        sorted.sort((a, b) => sortWert(a.score) - sortWert(b.score));
         break;
       case "title-asc":
         sorted.sort((a, b) => a.title.localeCompare(b.title, "de"));
@@ -1708,7 +1859,7 @@ export default function App() {
         break;
       case "score-desc":
       default:
-        sorted.sort((a, b) => b.score - a.score);
+        sorted.sort((a, b) => sortWert(b.score) - sortWert(a.score));
     }
     return sorted;
   }, [currentList, search, filterState]);
@@ -1832,7 +1983,6 @@ export default function App() {
   }
 
   const resetPosters = () => bilderZuruecksetzen("/api/reset-posters", "Poster");
-  const resetBackdrops = () => bilderZuruecksetzen("/api/reset-backdrops", "Hintergrundbilder");
 
   // ---- Export ----
   function buildExportRows(scopeAll) {
@@ -1852,6 +2002,9 @@ export default function App() {
           staffelnoten: hasSeasons(f)
             ? f.seasons.map((sn) => seasonScore(sn, catKey).toFixed(2)).join("|")
             : "",
+          staffelgewichte: hasSeasons(f)
+            ? f.seasons.map((sn) => seasonWeight(sn).toFixed(1)).join("|")
+            : "",
           kriterienNote: entryCriteriaScore(f, catKey),
           bauchgefuehl: f.personal,
           erstelltAm: f.createdAt ? new Date(f.createdAt).toISOString() : "",
@@ -1866,10 +2019,15 @@ export default function App() {
     const rows = buildExportRows(scopeAll);
     const scopeName = scopeAll ? "alle" : category;
     if (exportFormat === "json") {
-      const payload = { exportedAt: new Date().toISOString(), scope: scopeName, data: items };
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        scope: scopeName,
+        data: items,
+        headerImages: headerImages.map((b) => b.url),
+      };
       downloadFile(`bewertungen-${scopeName}-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
     } else {
-      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "staffeln", "staffelnoten", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
+      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "staffeln", "staffelnoten", "staffelgewichte", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
       const lines = [headers.join(";")];
       rows.forEach((r) => {
         lines.push(headers.map((h) => csvEscape(r[h])).join(";"));
@@ -1919,12 +2077,17 @@ export default function App() {
             }
           }
         }
-        if (totalValid === 0) {
+        // Kopfbilder sind optional — aeltere Backups haben sie nicht.
+        const kopfbilder = Array.isArray(parsed && parsed.headerImages)
+          ? parsed.headerImages.filter((u) => typeof u === "string" && /^https?:\/\//i.test(u.trim()))
+          : [];
+
+        if (totalValid === 0 && !kopfbilder.length) {
           setImportError("Die Datei enthält keine gültigen Einträge. Import wurde abgebrochen.");
           setImportPreview(null);
         } else {
           setImportError("");
-          setImportPreview({ cleaned, count: totalValid });
+          setImportPreview({ cleaned, count: totalValid, kopfbilder });
         }
       } catch (err) {
         setImportError("Diese Datei ist kein gültiges JSON-Backup und konnte nicht gelesen werden.");
@@ -1952,11 +2115,21 @@ export default function App() {
           }
         }
       }
-      setSaveError(
-        failed
-          ? ok + " Einträge importiert, " + failed + " fehlgeschlagen."
-          : ""
-      );
+      // Kopfbilder ergaenzen, ohne bestehende zu doppeln.
+      let bilderNeu = 0;
+      const vorhanden = new Set(headerImages.map((b) => b.url));
+      for (const url of importPreview.kopfbilder || []) {
+        if (vorhanden.has(url)) continue;
+        if (await headerBildHinzufuegen(url)) {
+          vorhanden.add(url);
+          bilderNeu++;
+        }
+      }
+
+      const meldungen = [];
+      if (failed) meldungen.push(ok + " Einträge importiert, " + failed + " fehlgeschlagen.");
+      if (bilderNeu) meldungen.push(bilderNeu + " Kopfbilder übernommen.");
+      setSaveError(meldungen.join(" "));
     } finally {
       setBusy(false);
       setImportPreview(null);
@@ -2007,10 +2180,13 @@ export default function App() {
           .tab-emoji { display: none; }
         }
 
-        /* Etwas hoeher als der Inhalt braucht, damit vom Breitbild mehr
-           zu sehen ist. */
-        .kopfbereich { min-height: 340px; }
-        @media (min-width: 700px) { .kopfbereich { min-height: 400px; } }
+        /* Fester 16:9-Ausschnitt ueber die volle Breite. Der Inhalt sitzt
+           unten; reicht er einmal tiefer als 16:9 hergeben, waechst der
+           Bereich mit, damit nichts abgeschnitten wird. */
+        .kopfbereich { aspect-ratio: 16 / 9; }
+        @supports not (aspect-ratio: 16 / 9) {
+          .kopfbereich { min-height: 56.25vw; }
+        }
       `}</style>
 
       {/* Header — mit laufendem Poster-Hintergrund */}
@@ -2022,13 +2198,13 @@ export default function App() {
           borderBottom: "1px solid #2A2A2E",
           background: "linear-gradient(180deg, #1D1D21 0%, #17171A 100%)",
           // Der Inhalt sitzt unten; die zusaetzliche Hoehe kommt oben
-          // dazu und zeigt mehr vom Breitbild.
+          // dazu und zeigt mehr vom Bild.
           display: "flex",
           flexDirection: "column",
           justifyContent: "flex-end",
         }}
       >
-        <PosterBackdrop list={backdropList} onTitleChange={setBackdropTitle} />
+        <HeaderSlideshow urls={headerImages.map((b) => b.url)} />
 
         <div style={{ position: "relative", zIndex: 1, padding: "32px 20px 0" }}>
           <div style={{ maxWidth: 720, margin: "0 auto" }}>
@@ -2041,24 +2217,6 @@ export default function App() {
                 ? `${gesamtAnzahl} ${gesamtAnzahl === 1 ? "Eintrag" : "Einträge"}`
                 : `${currentList.length} ${catInfo.label}`}
             </p>
-
-            {/* Titel des gerade gezeigten Hintergrundbildes */}
-            <div
-              style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: 10.5,
-                letterSpacing: 1.4,
-                color: "#77746c",
-                textTransform: "uppercase",
-                marginBottom: 8,
-                height: 14,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-              }}
-            >
-              {backdropTitle}
-            </div>
 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 6, marginBottom: 0 }}>
@@ -2197,22 +2355,58 @@ export default function App() {
                       Selbst eingetragene Poster und alle Bewertungen bleiben erhalten.
                     </div>
 
-                    <button
-                      onClick={resetBackdrops}
-                      disabled={busy}
-                      style={{
-                        width: "100%", padding: "12px", borderRadius: 8, fontSize: 14,
-                        marginTop: 12,
-                        background: "transparent", color: "var(--accent, #C9A227)",
-                        border: "1px solid var(--accent, #C9A227)", cursor: "pointer", fontWeight: 600,
-                        opacity: busy ? 0.5 : 1,
-                      }}
-                    >
-                      Backdrops neu laden
-                    </button>
-                    <div style={{ fontSize: 11, color: "#77746c", marginTop: 8, lineHeight: 1.5 }}>
-                      Verwirft nur die breiten Hintergrundbilder des Kopfbereichs.
-                      Poster und Bewertungen bleiben unberührt.
+                    {/* Bilder des Kopfbereichs — von Hand gepflegt. */}
+                    <div style={{ borderTop: "1px solid #2A2A2E", marginTop: 14, paddingTop: 14 }}>
+                      <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 8 }}>
+                        BILDER IM KOPFBEREICH
+                      </div>
+                      <div style={{ fontSize: 11, color: "#77746c", marginBottom: 10, lineHeight: 1.5 }}>
+                        Adressen von Bildern, die oben im Kopf angezeigt werden.
+                        Mehrere wechseln alle 8 Sekunden. Für diesen Bereich
+                        gibt es keine automatische Suche.
+                      </div>
+
+                      <HeaderBildFormular onAdd={headerBildHinzufuegen} busy={busy} />
+                      {headerFehler && (
+                        <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{headerFehler}</div>
+                      )}
+
+                      {headerImages.length === 0 ? (
+                        <div style={{ fontSize: 11.5, color: "#55524c", marginTop: 10 }}>
+                          Noch keine Bilder hinterlegt — der Kopfbereich bleibt dunkel.
+                        </div>
+                      ) : (
+                        <div style={{ marginTop: 10 }}>
+                          {headerImages.map((bild) => (
+                            <div
+                              key={bild.id}
+                              style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #232326" }}
+                            >
+                              <div
+                                style={{
+                                  width: 48, height: 27, flexShrink: 0, borderRadius: 4,
+                                  background: "#141416 center/cover no-repeat",
+                                  backgroundImage: `url("${bild.url}")`,
+                                }}
+                              />
+                              <span
+                                title={bild.url}
+                                style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "#9A968C", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                              >
+                                {bild.url}
+                              </span>
+                              <button
+                                onClick={() => headerBildLoeschen(bild.id)}
+                                title="Bild entfernen"
+                                aria-label="Bild entfernen"
+                                style={{ background: "transparent", border: "none", color: "#d9736a", fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     {/* Woher die Bilder stammen. */}
@@ -2340,7 +2534,13 @@ export default function App() {
       {importPreview && (
         <ConfirmDialog
           title="Backup importieren?"
-          text={`${importPreview.count} gültige Einträge wurden in der Datei gefunden. Sie werden zu deinen bestehenden Bewertungen hinzugefügt, nichts wird überschrieben.`}
+          text={
+            `${importPreview.count} gültige Einträge wurden in der Datei gefunden.` +
+            (importPreview.kopfbilder && importPreview.kopfbilder.length
+              ? ` Dazu ${importPreview.kopfbilder.length} Bilder für den Kopfbereich.`
+              : "") +
+            " Sie werden zu deinen bestehenden Bewertungen hinzugefügt, nichts wird überschrieben."
+          }
           confirmLabel="Importieren"
           onConfirm={confirmImport}
           onCancel={() => setImportPreview(null)}
