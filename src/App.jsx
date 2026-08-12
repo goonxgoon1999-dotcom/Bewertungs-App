@@ -594,6 +594,9 @@ function Slider({ label, weightLabel, hint, value, onChange }) {
   );
 }
 
+/* Linkstil im Quellenhinweis des Daten-Panels. */
+const quellenLink = { color: "var(--accent, #C9A227)", textDecoration: "none" };
+
 /* Symbolknopf der Suchzeile: feste Breite, damit die Zeile nie
    umbricht oder ueber den Bildschirmrand laeuft. */
 function IconButton({ title, label, active, onClick }) {
@@ -2151,6 +2154,20 @@ export default function App() {
                     <div style={{ fontSize: 11, color: "#77746c", marginTop: 8, lineHeight: 1.5 }}>
                       Verwirft nur die breiten Hintergrundbilder des Kopfbereichs.
                       Poster und Bewertungen bleiben unberührt.
+                    </div>
+
+                    {/* Woher die Bilder stammen. */}
+                    <div style={{ fontSize: 11, color: "#77746c", marginTop: 14, lineHeight: 1.7 }}>
+                      Bildquellen:{" "}
+                      <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer" style={quellenLink}>TMDB</a>
+                      {" · "}
+                      <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer" style={quellenLink}>TVMaze</a>
+                      {" · "}
+                      <a href="https://jikan.moe" target="_blank" rel="noreferrer" style={quellenLink}>Jikan</a>
+                      {" · "}
+                      <a href="https://www.steamgriddb.com" target="_blank" rel="noreferrer" style={quellenLink}>SteamGridDB</a>
+                      {" (Spiele) · "}
+                      <a href="https://www.apple.com/itunes/" target="_blank" rel="noreferrer" style={quellenLink}>iTunes</a>
                     </div>
                   </div>
 

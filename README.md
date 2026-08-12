@@ -8,7 +8,7 @@ getrennten Rankings, Filtern, Statistik, Postern und echter Datenbank.
 - **Backend:** Vercel Serverless Functions (Ordner `api/`)
 - **Datenbank:** Neon Postgres (kostenloser Plan)
 - **Kategorien:** Filme, Serien, Anime und Spiele — je mit eigenen Kriterien
-- **Poster:** automatisch über TMDB / Jikan / TVMaze / iTunes, Spiele über RAWG
+- **Poster:** automatisch über TMDB / Jikan / TVMaze / iTunes, Spiele über SteamGridDB
 
 ---
 
@@ -129,11 +129,11 @@ Quellen, jeweils in dieser Reihenfolge:
 | Filme | TMDB → iTunes |
 | Serien | TVMaze → TMDB → iTunes |
 | Anime | Jikan → TMDB |
-| Spiele | RAWG |
+| Spiele | SteamGridDB |
 
 TVMaze taucht bei Filmen nicht auf, weil es ausschließlich Serien kennt.
-Für Spiele gibt es nur RAWG — die übrigen Quellen kennen keine Spiele,
-ein Treffer dort wäre zwangsläufig falsch.
+Für Spiele gibt es nur SteamGridDB — die übrigen Quellen kennen keine
+Spiele, ein Treffer dort wäre zwangsläufig falsch.
 
 Es wird nicht einfach der erste Suchtreffer genommen: Jede Quelle liefert
 bis zu 15 Kandidaten, deren Titel mit dem gesuchten abgeglichen werden
@@ -153,13 +153,21 @@ Ohne den Schlüssel funktioniert alles weiter: TMDB wird dann einfach
 übersprungen, Filme und Anime laufen wie zuvor über iTunes. Der
 Schlüssel bleibt auf dem Server und taucht nie im Browser auf.
 
-### RAWG-Schlüssel für Spiele (optional)
+### SteamGridDB-Schlüssel für Spiele (optional)
 
-Poster für Spiele kommen von [RAWG](https://rawg.io/apidocs). Schlüssel
-dort kostenlos anlegen und in Vercel als `RAWG_API_KEY` hinterlegen.
+Bilder für Spiele kommen von [SteamGridDB](https://www.steamgriddb.com).
+Schlüssel dort kostenlos anlegen und in Vercel als
+`STEAMGRIDDB_API_KEY` hinterlegen.
+
+Die Abfrage läuft in zwei Schritten: erst wird das Spiel über die
+Autovervollständigung gesucht und der Titel wie überall abgeglichen,
+dann werden für die gefundene ID die Bilder geholt — `grids` liefert
+das Hochkant-Poster (600×900), `heroes` das Breitbild für den
+Kopfbereich. Die Anmeldung erfolgt über einen Bearer-Kopf, der
+Schlüssel steht also nie in der URL.
 
 Ohne diesen Schlüssel findet für Spiele **keine** automatische Suche
-statt — Poster lassen sich dann nur von Hand im Formular eintragen.
+statt — Bilder lassen sich dann nur von Hand im Formular eintragen.
 Filme, Serien und Anime sind davon nicht betroffen.
 
 Sind bereits falsche Poster gespeichert, lassen sie sich alle auf einmal
@@ -191,7 +199,7 @@ fünf Kandidatentitel und den höchsten erreichten Ähnlichkeitswert:
   "url": null,
   "debug": {
     "title": "Severance", "category": "series", "minSimilarity": 0.6,
-    "tmdb": "aktiv",
+    "tmdb": "aktiv", "steamgriddb": "aktiv",
     "sources": [
       { "source": "TVMaze", "status": 200, "error": null,
         "candidates": 3, "titles": ["Severance", "..."], "bestScore": 1 },

@@ -9,12 +9,13 @@
  * - der Schlüssel für TMDB bleibt auf dem Server
  *
  * Quellen: Filme -> TMDB, dann iTunes. Serien -> TVMaze, dann TMDB,
- * dann iTunes. Anime -> Jikan, dann TMDB. Spiele -> RAWG.
+ * dann iTunes. Anime -> Jikan, dann TMDB. Spiele -> SteamGridDB.
  *
  * TMDB braucht TMDB_API_KEY; fehlt der, wird TMDB übersprungen und
  * alles läuft über die freien Quellen wie zuvor. Spiele brauchen
- * RAWG_API_KEY; fehlt der, findet für sie gar keine automatische
- * Suche statt und es bleibt bei der manuell eingetragenen URL.
+ * STEAMGRIDDB_API_KEY; fehlt der, findet für sie gar keine
+ * automatische Suche statt und es bleibt bei der manuell
+ * eingetragenen URL.
  *
  * Es wird NICHT blind der erste Treffer genommen: Jede Quelle liefert
  * mehrere Kandidaten, deren Titel mit dem gesuchten Titel verglichen
@@ -37,11 +38,11 @@ const MIN_SIMILARITY = 0.6; // darunter: lieber null
  * damit die Suche wie bisher weiterläuft, aber der Grund geht nicht
  * verloren und ist über ?debug=1 sichtbar.
  */
-async function getJson(url) {
+async function getJson(url, zusatzKopfzeilen) {
   let res;
   try {
     res = await fetch(url, {
-      headers: { "User-Agent": "Bewertungs-App/1.0" },
+      headers: { "User-Agent": "Bewertungs-App/1.0", ...(zusatzKopfzeilen || {}) },
     });
   } catch (e) {
     return { data: null, status: null, error: "fetch fehlgeschlagen: " + (e.message || String(e)) };
@@ -177,7 +178,8 @@ function istEnthalten(query, title) {
   return true;
 }
 
-function pickBestMatch(query, candidates) {
+function pickBestMatch(query, candidates, istNutzbar) {
+  const nutzbar = istNutzbar || ((c) => !!c.url);
   let best = null;
   let bestUsableScore = 0;
   let bestScore = 0;
@@ -201,7 +203,7 @@ function pickBestMatch(query, candidates) {
     }
     if (score > bestScore) bestScore = score;
 
-    if (!candidate.url) continue;
+    if (!nutzbar(candidate)) continue;
     if (score > bestUsableScore) {
       bestUsableScore = score;
       best = candidate;
@@ -222,6 +224,7 @@ function pickBestMatch(query, candidates) {
   // Das Backdrop stammt immer vom selben Kandidaten wie das Poster —
   // sonst koennten Bild und Titel auseinanderfallen.
   return {
+    treffer,
     url: treffer ? treffer.url : null,
     backdrop: (treffer && treffer.backdrop) || null,
     bestScore,
@@ -338,37 +341,82 @@ async function fromTmdb(title, kind) {
 }
 
 /**
- * Der RAWG-Schluessel ist optional. Ohne ihn gibt es fuer Spiele gar
- * keine automatische Suche — TMDB und die uebrigen Quellen kennen
+ * Der SteamGridDB-Schluessel ist optional. Ohne ihn gibt es fuer Spiele
+ * gar keine automatische Suche — TMDB und die uebrigen Quellen kennen
  * keine Spiele, ein Treffer dort waere zwangslaeufig falsch.
  */
-function rawgKey() {
-  const key = process.env.RAWG_API_KEY;
+function steamGridKey() {
+  const key = process.env.STEAMGRIDDB_API_KEY;
   return key && key.trim() ? key.trim() : null;
 }
 
-/** RAWG kennt Videospiele; das Bild steckt in background_image. */
-async function fromRawg(title) {
-  const response = await getJson(
-    "https://api.rawg.io/api/games?key=" +
-      encodeURIComponent(rawgKey()) +
-      "&page_size=" +
-      RESULT_LIMIT +
-      "&search=" +
-      encodeURIComponent(title)
-  );
-  const data = response.data;
-  const hits = ((data && data.results) || []).slice(0, RESULT_LIMIT);
+const SGDB_BASIS = "https://www.steamgriddb.com/api/v2";
 
-  const candidates = hits.map((hit) => ({
-    titles: [hit.name, hit.name_original].filter(Boolean),
-    url: hit.background_image || null,
-    // RAWGs background_image ist bereits ein Querformat-Szenenbild.
-    backdrop: hit.background_image || null,
+/** SteamGridDB antwortet stets als { success, data }. */
+function sgdbListe(response) {
+  const d = response.data;
+  return d && d.success && Array.isArray(d.data) ? d.data : [];
+}
+
+/** Erste brauchbare Bild-URL aus einer Grid-/Hero-Antwort. */
+function ersteBildUrl(response) {
+  const eintrag = sgdbListe(response).find((b) => b && typeof b.url === "string" && b.url);
+  return eintrag ? eintrag.url : null;
+}
+
+/**
+ * SteamGridDB in zwei Schritten:
+ *   1. Spiel ueber die Autovervollstaendigung suchen und den Titel mit
+ *      der bestehenden Aehnlichkeitslogik abgleichen.
+ *   2. Fuer die gefundene id die Bilder holen — grids sind die
+ *      Hochkant-Poster, heroes die Breitbilder.
+ *
+ * Die Anmeldung laeuft ueber einen Bearer-Kopf, nicht ueber die URL.
+ */
+async function fromSteamGridDB(title) {
+  const kopf = { Authorization: "Bearer " + steamGridKey() };
+
+  const response = await getJson(
+    SGDB_BASIS + "/search/autocomplete/" + encodeURIComponent(title),
+    kopf
+  );
+
+  const treffer = sgdbListe(response).slice(0, RESULT_LIMIT);
+  // In diesem Schritt gibt es noch keine Bilder — ausgewaehlt wird
+  // allein nach dem Titel, deshalb zaehlt jeder Kandidat als nutzbar.
+  const candidates = treffer.map((spiel) => ({
+    titles: [spiel.name].filter(Boolean),
+    id: spiel.id,
+    url: null,
+    backdrop: null,
   }));
 
-  const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
-  return { url, backdrop, debug: buildDebug("RAWG", response, candidates, bestScore, ueberEnthaltung) };
+  const gewaehlt = pickBestMatch(title, candidates, () => true);
+  const debug = buildDebug(
+    "SteamGridDB",
+    response,
+    candidates,
+    gewaehlt.bestScore,
+    gewaehlt.ueberEnthaltung
+  );
+
+  if (!gewaehlt.treffer || gewaehlt.treffer.id == null) {
+    return { url: null, backdrop: null, debug };
+  }
+
+  const id = gewaehlt.treffer.id;
+  debug.spielId = id;
+
+  // Schritt 2: Poster (hochkant) und Hero (breit) getrennt abrufen.
+  const grids = await getJson(SGDB_BASIS + "/grids/game/" + id + "?dimensions=600x900", kopf);
+  const heroes = await getJson(SGDB_BASIS + "/heroes/game/" + id, kopf);
+
+  debug.gridsStatus = grids.status;
+  debug.heroesStatus = heroes.status;
+  if (grids.error) debug.gridsError = grids.error;
+  if (heroes.error) debug.heroesError = heroes.error;
+
+  return { url: ersteBildUrl(grids), backdrop: ersteBildUrl(heroes), debug };
 }
 
 async function fromTvmaze(title) {
@@ -454,13 +502,13 @@ export default async function handler(req, res) {
   }
 
   const hasTmdb = !!tmdbKey();
-  const hasRawg = !!rawgKey();
+  const hasSgdb = !!steamGridKey();
 
   let chain;
   if (category === "game") {
-    // Nur RAWG kennt Spiele. Ohne Schluessel wird gar nicht gesucht —
-    // dann bleibt es bei der von Hand eingetragenen Poster-URL.
-    chain = hasRawg ? [() => fromRawg(title)] : [];
+    // Nur SteamGridDB kennt Spiele. Ohne Schluessel wird gar nicht
+    // gesucht — dann bleibt es bei der von Hand eingetragenen URL.
+    chain = hasSgdb ? [() => fromSteamGridDB(title)] : [];
   } else if (category === "anime") {
     // Jikan bleibt erste Wahl; als Fallback ersetzt TMDB das frühere
     // iTunes — außer der Schlüssel fehlt, dann bleibt es bei iTunes.
@@ -514,7 +562,7 @@ export default async function handler(req, res) {
         category,
         minSimilarity: MIN_SIMILARITY,
         tmdb: hasTmdb ? "aktiv" : "übersprungen (TMDB_API_KEY fehlt)",
-        rawg: hasRawg ? "aktiv" : "übersprungen (RAWG_API_KEY fehlt)",
+        steamgriddb: hasSgdb ? "aktiv" : "übersprungen (STEAMGRIDDB_API_KEY fehlt)",
         sources,
       },
     });
