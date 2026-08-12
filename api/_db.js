@@ -183,7 +183,7 @@ export function supportsSeasons(category) {
 async function ensureSeasons() {
   await sql`
     CREATE TABLE IF NOT EXISTS seasons (
-      id            TEXT PRIMARY KEY,
+      id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       item_id       TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
       season_number INTEGER NOT NULL,
       story         REAL NOT NULL,
@@ -203,6 +203,39 @@ async function ensureSeasons() {
   // Gewichtungsfaktor je Staffel. Bestehende Zeilen bekommen 1.0 und
   // behalten damit exakt ihre bisherige Note.
   await sql`ALTER TABLE seasons ADD COLUMN IF NOT EXISTS weight REAL NOT NULL DEFAULT 1.0`;
+
+  await migrateSeasonIds();
+}
+
+/**
+ * Frueher hat der Anwendungscode die Staffel-IDs selbst gebaut
+ * ("<eintrag>_s1", "<eintrag>_s2", ...) und die Staffeln beim Speichern
+ * geloescht und neu eingefuegt. Ueberschnitten sich dabei zwei
+ * Speichervorgaenge desselben Eintrags, kollidierten die IDs — genau
+ * der Fehler "duplicate key value violates unique constraint
+ * seasons_pkey".
+ *
+ * Die ID vergibt deshalb jetzt Postgres. Da die alten IDs Text sind und
+ * sich nicht in Zahlen umwandeln lassen, wird die Spalte ersetzt: Die
+ * Staffelzeilen selbst bleiben dabei unveraendert erhalten (niemand
+ * verweist auf seasons.id), nur ihre ID ist danach eine fortlaufende
+ * Zahl. Der Block laeuft genau einmal — danach ist die Spalte kein
+ * Text mehr.
+ */
+async function migrateSeasonIds() {
+  await sql`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'seasons' AND column_name = 'id' AND data_type = 'text'
+      ) THEN
+        ALTER TABLE seasons DROP CONSTRAINT IF EXISTS seasons_pkey;
+        ALTER TABLE seasons DROP COLUMN id;
+        ALTER TABLE seasons ADD COLUMN id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY;
+      END IF;
+    END $$
+  `;
 }
 
 /**
@@ -226,16 +259,21 @@ export function rowToHeaderImage(r) {
   return { id: r.id, url: r.url, position: Number(r.position) };
 }
 
-/** Grenzen des Staffel-Gewichts: 0 bis 3 in 0.1-Schritten. */
+/* Gewichtung einer Staffel. Eingegeben wird sie in der App als Prozent
+   (0 % bis 200 % in 5-Prozent-Schritten); gespeichert und gerechnet wird
+   weiterhin mit Faktoren (Prozent / 100). 100 % entspricht dem Faktor
+   1.0 — bestehende Staffeln aendern ihre Note dadurch nicht. */
 export const SEASON_WEIGHT_MIN = 0;
-export const SEASON_WEIGHT_MAX = 3;
+export const SEASON_WEIGHT_MAX = 2;
 export const SEASON_WEIGHT_DEFAULT = 1;
+export const SEASON_WEIGHT_STEP = 0.05;
 
 export function normalizeWeight(wert) {
   if (typeof wert !== "number" || Number.isNaN(wert)) return SEASON_WEIGHT_DEFAULT;
   const begrenzt = Math.min(SEASON_WEIGHT_MAX, Math.max(SEASON_WEIGHT_MIN, wert));
-  // Auf 0.1 runden, damit keine krummen Werte in die Datenbank geraten.
-  return Math.round(begrenzt * 10) / 10;
+  // Auf 0.05 (= 5 %) runden, damit keine krummen Werte in die
+  // Datenbank geraten.
+  return Math.round(begrenzt * 20) / 20;
 }
 
 /** Staffelzeile -> Format, das das Frontend erwartet. */
@@ -243,11 +281,13 @@ export function rowToSeason(r) {
   const values = {};
   for (const key of AV_KEYS) values[key] = Number(r[key]);
   return {
-    id: r.id,
+    // Die ID vergibt Postgres (Identity). Als Zeichenkette, damit grosse
+    // Zahlen unterwegs nicht an Genauigkeit verlieren.
+    id: r.id === null || r.id === undefined ? undefined : String(r.id),
     seasonNumber: Number(r.season_number),
     values,
     personal: Number(r.personal),
-    weight: r.weight === null || r.weight === undefined ? SEASON_WEIGHT_DEFAULT : Number(r.weight),
+    weight: normalizeWeight(r.weight === null || r.weight === undefined ? SEASON_WEIGHT_DEFAULT : Number(r.weight)),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -284,7 +324,7 @@ export function validateSeasons(seasons, category) {
     if (typeof season.personal !== "number" || season.personal < 0 || season.personal > 10) {
       errors.push("Staffel " + nr + ": ungültiges Bauchgefühl (0–10 erforderlich).");
     }
-    // Das Gewicht ist optional; fehlt es, gilt 1.0.
+    // Das Gewicht ist optional; fehlt es, gilt 1.0 (= 100 %).
     if (
       season.weight != null &&
       (typeof season.weight !== "number" ||
@@ -292,7 +332,7 @@ export function validateSeasons(seasons, category) {
         season.weight < SEASON_WEIGHT_MIN ||
         season.weight > SEASON_WEIGHT_MAX)
     ) {
-      errors.push("Staffel " + nr + ": ungültige Gewichtung (0–3 erforderlich).");
+      errors.push("Staffel " + nr + ": ungültige Gewichtung (0–200 % erforderlich).");
     }
   });
 

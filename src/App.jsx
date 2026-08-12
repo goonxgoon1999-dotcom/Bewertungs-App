@@ -123,17 +123,42 @@ function seasonScore(season, category) {
   return computeFinalScore(season.values, season.personal, category);
 }
 
-/* Gewichtung einer Staffel. Fehlt sie, gilt 1.0 — bestehende Staffeln
-   aendern ihre Note dadurch nicht. */
+/* Gewichtung einer Staffel. Eingegeben wird sie in Prozent: 0 % bis
+   200 % in 5-Prozent-Schritten, voreingestellt 100 %. 0 % heisst, dass
+   die Staffel nicht in die Endnote einfliesst, 200 % zaehlt sie
+   doppelt. Gerechnet wird intern weiter mit Faktoren (Prozent / 100) —
+   100 % ist der Faktor 1.0, bestehende Staffeln aendern ihre Note
+   dadurch nicht. */
 const SEASON_WEIGHT_DEFAULT = 1;
 const SEASON_WEIGHT_MIN = 0;
-const SEASON_WEIGHT_MAX = 3;
-const SEASON_WEIGHT_STEP = 0.1;
+const SEASON_WEIGHT_MAX = 2;
+const SEASON_PERCENT_DEFAULT = 100;
+const SEASON_PERCENT_MIN = 0;
+const SEASON_PERCENT_MAX = 200;
+const SEASON_PERCENT_STEP = 5;
 
 function seasonWeight(season) {
   const w = season ? season.weight : undefined;
   if (typeof w !== "number" || Number.isNaN(w)) return SEASON_WEIGHT_DEFAULT;
   return Math.min(SEASON_WEIGHT_MAX, Math.max(SEASON_WEIGHT_MIN, w));
+}
+
+/* Faktor -> Prozent. Die Rundung auf eine Nachkommastelle haelt
+   Rechenungenauigkeiten heraus (0.05 * 100 ist nicht exakt 5). */
+function weightToPercent(faktor) {
+  return Math.round(faktor * 1000) / 10;
+}
+
+/** Prozent -> Faktor, begrenzt und auf 5-Prozent-Schritte gerundet. */
+function percentToWeight(prozent) {
+  const roh = typeof prozent === "number" && !Number.isNaN(prozent) ? prozent : SEASON_PERCENT_DEFAULT;
+  const begrenzt = Math.min(SEASON_PERCENT_MAX, Math.max(SEASON_PERCENT_MIN, roh));
+  return (Math.round(begrenzt / SEASON_PERCENT_STEP) * SEASON_PERCENT_STEP) / 100;
+}
+
+/** Gewichtung einer Staffel in Prozent. */
+function seasonPercent(season) {
+  return weightToPercent(seasonWeight(season));
 }
 
 /** Summe aller Gewichte. Ist sie 0, gilt der Eintrag als unbewertet. */
@@ -300,8 +325,14 @@ function gueltigeStaffeln(seasons, category) {
     seasonNumber: i + 1,
     values: sn.values,
     personal: sn.personal,
-    // Fehlt das Gewicht (aeltere Backups), gilt 1.0.
-    weight: typeof sn.weight === "number" ? sn.weight : SEASON_WEIGHT_DEFAULT,
+    // Neuere Backups tragen die Gewichtung in Prozent, aeltere den
+    // Faktor. Fehlt beides, gilt 100 % (Faktor 1.0).
+    weight:
+      typeof sn.weightPercent === "number"
+        ? percentToWeight(sn.weightPercent)
+        : typeof sn.weight === "number"
+          ? Math.min(SEASON_WEIGHT_MAX, Math.max(SEASON_WEIGHT_MIN, sn.weight))
+          : SEASON_WEIGHT_DEFAULT,
   }));
 }
 
@@ -673,6 +704,55 @@ function Slider({ label, weightLabel, hint, value, onChange }) {
   );
 }
 
+/* Eingabe der Staffelgewichtung in Prozent (0–200 in 5er-Schritten).
+   Waehrend des Tippens bleibt stehen, was eingegeben wurde; auf einen
+   ganzen 5-Prozent-Schritt gerundet wird erst beim Verlassen des
+   Feldes — sonst spraenge die Zahl schon beim zweiten Zeichen. */
+function GewichtungsEingabe({ prozent, onChange }) {
+  const [text, setText] = useState(String(prozent));
+
+  // Aendert sich der Wert von aussen, zieht die Anzeige nach —
+  // waehrend des Tippens bleibt sie unberuehrt.
+  useEffect(() => {
+    setText((t) => (parseFloat(t) === prozent ? t : String(prozent)));
+  }, [prozent]);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+      <input
+        type="number"
+        inputMode="numeric"
+        aria-label="Gewichtung in Prozent"
+        min={SEASON_PERCENT_MIN}
+        max={SEASON_PERCENT_MAX}
+        step={SEASON_PERCENT_STEP}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          const roh = parseFloat(e.target.value);
+          if (Number.isNaN(roh)) return;
+          onChange(Math.min(SEASON_PERCENT_MAX, Math.max(SEASON_PERCENT_MIN, roh)));
+        }}
+        onBlur={() => {
+          const roh = parseFloat(text);
+          const fertig = Number.isNaN(roh)
+            ? SEASON_PERCENT_DEFAULT
+            : weightToPercent(percentToWeight(roh));
+          setText(String(fertig));
+          onChange(fertig);
+        }}
+        style={{
+          width: 84, boxSizing: "border-box", background: "#141416",
+          border: "1px solid #33333a", borderRadius: 8, padding: "10px 12px",
+          color: "#EDEAE3", fontSize: 15, textAlign: "center",
+          fontFamily: "'JetBrains Mono', monospace",
+        }}
+      />
+      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, color: "#9A968C" }}>%</span>
+    </div>
+  );
+}
+
 /* Eingabefeld fuer eine neue Kopfbild-Adresse. Eigener Zustand, damit
    das Tippen nicht bei jedem Zeichen die ganze App neu rendert. */
 function HeaderBildFormular({ onAdd, busy }) {
@@ -1000,7 +1080,12 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
       poster: poster.trim(),
       values: werte,
       personal: bauch,
-      seasons: seasons.map((sn, i) => ({ ...sn, seasonNumber: i + 1, weight: seasonWeight(sn) })),
+      seasons: seasons.map((sn, i) => ({
+        ...sn,
+        seasonNumber: i + 1,
+        // Auf einen ganzen 5-Prozent-Schritt gerundet in die Datenbank.
+        weight: percentToWeight(seasonPercent(sn)),
+      })),
     });
   }
 
@@ -1093,8 +1178,9 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
           ) : (
             <>
               <div style={{ fontSize: 11.5, color: "#77746c", lineHeight: 1.5, marginBottom: 12 }}>
-                Die Endnote ist der Durchschnitt aller Staffelnoten. Wird die
-                letzte Staffel gelöscht, gilt wieder die Einzelbewertung.
+                Die Endnote ist der nach der Gewichtung gemittelte
+                Durchschnitt aller Staffelnoten. Wird die letzte Staffel
+                gelöscht, gilt wieder die Einzelbewertung.
               </div>
               {seasons.map((sn, i) => {
                 const fertig = isValuesComplete(sn.values, category) && typeof sn.personal === "number";
@@ -1107,9 +1193,9 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
                         style={{ flex: 1, textAlign: "left", background: "transparent", border: "none", color: "#EDEAE3", fontSize: 14.5, fontWeight: 600, cursor: "pointer", padding: 0 }}
                       >
                         {aufgeklappt ? "▾" : "▸"} Staffel {i + 1}
-                        {seasonWeight(sn) !== SEASON_WEIGHT_DEFAULT && (
+                        {seasonPercent(sn) !== SEASON_PERCENT_DEFAULT && (
                           <span style={{ color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, marginLeft: 8 }}>
-                            ×{seasonWeight(sn).toFixed(1)}
+                            {seasonPercent(sn)} %
                           </span>
                         )}
                       </button>
@@ -1152,34 +1238,19 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
                           />
                         </div>
 
-                        {/* Gewichtungsfaktor: wie stark diese Staffel in die
-                            Endnote eingeht. 1.0 = wie alle anderen. */}
+                        {/* Gewichtung in Prozent: wie stark diese Staffel in
+                            die Endnote eingeht. 100 % = wie alle anderen. */}
                         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14 }}>
                           <label style={{ fontSize: 13.5, fontWeight: 600, flex: 1 }}>
                             Gewichtung
                             <span style={{ display: "block", fontSize: 11.5, color: "#77746c", fontWeight: 400, marginTop: 2 }}>
-                              Anteil an der Endnote · 1.0 = normal, 0 = zählt nicht
+                              Anteil an der Endnote · 100 % = normal, 0 % = zählt nicht,
+                              200 % = doppelt
                             </span>
                           </label>
-                          <input
-                            type="number"
-                            min={SEASON_WEIGHT_MIN}
-                            max={SEASON_WEIGHT_MAX}
-                            step={SEASON_WEIGHT_STEP}
-                            value={seasonWeight(sn)}
-                            onChange={(e) => {
-                              const roh = parseFloat(e.target.value);
-                              const begrenzt = Number.isNaN(roh)
-                                ? SEASON_WEIGHT_DEFAULT
-                                : Math.min(SEASON_WEIGHT_MAX, Math.max(SEASON_WEIGHT_MIN, roh));
-                              staffelAendern(i, { weight: Math.round(begrenzt * 10) / 10 });
-                            }}
-                            style={{
-                              width: 84, boxSizing: "border-box", background: "#141416",
-                              border: "1px solid #33333a", borderRadius: 8, padding: "10px 12px",
-                              color: "#EDEAE3", fontSize: 15, textAlign: "center",
-                              fontFamily: "'JetBrains Mono', monospace",
-                            }}
+                          <GewichtungsEingabe
+                            prozent={seasonPercent(sn)}
+                            onChange={(p) => staffelAendern(i, { weight: p / 100 })}
                           />
                         </div>
                       </div>
@@ -1304,12 +1375,12 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
               >
                 <span style={{ fontSize: 14.5 }}>
                   Staffel {sn.seasonNumber || i + 1}
-                  {seasonWeight(sn) !== SEASON_WEIGHT_DEFAULT && (
+                  {seasonPercent(sn) !== SEASON_PERCENT_DEFAULT && (
                     <span
-                      title="Gewichtungsfaktor dieser Staffel"
+                      title="Gewichtung dieser Staffel"
                       style={{ color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, marginLeft: 8 }}
                     >
-                      ×{seasonWeight(sn).toFixed(1)}
+                      {seasonPercent(sn)} %
                     </span>
                   )}
                 </span>
@@ -1317,10 +1388,10 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
               </div>
             ))}
             <div style={{ fontSize: 11.5, color: "#77746c", marginTop: 10, lineHeight: 1.5 }}>
-              Die Endnote ist der nach den Faktoren gewichtete Durchschnitt
-              aller Staffelnoten. Die Werte darunter sind entsprechend
-              gewichtete Mittel.
-              {seasonWeightSum(entry) <= 0 && " Alle Faktoren sind 0 — der Eintrag gilt als unbewertet."}
+              Die Endnote ist der nach den Prozentangaben gewichtete
+              Durchschnitt aller Staffelnoten. Die Werte darunter sind
+              entsprechend gewichtete Mittel.
+              {seasonWeightSum(entry) <= 0 && " Alle Staffeln stehen auf 0 % — der Eintrag gilt als unbewertet."}
             </div>
           </div>
         )}
@@ -1642,9 +1713,15 @@ export default function App() {
       backdrop: typeof e.backdrop === "string" ? e.backdrop : "",
       seasons: Array.isArray(e.seasons)
         ? e.seasons.map((sn, i) => ({
+            // Die ID kommt aus der Datenbank und muss beim Speichern
+            // zurueckgeschickt werden — nur so wird die bestehende
+            // Staffel aktualisiert statt eine neue angelegt.
+            id: sn.id,
             seasonNumber: typeof sn.seasonNumber === "number" ? sn.seasonNumber : i + 1,
             values: sn.values || {},
             personal: sn.personal,
+            // Ohne Gewichtung gilt der Faktor 1.0 (= 100 %).
+            weight: typeof sn.weight === "number" ? sn.weight : SEASON_WEIGHT_DEFAULT,
           }))
         : [],
       genre: Array.isArray(e.genre) ? e.genre : [],
@@ -2002,8 +2079,8 @@ export default function App() {
           staffelnoten: hasSeasons(f)
             ? f.seasons.map((sn) => seasonScore(sn, catKey).toFixed(2)).join("|")
             : "",
-          staffelgewichte: hasSeasons(f)
-            ? f.seasons.map((sn) => seasonWeight(sn).toFixed(1)).join("|")
+          staffelgewichteProzent: hasSeasons(f)
+            ? f.seasons.map((sn) => seasonPercent(sn)).join("|")
             : "",
           kriterienNote: entryCriteriaScore(f, catKey),
           bauchgefuehl: f.personal,
@@ -2015,6 +2092,29 @@ export default function App() {
     return rows;
   }
 
+  /* Die Sammlung fuers Backup. Jede Staffel bekommt ihre Gewichtung
+     zusaetzlich in Prozent; der Faktor bleibt daneben stehen, damit
+     eine aeltere Fassung der App die Datei weiterhin lesen kann. */
+  function exportData() {
+    return Object.fromEntries(
+      CATEGORY_KEYS.map((k) => [
+        k,
+        (items[k] || []).map((f) =>
+          hasSeasons(f)
+            ? {
+                ...f,
+                seasons: f.seasons.map((sn) => ({
+                  ...sn,
+                  weight: seasonWeight(sn),
+                  weightPercent: seasonPercent(sn),
+                })),
+              }
+            : f
+        ),
+      ])
+    );
+  }
+
   function doExport(scopeAll) {
     const rows = buildExportRows(scopeAll);
     const scopeName = scopeAll ? "alle" : category;
@@ -2022,12 +2122,12 @@ export default function App() {
       const payload = {
         exportedAt: new Date().toISOString(),
         scope: scopeName,
-        data: items,
+        data: exportData(),
         headerImages: headerImages.map((b) => b.url),
       };
       downloadFile(`bewertungen-${scopeName}-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
     } else {
-      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "staffeln", "staffelnoten", "staffelgewichte", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
+      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "staffeln", "staffelnoten", "staffelgewichteProzent", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
       const lines = [headers.join(";")];
       rows.forEach((r) => {
         lines.push(headers.map((h) => csvEscape(r[h])).join(";"));
