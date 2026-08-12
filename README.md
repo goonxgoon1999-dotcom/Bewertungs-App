@@ -1,12 +1,14 @@
-# Bewertungs-App — Filme, Serien, Anime
+# Bewertungs-App — Filme, Serien, Anime, Spiele
 
-Persönliche Bewertungs-App mit 7 gewichteten Kriterien + Bauchgefühl,
+Persönliche Bewertungs-App mit 7 gewichteten Kriterien je Kategorie
++ Bauchgefühl,
 getrennten Rankings, Filtern, Statistik, Postern und echter Datenbank.
 
 - **Frontend:** React + Vite
 - **Backend:** Vercel Serverless Functions (Ordner `api/`)
 - **Datenbank:** Neon Postgres (kostenloser Plan)
-- **Poster:** automatisch über Jikan / TVMaze / iTunes — **kein API-Key nötig**
+- **Kategorien:** Filme, Serien, Anime und Spiele — je mit eigenen Kriterien
+- **Poster:** automatisch über TMDB / Jikan / TVMaze / iTunes, Spiele über RAWG
 
 ---
 
@@ -72,6 +74,46 @@ Der Import ergänzt nur und überschreibt nichts.
 
 ---
 
+## Kategorien und Kriterien
+
+Jede Kategorie hat eigene Kriterien. Die Endnote entsteht überall gleich:
+75 % Kriterien-Note + 25 % Bauchgefühl.
+
+**Filme, Serien und Anime** (identische Felder und Gewichte):
+
+| Kriterium | Gewicht |
+|-----------|---------|
+| Story & Drehbuch | 25 % |
+| Charaktere | 20 % |
+| Unterhaltung | 15 % |
+| Emotion & Wirkung | 15 % |
+| Inszenierung | 10 % |
+| Schauspiel | 10 % |
+| Soundtrack / Sounddesign | 5 % |
+
+Bei **Anime** heißen zwei davon anders: „Inszenierung" wird als
+**Animation** angezeigt, „Schauspiel" als **Synchronstimme**. Das ist
+reine Beschriftung — dieselben Datenfelder, dieselben Gewichte,
+dieselben gespeicherten Werte.
+
+**Spiele:**
+
+| Kriterium | Gewicht |
+|-----------|---------|
+| Gameplay | 25 % |
+| Story | 25 % |
+| Charaktere | 15 % |
+| Welt | 15 % |
+| Grafik | 10 % |
+| Sound | 5 % |
+| Wiederspielwert | 5 % |
+
+In der Statistik werden Kriterien-Durchschnitte nur innerhalb einer
+Kategorie gebildet. Bei „Alle" erscheint deshalb ein Block je Kategorie
+statt eines gemeinsamen — die Kriterien sind schlicht nicht dieselben.
+
+---
+
 ## Poster
 
 Die Poster-Suche läuft **serverseitig** (`api/poster.js`), damit es keine
@@ -87,8 +129,17 @@ Quellen, jeweils in dieser Reihenfolge:
 | Filme | TMDB → iTunes |
 | Serien | TVMaze → TMDB → iTunes |
 | Anime | Jikan → TMDB |
+| Spiele | RAWG |
 
 TVMaze taucht bei Filmen nicht auf, weil es ausschließlich Serien kennt.
+Für Spiele gibt es nur RAWG — die übrigen Quellen kennen keine Spiele,
+ein Treffer dort wäre zwangsläufig falsch.
+
+Es wird nicht einfach der erste Suchtreffer genommen: Jede Quelle liefert
+bis zu 15 Kandidaten, deren Titel mit dem gesuchten abgeglichen werden
+(ohne Groß-/Kleinschreibung, Sonderzeichen und Jahreszahlen). Erreicht
+kein Kandidat 60 % Wortüberschneidung, bleibt der Eintrag lieber ohne
+Poster, statt ein falsches zu zeigen.
 
 ### TMDB-Schlüssel (optional, aber empfohlen)
 
@@ -102,11 +153,14 @@ Ohne den Schlüssel funktioniert alles weiter: TMDB wird dann einfach
 übersprungen, Filme und Anime laufen wie zuvor über iTunes. Der
 Schlüssel bleibt auf dem Server und taucht nie im Browser auf.
 
-Es wird nicht einfach der erste Suchtreffer genommen: Jede Quelle liefert
-bis zu 15 Kandidaten, deren Titel mit dem gesuchten abgeglichen werden
-(ohne Groß-/Kleinschreibung, Sonderzeichen und Jahreszahlen). Erreicht
-kein Kandidat 60 % Wortüberschneidung, bleibt der Eintrag lieber ohne
-Poster, statt ein falsches zu zeigen.
+### RAWG-Schlüssel für Spiele (optional)
+
+Poster für Spiele kommen von [RAWG](https://rawg.io/apidocs). Schlüssel
+dort kostenlos anlegen und in Vercel als `RAWG_API_KEY` hinterlegen.
+
+Ohne diesen Schlüssel findet für Spiele **keine** automatische Suche
+statt — Poster lassen sich dann nur von Hand im Formular eintragen.
+Filme, Serien und Anime sind davon nicht betroffen.
 
 Sind bereits falsche Poster gespeichert, lassen sie sich alle auf einmal
 zum Neusuchen freigeben — per Button in der App oder von Hand:
@@ -186,13 +240,27 @@ alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
 
 ---
 
-## Berechnung (unverändert)
+## Berechnung
+
+Filme, Serien und Anime (unverändert):
 
 ```
 Kriteriennote = Story×0.25 + Charaktere×0.20 + Unterhaltung×0.15
               + Emotion×0.15 + Inszenierung×0.10 + Schauspiel×0.10
               + Sound×0.05
+```
 
+Spiele:
+
+```
+Kriteriennote = Gameplay×0.25 + Story×0.25 + Charaktere×0.15
+              + Welt×0.15 + Grafik×0.10 + Sound×0.05
+              + Wiederspielwert×0.05
+```
+
+Die Endnote entsteht in allen Kategorien gleich:
+
+```
 Endnote = Kriteriennote × 0.75 + Bauchgefühl × 0.25
 ```
 

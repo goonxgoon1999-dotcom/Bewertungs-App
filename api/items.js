@@ -1,4 +1,28 @@
-import { sql, ensureReady, rowToItem, validateItem } from "./_db.js";
+import { sql, ensureReady, rowToItem, validateItem, criteriaKeysFor, CATEGORIES } from "./_db.js";
+
+/**
+ * Bringt die Kriterien-Werte in die feste Spaltenreihenfolge der
+ * Tabelle. Felder, die es in der jeweiligen Kategorie nicht gibt,
+ * werden bewusst NULL — ein Spiel hat kein "Schauspiel", und eine 0
+ * waere dort eine erfundene Bewertung.
+ */
+function criteriaColumns(category, values) {
+  const allowed = new Set(criteriaKeysFor(category));
+  const pick = (key) => (allowed.has(key) ? values[key] : null);
+  return {
+    story: pick("story"),
+    charaktere: pick("charaktere"),
+    unterhaltung: pick("unterhaltung"),
+    emotion: pick("emotion"),
+    inszenierung: pick("inszenierung"),
+    schauspiel: pick("schauspiel"),
+    sound: pick("sound"),
+    gameplay: pick("gameplay"),
+    welt: pick("welt"),
+    grafik: pick("grafik"),
+    wiederspielwert: pick("wiederspielwert"),
+  };
+}
 
 export default async function handler(req, res) {
   try {
@@ -20,7 +44,7 @@ export default async function handler(req, res) {
 /** GET /api/items -> { movie: [...], series: [...], anime: [...] } */
 async function list(req, res) {
   const rows = await sql`SELECT * FROM media_items`;
-  const grouped = { movie: [], series: [], anime: [] };
+  const grouped = Object.fromEntries(CATEGORIES.map((c) => [c, []]));
   for (const r of rows) {
     const item = rowToItem(r);
     if (grouped[item.category]) grouped[item.category].push(item);
@@ -36,16 +60,18 @@ async function create(req, res) {
 
   const now = Date.now();
   const id = body.id || body.category + "_" + now + "_" + Math.random().toString(36).slice(2, 8);
-  const v = body.values;
+  const v = criteriaColumns(body.category, body.values);
 
   const rows = await sql`
     INSERT INTO media_items
       (id, category, title, poster, poster_source, story, charaktere, unterhaltung,
-       emotion, inszenierung, schauspiel, sound, personal, created_at, updated_at)
+       emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
+       personal, created_at, updated_at)
     VALUES
       (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
        ${v.story}, ${v.charaktere}, ${v.unterhaltung}, ${v.emotion},
-       ${v.inszenierung}, ${v.schauspiel}, ${v.sound}, ${body.personal},
+       ${v.inszenierung}, ${v.schauspiel}, ${v.sound},
+       ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert}, ${body.personal},
        ${body.createdAt || now}, ${now})
     RETURNING *
   `;
@@ -61,21 +87,26 @@ async function update(req, res) {
   const errors = validateItem(body);
   if (errors.length) return res.status(400).json({ error: errors.join(" ") });
 
-  const v = body.values;
+  const v = criteriaColumns(body.category, body.values);
   const rows = await sql`
     UPDATE media_items SET
-      title         = ${body.title.trim()},
-      poster        = ${body.poster || ""},
-      poster_source = ${body.posterSource || null},
-      story         = ${v.story},
-      charaktere    = ${v.charaktere},
-      unterhaltung  = ${v.unterhaltung},
-      emotion       = ${v.emotion},
-      inszenierung  = ${v.inszenierung},
-      schauspiel    = ${v.schauspiel},
-      sound         = ${v.sound},
-      personal      = ${body.personal},
-      updated_at    = ${Date.now()}
+      category        = ${body.category},
+      title           = ${body.title.trim()},
+      poster          = ${body.poster || ""},
+      poster_source   = ${body.posterSource || null},
+      story           = ${v.story},
+      charaktere      = ${v.charaktere},
+      unterhaltung    = ${v.unterhaltung},
+      emotion         = ${v.emotion},
+      inszenierung    = ${v.inszenierung},
+      schauspiel      = ${v.schauspiel},
+      sound           = ${v.sound},
+      gameplay        = ${v.gameplay},
+      welt            = ${v.welt},
+      grafik          = ${v.grafik},
+      wiederspielwert = ${v.wiederspielwert},
+      personal        = ${body.personal},
+      updated_at      = ${Date.now()}
     WHERE id = ${id}
     RETURNING *
   `;

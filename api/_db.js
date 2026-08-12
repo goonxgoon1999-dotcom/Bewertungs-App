@@ -14,7 +14,11 @@ if (!connectionString) {
 
 export const sql = neon(connectionString);
 
-export const CRITERIA_KEYS = [
+/* Film, Serie und Anime teilen sich dieselben Felder. Anime zeigt zwei
+   davon nur anders beschriftet an ("Animation" statt "Inszenierung",
+   "Synchronstimme" statt "Schauspiel") — die Spalten heissen unveraendert
+   inszenierung und schauspiel. */
+const AV_KEYS = [
   "story",
   "charaktere",
   "unterhaltung",
@@ -23,6 +27,32 @@ export const CRITERIA_KEYS = [
   "schauspiel",
   "sound",
 ];
+
+const GAME_KEYS = [
+  "gameplay",
+  "story",
+  "charaktere",
+  "welt",
+  "grafik",
+  "sound",
+  "wiederspielwert",
+];
+
+export const CATEGORIES = ["movie", "series", "anime", "game"];
+
+export const CRITERIA_KEYS_BY_CATEGORY = {
+  movie: AV_KEYS,
+  series: AV_KEYS,
+  anime: AV_KEYS,
+  game: GAME_KEYS,
+};
+
+/** Alle Kriterien-Spalten, die es in der Tabelle gibt. */
+export const ALL_CRITERIA_KEYS = Array.from(new Set([...AV_KEYS, ...GAME_KEYS]));
+
+export function criteriaKeysFor(category) {
+  return CRITERIA_KEYS_BY_CATEGORY[category] || AV_KEYS;
+}
 
 let initPromise = null;
 
@@ -54,6 +84,8 @@ async function init() {
   `;
   await sql`CREATE INDEX IF NOT EXISTS media_items_category_idx ON media_items (category)`;
 
+  await migrateForGames();
+
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
   const rows = await sql`SELECT COUNT(*)::int AS n FROM media_items`;
@@ -74,23 +106,79 @@ async function init() {
   }
 }
 
+/**
+ * Erweitert eine bestehende Tabelle um die Spiele-Kategorie.
+ *
+ * Alles hier ist rein strukturell: Es werden Spalten hinzugefuegt und
+ * Pflichtfelder gelockert, aber KEINE einzige bestehende Zeile
+ * angefasst. Vorhandene Bewertungen bleiben Bit fuer Bit erhalten.
+ */
+async function migrateForGames() {
+  // 1. Neue Spalten fuer die Spiele-Kriterien. Sie sind absichtlich
+  //    NULL-bar: fuer Filme, Serien und Anime gibt es diese Werte nicht.
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS gameplay REAL`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS welt REAL`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS grafik REAL`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS wiederspielwert REAL`;
+
+  // 2. Die vier Felder, die es nur bei Film/Serie/Anime gibt, duerfen
+  //    bei Spielen leer bleiben. DROP NOT NULL aendert nur die
+  //    Spaltendefinition, nicht die gespeicherten Werte.
+  await sql`ALTER TABLE media_items ALTER COLUMN unterhaltung DROP NOT NULL`;
+  await sql`ALTER TABLE media_items ALTER COLUMN emotion DROP NOT NULL`;
+  await sql`ALTER TABLE media_items ALTER COLUMN inszenierung DROP NOT NULL`;
+  await sql`ALTER TABLE media_items ALTER COLUMN schauspiel DROP NOT NULL`;
+
+  // 3. Der CHECK auf category kennt 'game' noch nicht. Der alte
+  //    Constraint wurde inline angelegt und heisst je nach Postgres-
+  //    Version unterschiedlich — deshalb werden alle CHECKs auf
+  //    category gesucht und ersetzt. Der Block laeuft nur einmal:
+  //    danach existiert der neue, benannte Constraint.
+  await sql`
+    DO $$
+    DECLARE con_name text;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class r ON r.oid = c.conrelid
+        WHERE r.relname = 'media_items'
+          AND c.conname = 'media_items_category_allowed'
+      ) THEN
+        FOR con_name IN
+          SELECT c.conname FROM pg_constraint c
+          JOIN pg_class r ON r.oid = c.conrelid
+          WHERE r.relname = 'media_items'
+            AND c.contype = 'c'
+            AND pg_get_constraintdef(c.oid) ILIKE '%category%'
+        LOOP
+          EXECUTE 'ALTER TABLE media_items DROP CONSTRAINT ' || quote_ident(con_name);
+        END LOOP;
+
+        ALTER TABLE media_items
+          ADD CONSTRAINT media_items_category_allowed
+          CHECK (category IN ('movie','series','anime','game'));
+      END IF;
+    END $$
+  `;
+}
+
 /** Datenbankzeile -> Format, das das Frontend erwartet. */
 export function rowToItem(r) {
+  // Nur die Felder der jeweiligen Kategorie zurueckgeben. Sonst kaemen
+  // die nicht belegten Spalten als 0 beim Frontend an und wuerden dort
+  // wie echte Bewertungen aussehen.
+  const values = {};
+  for (const key of criteriaKeysFor(r.category)) {
+    values[key] = r[key] === null || r[key] === undefined ? null : Number(r[key]);
+  }
+
   return {
     id: r.id,
     category: r.category,
     title: r.title,
     poster: r.poster || "",
     posterSource: r.poster_source || undefined,
-    values: {
-      story: Number(r.story),
-      charaktere: Number(r.charaktere),
-      unterhaltung: Number(r.unterhaltung),
-      emotion: Number(r.emotion),
-      inszenierung: Number(r.inszenierung),
-      schauspiel: Number(r.schauspiel),
-      sound: Number(r.sound),
-    },
+    values,
     personal: Number(r.personal),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
@@ -103,10 +191,15 @@ export function validateItem(body) {
   if (!body || typeof body !== "object") return ["Ungültiger Datensatz."];
 
   if (typeof body.title !== "string" || !body.title.trim()) errors.push("Titel fehlt.");
-  if (!["movie", "series", "anime"].includes(body.category)) errors.push("Ungültige Kategorie.");
+  if (!CATEGORIES.includes(body.category)) {
+    // Ohne gueltige Kategorie ist nicht entscheidbar, welche Kriterien
+    // gelten — die Wertepruefung waere dann sinnlos.
+    errors.push("Ungültige Kategorie.");
+    return errors;
+  }
 
   const values = body.values || {};
-  for (const key of CRITERIA_KEYS) {
+  for (const key of criteriaKeysFor(body.category)) {
     const v = values[key];
     if (typeof v !== "number" || Number.isNaN(v) || v < 0 || v > 10) {
       errors.push("Ungültiger Wert für " + key + " (0–10 erforderlich).");

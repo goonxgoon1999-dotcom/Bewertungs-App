@@ -1,5 +1,5 @@
 /**
- * GET /api/poster?title=...&category=movie|series|anime
+ * GET /api/poster?title=...&category=movie|series|anime|game
  * -> { url: "https://..." } oder { url: null }
  *
  * Die Suche läuft bewusst SERVERSEITIG:
@@ -7,9 +7,12 @@
  * - der Schlüssel für TMDB bleibt auf dem Server
  *
  * Quellen: Filme -> TMDB, dann iTunes. Serien -> TVMaze, dann TMDB,
- * dann iTunes. Anime -> Jikan, dann TMDB. TMDB braucht TMDB_API_KEY;
- * fehlt der, wird TMDB übersprungen und alles läuft über die freien
- * Quellen wie zuvor.
+ * dann iTunes. Anime -> Jikan, dann TMDB. Spiele -> RAWG.
+ *
+ * TMDB braucht TMDB_API_KEY; fehlt der, wird TMDB übersprungen und
+ * alles läuft über die freien Quellen wie zuvor. Spiele brauchen
+ * RAWG_API_KEY; fehlt der, findet für sie gar keine automatische
+ * Suche statt und es bleibt bei der manuell eingetragenen URL.
  *
  * Es wird NICHT blind der erste Treffer genommen: Jede Quelle liefert
  * mehrere Kandidaten, deren Titel mit dem gesuchten Titel verglichen
@@ -275,6 +278,38 @@ async function fromTmdb(title, kind) {
   return { url, debug: buildDebug(label, response, candidates, bestScore) };
 }
 
+/**
+ * Der RAWG-Schluessel ist optional. Ohne ihn gibt es fuer Spiele gar
+ * keine automatische Suche — TMDB und die uebrigen Quellen kennen
+ * keine Spiele, ein Treffer dort waere zwangslaeufig falsch.
+ */
+function rawgKey() {
+  const key = process.env.RAWG_API_KEY;
+  return key && key.trim() ? key.trim() : null;
+}
+
+/** RAWG kennt Videospiele; das Bild steckt in background_image. */
+async function fromRawg(title) {
+  const response = await getJson(
+    "https://api.rawg.io/api/games?key=" +
+      encodeURIComponent(rawgKey()) +
+      "&page_size=" +
+      RESULT_LIMIT +
+      "&search=" +
+      encodeURIComponent(title)
+  );
+  const data = response.data;
+  const hits = ((data && data.results) || []).slice(0, RESULT_LIMIT);
+
+  const candidates = hits.map((hit) => ({
+    titles: [hit.name, hit.name_original].filter(Boolean),
+    url: hit.background_image || null,
+  }));
+
+  const { url, bestScore } = pickBestMatch(title, candidates);
+  return { url, debug: buildDebug("RAWG", response, candidates, bestScore) };
+}
+
 async function fromTvmaze(title) {
   // `search/shows` liefert mehrere Treffer, `singlesearch` nur einen.
   const response = await getJson(
@@ -352,9 +387,14 @@ export default async function handler(req, res) {
   }
 
   const hasTmdb = !!tmdbKey();
+  const hasRawg = !!rawgKey();
 
   let chain;
-  if (category === "anime") {
+  if (category === "game") {
+    // Nur RAWG kennt Spiele. Ohne Schluessel wird gar nicht gesucht —
+    // dann bleibt es bei der von Hand eingetragenen Poster-URL.
+    chain = hasRawg ? [() => fromRawg(title)] : [];
+  } else if (category === "anime") {
     // Jikan bleibt erste Wahl; als Fallback ersetzt TMDB das frühere
     // iTunes — außer der Schlüssel fehlt, dann bleibt es bei iTunes.
     chain = [() => fromJikan(title)];
@@ -396,6 +436,7 @@ export default async function handler(req, res) {
         category,
         minSimilarity: MIN_SIMILARITY,
         tmdb: hasTmdb ? "aktiv" : "übersprungen (TMDB_API_KEY fehlt)",
+        rawg: hasRawg ? "aktiv" : "übersprungen (RAWG_API_KEY fehlt)",
         sources,
       },
     });
