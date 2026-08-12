@@ -121,6 +121,10 @@ async function migrateForGames() {
   await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS grafik REAL`;
   await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS wiederspielwert REAL`;
 
+  // Breites Szenenbild fuer den Kopfbereich. NULL-bar, damit
+  // bestehende Zeilen unveraendert bleiben.
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS backdrop TEXT`;
+
   // 2. Die vier Felder, die es nur bei Film/Serie/Anime gibt, duerfen
   //    bei Spielen leer bleiben. DROP NOT NULL aendert nur die
   //    Spaltendefinition, nicht die gespeicherten Werte.
@@ -178,6 +182,7 @@ export function rowToItem(r) {
     title: r.title,
     poster: r.poster || "",
     posterSource: r.poster_source || undefined,
+    backdrop: r.backdrop || "",
     values,
     personal: Number(r.personal),
     createdAt: Number(r.created_at),
@@ -209,6 +214,7 @@ export function validateItem(body) {
     errors.push("Ungültiges Bauchgefühl (0–10 erforderlich).");
   }
   if (body.poster != null && typeof body.poster !== "string") errors.push("Ungültige Poster-URL.");
+  if (body.backdrop != null && typeof body.backdrop !== "string") errors.push("Ungültige Backdrop-URL.");
 
   return errors;
 }

@@ -64,11 +64,12 @@ async function create(req, res) {
 
   const rows = await sql`
     INSERT INTO media_items
-      (id, category, title, poster, poster_source, story, charaktere, unterhaltung,
+      (id, category, title, poster, poster_source, backdrop, story, charaktere, unterhaltung,
        emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
        personal, created_at, updated_at)
     VALUES
       (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
+       ${body.backdrop || ""},
        ${v.story}, ${v.charaktere}, ${v.unterhaltung}, ${v.emotion},
        ${v.inszenierung}, ${v.schauspiel}, ${v.sound},
        ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert}, ${body.personal},
@@ -94,6 +95,7 @@ async function update(req, res) {
       title           = ${body.title.trim()},
       poster          = ${body.poster || ""},
       poster_source   = ${body.posterSource || null},
+      backdrop        = ${body.backdrop || ""},
       story           = ${v.story},
       charaktere      = ${v.charaktere},
       unterhaltung    = ${v.unterhaltung},

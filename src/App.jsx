@@ -101,22 +101,48 @@ function computeFinalScore(values, personal, category) {
   return Math.round((0.75 * criteriaScore + 0.25 * personal) * 100) / 100;
 }
 
+/* Ankerpunkte der Notenfarbe. Zwischen zwei Ankern wird pro Kanal
+   linear interpoliert, sodass sich die Farbe bei jedem 0.1-Schritt
+   aendert statt in Stufen zu springen. */
+const SCORE_COLOR_STOPS = [
+  { at: 0.0, rgb: [155, 17, 17] },
+  { at: 2.5, rgb: [220, 38, 38] },
+  { at: 5.0, rgb: [234, 108, 12] },
+  { at: 6.5, rgb: [212, 160, 23] },
+  { at: 7.5, rgb: [22, 163, 74] },
+  { at: 8.5, rgb: [14, 156, 171] },
+  { at: 9.5, rgb: [59, 79, 224] },
+  { at: 10.0, rgb: [37, 46, 190] },
+];
+
 function scoreToColor(score) {
-  if (score < 6) return "#DC2626";
-  if (score < 6.5) return "#EA6C0C";
-  if (score < 7) return "#D4A017";
-  if (score < 8) return "#16A34A";
-  if (score < 9) return "#0E9CAB";
-  return "#3B4FE0";
+  const v = Math.min(10, Math.max(0, typeof score === "number" && !Number.isNaN(score) ? score : 0));
+
+  let lo = SCORE_COLOR_STOPS[0];
+  let hi = SCORE_COLOR_STOPS[SCORE_COLOR_STOPS.length - 1];
+  for (let i = 0; i < SCORE_COLOR_STOPS.length - 1; i++) {
+    if (v >= SCORE_COLOR_STOPS[i].at && v <= SCORE_COLOR_STOPS[i + 1].at) {
+      lo = SCORE_COLOR_STOPS[i];
+      hi = SCORE_COLOR_STOPS[i + 1];
+      break;
+    }
+  }
+
+  const spanne = hi.at - lo.at;
+  const t = spanne === 0 ? 0 : (v - lo.at) / spanne;
+  const kanal = (i) => Math.round(lo.rgb[i] + (hi.rgb[i] - lo.rgb[i]) * t);
+  return `rgb(${kanal(0)}, ${kanal(1)}, ${kanal(2)})`;
 }
 
+/* Die Balken der Verteilung nutzen dieselbe Skala: `at` ist der Wert,
+   der das jeweilige Band repraesentiert. */
 const DISTRIBUTION_BANDS = [
-  { label: "9 – 10", min: 9, max: 10.001, color: "#3B4FE0" },
-  { label: "8 – 8.99", min: 8, max: 9, color: "#0E9CAB" },
-  { label: "7 – 7.99", min: 7, max: 8, color: "#16A34A" },
-  { label: "6 – 6.99", min: 6, max: 7, color: "#D4A017" },
-  { label: "5 – 5.99", min: 5, max: 6, color: "#EA6C0C" },
-  { label: "unter 5", min: -Infinity, max: 5, color: "#DC2626" },
+  { label: "9 – 10", min: 9, max: 10.001, at: 9.5 },
+  { label: "8 – 8.99", min: 8, max: 9, at: 8.5 },
+  { label: "7 – 7.99", min: 7, max: 8, at: 7.5 },
+  { label: "6 – 6.99", min: 6, max: 7, at: 6.5 },
+  { label: "5 – 5.99", min: 5, max: 6, at: 5.5 },
+  { label: "unter 5", min: -Infinity, max: 5, at: 2.5 },
 ];
 
 const SCORE_PRESETS = [
@@ -184,7 +210,12 @@ function shuffled(list) {
 }
 
 /** Unter diesem Wert lohnt der Bildwechsel nicht — dann nur dunkler Grund. */
-const MIN_BACKDROP_POSTER = 3;
+const MIN_BACKDROP_BILDER = 3;
+
+/** Breites Szenenbild bevorzugt; fehlt es, tut es das Hochkant-Poster. */
+function backdropUrlOf(entry) {
+  return (entry && (entry.backdrop || entry.poster)) || "";
+}
 const BACKDROP_INTERVAL = 8000;
 
 function usePrefersReducedMotion() {
@@ -213,7 +244,7 @@ function PosterBackdrop({ list, onTitleChange }) {
   const [prevIndex, setPrevIndex] = useState(null);
   const [tick, setTick] = useState(0);
 
-  const genug = list.length >= MIN_BACKDROP_POSTER;
+  const genug = list.length >= MIN_BACKDROP_BILDER;
 
   useEffect(() => {
     setIndex(0);
@@ -255,13 +286,13 @@ function PosterBackdrop({ list, onTitleChange }) {
         <div
           key={"weg" + tick}
           className="backdrop-layer backdrop-out"
-          style={{ ...layer, backgroundImage: `url("${list[prevIndex].poster}")` }}
+          style={{ ...layer, backgroundImage: `url("${backdropUrlOf(list[prevIndex])}")` }}
         />
       )}
       <div
         key={"da" + tick}
         className={"backdrop-layer" + (reducedMotion ? "" : " backdrop-in")}
-        style={{ ...layer, backgroundImage: `url("${current.poster}")` }}
+        style={{ ...layer, backgroundImage: `url("${backdropUrlOf(current)}")` }}
       />
       {/* Abdunkelung: oben genug Kontrast fuer den Titel, unten weicher
           Uebergang in die Seitenfarbe. */}
@@ -356,9 +387,9 @@ const api = {
     const res = await fetch(
       "/api/poster?title=" + encodeURIComponent(title) + "&category=" + encodeURIComponent(category)
     );
-    if (!res.ok) return null;
+    if (!res.ok) return { url: null, backdrop: null };
     const data = await res.json();
-    return data.url || null;
+    return { url: data.url || null, backdrop: data.backdrop || null };
   },
 };
 
@@ -1019,7 +1050,7 @@ function StatsPage({ ranked }) {
               <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                 <div style={{ width: 62, fontSize: 12, color: "#9A968C", flexShrink: 0 }}>{b.label}</div>
                 <div style={{ flex: 1, height: 14, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ width: `${(b.count / maxBandCount) * 100}%`, height: "100%", background: b.color }} />
+                  <div style={{ width: `${(b.count / maxBandCount) * 100}%`, height: "100%", background: scoreToColor(b.at) }} />
                 </div>
                 <div style={{ width: 26, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, flexShrink: 0 }}>{b.count}</div>
               </div>
@@ -1092,6 +1123,7 @@ export default function App() {
       title: e.title,
       poster: typeof e.poster === "string" ? e.poster : "",
       posterSource: e.posterSource === "manual" || e.posterSource === "auto" ? e.posterSource : undefined,
+      backdrop: typeof e.backdrop === "string" ? e.backdrop : "",
       genre: Array.isArray(e.genre) ? e.genre : [],
       values: e.values,
       personal: e.personal,
@@ -1139,7 +1171,8 @@ export default function App() {
       const todo = [];
       for (const catKey of CATEGORY_KEYS) {
         for (const entry of items[catKey] || []) {
-          if (entry.poster) continue;
+          // Nachgeladen wird, was fehlt: Poster, Backdrop oder beides.
+          if (entry.poster && entry.backdrop) continue;
           if (posterAttempted.current.has(entry.id)) continue;
           todo.push({ catKey, entry });
         }
@@ -1150,16 +1183,22 @@ export default function App() {
         if (cancelled) return;
         posterAttempted.current.add(job.entry.id);
 
-        const url = await api.findPoster(job.entry.title, job.catKey);
-        if (cancelled || !url) continue;
+        const gefunden = await api.findPoster(job.entry.title, job.catKey);
+        if (cancelled) return;
 
-        // Poster dauerhaft am Eintrag speichern
+        // Ein von Hand gesetztes Poster wird nie ueberschrieben; das
+        // Backdrop darf trotzdem dazukommen.
+        const neuesPoster = job.entry.poster ? job.entry.poster : gefunden.url;
+        const neuesBackdrop = job.entry.backdrop ? job.entry.backdrop : gefunden.backdrop;
+        if (neuesPoster === job.entry.poster && neuesBackdrop === job.entry.backdrop) continue;
+
         try {
           const saved = await api.update(job.entry.id, {
             ...job.entry,
             category: job.catKey,
-            poster: url,
-            posterSource: "auto",
+            poster: neuesPoster || "",
+            backdrop: neuesBackdrop || "",
+            posterSource: job.entry.poster ? job.entry.posterSource : "auto",
           });
           if (cancelled) return;
           setItems((prev) => ({
@@ -1194,6 +1233,10 @@ export default function App() {
   const currentList = rankedByCategory[category];
   const accent = accentFor(category);
 
+  /* Im Statistik-Tab zaehlt die Kopfzeile alle Kategorien zusammen,
+     nicht die zuletzt gewaehlte. */
+  const gesamtAnzahl = CATEGORY_KEYS.reduce((s, k) => s + rankedByCategory[k].length, 0);
+
   /* ---- Poster-Hintergrund im Kopfbereich ----
      Die Mischung entsteht neu, wenn die Kategorie wechselt — und
      einmalig nachtraeglich, falls beim Wechsel noch keine Daten da
@@ -1204,7 +1247,7 @@ export default function App() {
   const [backdropTitle, setBackdropTitle] = useState("");
 
   useEffect(() => {
-    const posters = (rankedByCategory[category] || []).filter((f) => f.poster);
+    const posters = (rankedByCategory[category] || []).filter((f) => f.backdrop || f.poster);
     const kategorieGewechselt = backdropRef.current.cat !== category;
     const nochLeer = backdropRef.current.list.length === 0;
     if (!kategorieGewechselt && !nochLeer) return;
@@ -1281,6 +1324,9 @@ export default function App() {
 
     let nextPoster = poster;
     let nextSource = current.posterSource;
+    // Das Backdrop bleibt am Eintrag; es wird nur mit verworfen, wenn
+    // der Titel sich aendert und ohnehin neu gesucht wird.
+    let nextBackdrop = current.backdrop || "";
 
     if (poster && poster !== current.poster) {
       nextSource = "manual"; // selbst eingetragen
@@ -1290,6 +1336,7 @@ export default function App() {
       // Titel geändert und Poster kam automatisch -> neu suchen lassen
       nextPoster = "";
       nextSource = undefined;
+      nextBackdrop = "";
       posterAttempted.current.delete(id);
     }
 
@@ -1300,6 +1347,7 @@ export default function App() {
         title,
         poster: nextPoster,
         posterSource: nextSource,
+        backdrop: nextBackdrop,
         values,
         personal,
         createdAt: current.createdAt,
@@ -1365,6 +1413,7 @@ export default function App() {
           position: i + 1,
           titel: f.title,
           poster: f.poster || "",
+          backdrop: f.backdrop || "",
           genre: (f.genre || []).join("|"),
           endnote: f.score,
           kriterienNote: computeCriteriaScore(f.values, catKey),
@@ -1384,7 +1433,7 @@ export default function App() {
       const payload = { exportedAt: new Date().toISOString(), scope: scopeName, data: items };
       downloadFile(`bewertungen-${scopeName}-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
     } else {
-      const headers = ["kategorie", "position", "titel", "poster", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
+      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
       const lines = [headers.join(";")];
       rows.forEach((r) => {
         lines.push(headers.map((h) => csvEscape(r[h])).join(";"));
@@ -1422,6 +1471,7 @@ export default function App() {
                 category: catKey,
                 title: entry.title.trim(),
                 poster: typeof entry.poster === "string" ? entry.poster : "",
+                backdrop: typeof entry.backdrop === "string" ? entry.backdrop : "",
                 genre: Array.isArray(entry.genre) ? entry.genre : [],
                 values: entry.values,
                 personal: entry.personal,
@@ -1539,7 +1589,9 @@ export default function App() {
               <span style={{ display: "block" }}>Archiv</span>
             </h1>
             <p style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
-              {currentList.length} {catInfo.label}
+              {activeTab === "stats"
+                ? `${gesamtAnzahl} ${gesamtAnzahl === 1 ? "Eintrag" : "Einträge"}`
+                : `${currentList.length} ${catInfo.label}`}
             </p>
 
             {/* Titel des gerade gezeigten Hintergrundbildes */}
