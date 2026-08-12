@@ -153,19 +153,51 @@ function similarity(a, b) {
  * so verrät die Diagnose, ob ein Titel gar nicht gefunden wurde oder
  * ob der passende Treffer bloß kein Poster mitbrachte.
  */
+/**
+ * Enthaelt der Kandidat ALLE Woerter des gesuchten Titels?
+ *
+ * Untertitel sind vor allem bei Anime und Serien die Regel: TMDB kennt
+ * "Demon Slayer" nur als "Demon Slayer: Kimetsu no Yaiba". Die reine
+ * Wortueberschneidung bestraft das (2 von 7 gemeinsamen Woertern = 0.57)
+ * und liegt damit unter der Schwelle, obwohl es dasselbe Werk ist.
+ */
+function istEnthalten(query, title) {
+  const gesucht = new Set(tokenize(query));
+  const kandidat = new Set(tokenize(title));
+  if (!gesucht.size || !kandidat.size) return false;
+
+  // Ein einzelnes Wort ist zu schwach: "Alien" steckt auch in
+  // "Alien vs. Predator". Erst ab zwei bedeutungstragenden Woertern
+  // ist die Enthaltung ein verlaessliches Signal.
+  let inhaltlich = 0;
+  for (const wort of gesucht) if (!STOPWORDS.has(wort)) inhaltlich++;
+  if (inhaltlich < 2) return false;
+
+  for (const wort of gesucht) if (!kandidat.has(wort)) return false;
+  return true;
+}
+
 function pickBestMatch(query, candidates) {
   let best = null;
   let bestUsableScore = 0;
   let bestScore = 0;
+
+  // Zweiter Durchgang: bester Kandidat, der den gesuchten Titel
+  // vollstaendig enthaelt. Wird nur genutzt, wenn der strenge
+  // Durchgang gar nichts gefunden hat.
+  let enthalten = null;
+  let enthaltenScore = -1;
 
   for (const candidate of candidates) {
     if (!candidate) continue;
     // Manche Quellen liefern mehrere Schreibweisen (z. B. Anime auf
     // Japanisch und Englisch) — die beste zählt.
     let score = 0;
+    let passtEnthalten = false;
     for (const title of candidate.titles) {
       const s = similarity(query, title);
       if (s > score) score = s;
+      if (istEnthalten(query, title)) passtEnthalten = true;
     }
     if (score > bestScore) bestScore = score;
 
@@ -174,12 +206,27 @@ function pickBestMatch(query, candidates) {
       bestUsableScore = score;
       best = candidate;
     }
+    if (passtEnthalten && score > enthaltenScore) {
+      enthaltenScore = score;
+      enthalten = candidate;
+    }
   }
 
-  const treffer = best && bestUsableScore >= MIN_SIMILARITY ? best : null;
+  let treffer = best && bestUsableScore >= MIN_SIMILARITY ? best : null;
+  let ueberEnthaltung = false;
+  if (!treffer && enthalten) {
+    treffer = enthalten;
+    ueberEnthaltung = true;
+  }
+
   // Das Backdrop stammt immer vom selben Kandidaten wie das Poster —
   // sonst koennten Bild und Titel auseinanderfallen.
-  return { url: treffer ? treffer.url : null, backdrop: (treffer && treffer.backdrop) || null, bestScore };
+  return {
+    url: treffer ? treffer.url : null,
+    backdrop: (treffer && treffer.backdrop) || null,
+    bestScore,
+    ueberEnthaltung,
+  };
 }
 
 /* ---------------------------------------------------------------- *
@@ -192,8 +239,8 @@ function pickBestMatch(query, candidates) {
 const DEBUG_TITLE_SAMPLE = 5; // so viele Kandidatentitel zeigt die Diagnose
 
 /** Baut den Diagnose-Block einer Quelle. */
-function buildDebug(source, response, candidates, bestScore) {
-  return {
+function buildDebug(source, response, candidates, bestScore, ueberEnthaltung) {
+  const block = {
     source,
     status: response.status,
     error: response.error,
@@ -203,6 +250,9 @@ function buildDebug(source, response, candidates, bestScore) {
       .map((c) => c.titles[0] || null),
     bestScore: Math.round(bestScore * 100) / 100,
   };
+  // Erklaert Treffer, die unter der Schwelle liegen.
+  if (ueberEnthaltung) block.ueberEnthaltung = true;
+  return block;
 }
 
 async function fromJikan(title) {
@@ -230,8 +280,8 @@ async function fromJikan(title) {
     };
   });
 
-  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
-  return { url, backdrop, debug: buildDebug("Jikan", response, candidates, bestScore) };
+  const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
+  return { url, backdrop, debug: buildDebug("Jikan", response, candidates, bestScore, ueberEnthaltung) };
 }
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
@@ -282,9 +332,9 @@ async function fromTmdb(title, kind) {
     };
   });
 
-  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
+  const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
   const label = "TMDB (" + (isTv ? "tv" : "movie") + ")";
-  return { url, backdrop, debug: buildDebug(label, response, candidates, bestScore) };
+  return { url, backdrop, debug: buildDebug(label, response, candidates, bestScore, ueberEnthaltung) };
 }
 
 /**
@@ -317,8 +367,8 @@ async function fromRawg(title) {
     backdrop: hit.background_image || null,
   }));
 
-  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
-  return { url, backdrop, debug: buildDebug("RAWG", response, candidates, bestScore) };
+  const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
+  return { url, backdrop, debug: buildDebug("RAWG", response, candidates, bestScore, ueberEnthaltung) };
 }
 
 async function fromTvmaze(title) {
@@ -341,8 +391,8 @@ async function fromTvmaze(title) {
     };
   });
 
-  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
-  return { url, backdrop, debug: buildDebug("TVMaze", response, candidates, bestScore) };
+  const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
+  return { url, backdrop, debug: buildDebug("TVMaze", response, candidates, bestScore, ueberEnthaltung) };
 }
 
 async function fromItunes(title, kind) {
@@ -373,9 +423,9 @@ async function fromItunes(title, kind) {
     };
   });
 
-  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
+  const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
   const label = "iTunes (" + (isTv ? "tvSeason" : "movie") + ")";
-  return { url, backdrop, debug: buildDebug(label, response, candidates, bestScore) };
+  return { url, backdrop, debug: buildDebug(label, response, candidates, bestScore, ueberEnthaltung) };
 }
 
 /** "Breaking Bad, Season 2" -> "Breaking Bad" */
