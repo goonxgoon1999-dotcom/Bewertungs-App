@@ -101,6 +101,70 @@ function computeFinalScore(values, personal, category) {
   return Math.round((0.75 * criteriaScore + 0.25 * personal) * 100) / 100;
 }
 
+/* ---------------------------------------------------------------
+   Staffeln (optional, nur Serien und Anime)
+
+   Ein Eintrag mit Staffeln wird nicht mehr selbst bewertet: seine
+   Endnote ist der ungewichtete Durchschnitt der Staffelnoten. Jede
+   Staffelnote entsteht nach genau derselben Formel wie bisher.
+   --------------------------------------------------------------- */
+const SEASON_CATEGORIES = ["series", "anime"];
+
+function supportsSeasons(category) {
+  return SEASON_CATEGORIES.includes(category);
+}
+
+function hasSeasons(entry) {
+  return !!(entry && Array.isArray(entry.seasons) && entry.seasons.length);
+}
+
+/** Note einer einzelnen Staffel — dieselbe Formel wie fuer Eintraege. */
+function seasonScore(season, category) {
+  return computeFinalScore(season.values, season.personal, category);
+}
+
+/** Endnote eines Eintrags: mit Staffeln deren Mittel, sonst wie bisher. */
+function entryScore(entry, category) {
+  if (!hasSeasons(entry)) return computeFinalScore(entry.values, entry.personal, category);
+  const noten = entry.seasons.map((s) => seasonScore(s, category));
+  return Math.round((noten.reduce((a, b) => a + b, 0) / noten.length) * 100) / 100;
+}
+
+/** Kriterien-Note eines Eintrags (ohne Bauchgefuehl), analog gemittelt. */
+function entryCriteriaScore(entry, category) {
+  if (!hasSeasons(entry)) return computeCriteriaScore(entry.values, category);
+  const noten = entry.seasons.map((s) => computeCriteriaScore(s.values, category));
+  return Math.round((noten.reduce((a, b) => a + b, 0) / noten.length) * 100) / 100;
+}
+
+/** Wert eines Kriteriums fuer die Statistik — je Eintrag genau einmal. */
+function entryCriterionValue(entry, key) {
+  if (!hasSeasons(entry)) {
+    const v = entry.values ? entry.values[key] : undefined;
+    return typeof v === "number" ? v : null;
+  }
+  const werte = entry.seasons.map((s) => s.values[key]).filter((v) => typeof v === "number");
+  if (!werte.length) return null;
+  return werte.reduce((a, b) => a + b, 0) / werte.length;
+}
+
+/** Bauchgefuehl eines Eintrags — bei Staffeln deren Mittel. */
+function entryPersonal(entry) {
+  if (!hasSeasons(entry)) return typeof entry.personal === "number" ? entry.personal : null;
+  const werte = entry.seasons.map((s) => s.personal).filter((v) => typeof v === "number");
+  if (!werte.length) return null;
+  return werte.reduce((a, b) => a + b, 0) / werte.length;
+}
+
+/** Leere Staffel mit den Werten eines Eintrags vorbelegen. */
+function seasonFromEntry(entry, nummer) {
+  return {
+    seasonNumber: nummer,
+    values: { ...(entry.values || {}) },
+    personal: typeof entry.personal === "number" ? entry.personal : null,
+  };
+}
+
 /* Ankerpunkte der Notenfarbe. Zwischen zwei Ankern wird pro Kanal
    linear interpoliert, sodass sich die Farbe bei jedem 0.1-Schritt
    aendert statt in Stufen zu springen. */
@@ -177,6 +241,21 @@ function isValuesComplete(values, category) {
   );
 }
 
+/* Staffeln aus einem Backup uebernehmen. Fehlen sie oder sind sie
+   unvollstaendig, wird der Eintrag ohne Staffeln importiert — alte
+   Backups ohne dieses Feld bleiben damit gueltig. */
+function gueltigeStaffeln(seasons, category) {
+  if (!supportsSeasons(category) || !Array.isArray(seasons)) return [];
+  const brauchbar = seasons.filter(
+    (sn) => sn && sn.values && isValuesComplete(sn.values, category) && typeof sn.personal === "number"
+  );
+  return brauchbar.map((sn, i) => ({
+    seasonNumber: i + 1,
+    values: sn.values,
+    personal: sn.personal,
+  }));
+}
+
 function csvEscape(s) {
   const str = String(s ?? "");
   if (/[",\n;]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
@@ -238,6 +317,46 @@ function usePrefersReducedMotion() {
    von rechts herein. Bei prefers-reduced-motion steht das Bild
    still — kein Wechsel, keine Bewegung.
    ------------------------------------------------------------ */
+/* Eine Bildebene des Kopfbereichs.
+
+   Liegt ein echtes Breitbild vor, fuellt es die Flaeche aus. Gibt es
+   nur ein Hochkant-Poster, wuerde "cover" es stark beschneiden —
+   stattdessen steht es mittig und unverzerrt, und dahinter fuellt eine
+   unscharf vergroesserte Kopie desselben Bildes die Raender. */
+function BackdropBild({ entry, className }) {
+  const url = backdropUrlOf(entry);
+  const nurPoster = !(entry && entry.backdrop);
+
+  const basis = {
+    position: "absolute",
+    inset: 0,
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: "center",
+    backgroundImage: `url("${url}")`,
+  };
+
+  if (!nurPoster) {
+    return <div className={className} style={{ ...basis, backgroundSize: "cover", opacity: 0.8 }} />;
+  }
+
+  return (
+    <div className={className} style={{ position: "absolute", inset: 0, opacity: 0.8 }}>
+      {/* Fuellung: dasselbe Bild, vergroessert und unscharf. Das
+          Hochskalieren verdeckt die weichen Kanten des Weichzeichners. */}
+      <div
+        style={{
+          ...basis,
+          backgroundSize: "cover",
+          filter: "blur(28px)",
+          transform: "scale(1.18)",
+        }}
+      />
+      {/* Das Poster selbst: vollstaendig sichtbar, unverzerrt. */}
+      <div style={{ ...basis, backgroundSize: "contain" }} />
+    </div>
+  );
+}
+
 function PosterBackdrop({ list, onTitleChange }) {
   const reducedMotion = usePrefersReducedMotion();
   const [index, setIndex] = useState(0);
@@ -271,28 +390,15 @@ function PosterBackdrop({ list, onTitleChange }) {
 
   if (!genug) return null;
 
-  const layer = {
-    position: "absolute",
-    inset: 0,
-    backgroundSize: "cover",
-    backgroundPosition: "center",
-    backgroundRepeat: "no-repeat",
-    opacity: 0.8,
-  };
-
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden" }} aria-hidden="true">
       {prevIndex !== null && !reducedMotion && (
-        <div
-          key={"weg" + tick}
-          className="backdrop-layer backdrop-out"
-          style={{ ...layer, backgroundImage: `url("${backdropUrlOf(list[prevIndex])}")` }}
-        />
+        <BackdropBild key={"weg" + tick} entry={list[prevIndex]} className="backdrop-layer backdrop-out" />
       )}
-      <div
+      <BackdropBild
         key={"da" + tick}
+        entry={current}
         className={"backdrop-layer" + (reducedMotion ? "" : " backdrop-in")}
-        style={{ ...layer, backgroundImage: `url("${backdropUrlOf(current)}")` }}
       />
       {/* Abdunkelung: oben genug Kontrast fuer den Titel, unten weicher
           Uebergang in die Seitenfarbe. */}
@@ -686,22 +792,90 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
 /* ============================================================
    BEWERTUNGSFORMULAR (Neu + Bearbeiten) — für jeden Eintrag identisch
    ============================================================ */
-function RatingForm({ category, categoryLabel, initialTitle, initialPoster, initialValues, initialPersonal, onSave, onCancel }) {
+function RatingForm({ category, categoryLabel, initialTitle, initialPoster, initialValues, initialPersonal, initialSeasons, onSave, onCancel }) {
   const criteria = criteriaFor(category);
   const [title, setTitle] = useState(initialTitle || "");
   const [poster, setPoster] = useState(initialPoster || "");
   const [values, setValues] = useState(initialValues || emptyValues(category));
   const [personal, setPersonal] = useState(typeof initialPersonal === "number" ? initialPersonal : null);
+  const [seasons, setSeasons] = useState(initialSeasons && initialSeasons.length ? initialSeasons : []);
+  const [offen, setOffen] = useState(null);
   const [touched, setTouched] = useState(false);
 
-  const complete = title.trim().length > 0 && isValuesComplete(values, category) && typeof personal === "number";
-  const criteriaScore = computeCriteriaScore(values, category);
-  const finalScore = complete ? computeFinalScore(values, personal, category) : null;
+  const mitStaffeln = seasons.length > 0;
+  const staffelnMoeglich = supportsSeasons(category);
+
+  // Mit Staffeln zaehlt nur noch deren Vollstaendigkeit — der Eintrag
+  // selbst wird dann nicht mehr direkt bewertet.
+  const staffelnVollstaendig = seasons.every(
+    (sn) => isValuesComplete(sn.values, category) && typeof sn.personal === "number"
+  );
+  const complete =
+    title.trim().length > 0 &&
+    (mitStaffeln
+      ? staffelnVollstaendig
+      : isValuesComplete(values, category) && typeof personal === "number");
+
+  const entwurf = { values, personal, seasons };
+  const criteriaScore = entryCriteriaScore(entwurf, category);
+  const finalScore = complete ? entryScore(entwurf, category) : null;
+
+  /* Die erste Staffel uebernimmt die bisherigen Werte des Eintrags.
+     Dadurch aendert sich die Endnote durch das Anlegen nicht. */
+  function staffelHinzufuegen() {
+    setSeasons((prev) => {
+      const nummer = prev.length + 1;
+      const neue = prev.length
+        ? { seasonNumber: nummer, values: emptyValues(category), personal: null }
+        : seasonFromEntry({ values, personal }, nummer);
+      setOffen(prev.length);
+      return [...prev, neue];
+    });
+  }
+
+  function staffelAendern(index, aenderung) {
+    setSeasons((prev) => prev.map((sn, i) => (i === index ? { ...sn, ...aenderung } : sn)));
+  }
+
+  /* Beim Loeschen der letzten Staffel faellt der Eintrag auf die
+     normale Einzelbewertung zurueck und uebernimmt deren Werte. */
+  function staffelLoeschen(index) {
+    setSeasons((prev) => {
+      const rest = prev.filter((_, i) => i !== index);
+      if (!rest.length) {
+        const letzte = prev[index];
+        if (letzte) {
+          setValues({ ...letzte.values });
+          setPersonal(typeof letzte.personal === "number" ? letzte.personal : null);
+        }
+      }
+      setOffen(null);
+      return rest.map((sn, i) => ({ ...sn, seasonNumber: i + 1 }));
+    });
+  }
 
   function handleSave() {
     setTouched(true);
     if (!complete) return;
-    onSave({ title: title.trim(), poster: poster.trim(), values, personal });
+
+    // Mit Staffeln bekommt der Eintrag die Mittelwerte seiner Staffeln
+    // als eigene Werte. So bleibt der Datensatz in sich stimmig und
+    // die Werte stehen bereit, falls spaeter alle Staffeln wegfallen.
+    let werte = values;
+    let bauch = personal;
+    if (mitStaffeln) {
+      werte = {};
+      for (const c of criteria) werte[c.key] = entryCriterionValue(entwurf, c.key);
+      bauch = entryPersonal(entwurf);
+    }
+
+    onSave({
+      title: title.trim(),
+      poster: poster.trim(),
+      values: werte,
+      personal: bauch,
+      seasons: seasons.map((sn, i) => ({ ...sn, seasonNumber: i + 1 })),
+    });
   }
 
   return (
@@ -741,40 +915,136 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
         {poster.trim() && <Poster url={poster.trim()} title={title} size={44} />}
       </div>
 
-      {criteria.map((c) => (
-        <Slider
-          key={c.key}
-          label={c.label}
-          weightLabel={`${Math.round(c.weight * 100)}%`}
-          hint={c.hint}
-          value={values[c.key]}
-          onChange={(v) => setValues((prev) => ({ ...prev, [c.key]: v }))}
-        />
-      ))}
+      {!mitStaffeln && (
+        <>
+          {criteria.map((c) => (
+            <Slider
+              key={c.key}
+              label={c.label}
+              weightLabel={`${Math.round(c.weight * 100)}%`}
+              hint={c.hint}
+              value={values[c.key]}
+              onChange={(v) => setValues((prev) => ({ ...prev, [c.key]: v }))}
+            />
+          ))}
 
-      <div style={{ marginTop: 6, marginBottom: 4, padding: "16px 14px", background: "#141416", border: "1px dashed var(--accent, #C9A227)", borderRadius: 8 }}>
-        <Slider
-          label="Bauchgefühl (rein subjektiv)"
-          weightLabel="25%"
-          hint={`Egal was die ${criteria.length} Kriterien sagen — wie sehr berührt es dich wirklich?`}
-          value={personal}
-          onChange={setPersonal}
-        />
-      </div>
+          <div style={{ marginTop: 6, marginBottom: 4, padding: "16px 14px", background: "#141416", border: "1px dashed var(--accent, #C9A227)", borderRadius: 8 }}>
+            <Slider
+              label="Bauchgefühl (rein subjektiv)"
+              weightLabel="25%"
+              hint={`Egal was die ${criteria.length} Kriterien sagen — wie sehr berührt es dich wirklich?`}
+              value={personal}
+              onChange={setPersonal}
+            />
+          </div>
+        </>
+      )}
+
+      {staffelnMoeglich && (
+        <div style={{ marginTop: 18, marginBottom: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <span style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace" }}>
+              STAFFELN (OPTIONAL)
+            </span>
+            <button
+              onClick={staffelHinzufuegen}
+              style={{
+                padding: "8px 12px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                background: "transparent", color: "var(--accent, #C9A227)",
+                border: "1px solid var(--accent, #C9A227)", fontWeight: 600,
+              }}
+            >
+              + Staffel
+            </button>
+          </div>
+
+          {!mitStaffeln ? (
+            <div style={{ fontSize: 11.5, color: "#77746c", lineHeight: 1.5 }}>
+              Ohne Staffeln bleibt es bei der Einzelbewertung oben. Die erste
+              Staffel übernimmt die dortigen Werte, die Endnote ändert sich
+              dadurch nicht.
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 11.5, color: "#77746c", lineHeight: 1.5, marginBottom: 12 }}>
+                Die Endnote ist der Durchschnitt aller Staffelnoten. Wird die
+                letzte Staffel gelöscht, gilt wieder die Einzelbewertung.
+              </div>
+              {seasons.map((sn, i) => {
+                const fertig = isValuesComplete(sn.values, category) && typeof sn.personal === "number";
+                const aufgeklappt = offen === i;
+                return (
+                  <div key={i} style={{ border: "1px solid #2A2A2E", borderRadius: 8, marginBottom: 10, overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: "#141416" }}>
+                      <button
+                        onClick={() => setOffen(aufgeklappt ? null : i)}
+                        style={{ flex: 1, textAlign: "left", background: "transparent", border: "none", color: "#EDEAE3", fontSize: 14.5, fontWeight: 600, cursor: "pointer", padding: 0 }}
+                      >
+                        {aufgeklappt ? "▾" : "▸"} Staffel {i + 1}
+                      </button>
+                      {fertig ? (
+                        <ScoreBadge score={seasonScore(sn, category)} />
+                      ) : (
+                        <span style={{ fontSize: 12, color: "#d9736a" }}>unvollständig</span>
+                      )}
+                      <button
+                        onClick={() => staffelLoeschen(i)}
+                        title={"Staffel " + (i + 1) + " löschen"}
+                        aria-label={"Staffel " + (i + 1) + " löschen"}
+                        style={{ background: "transparent", border: "none", color: "#d9736a", fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1 }}
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    {aufgeklappt && (
+                      <div style={{ padding: "14px" }}>
+                        {criteria.map((c) => (
+                          <Slider
+                            key={c.key}
+                            label={c.label}
+                            weightLabel={`${Math.round(c.weight * 100)}%`}
+                            hint={c.hint}
+                            value={sn.values[c.key]}
+                            onChange={(v) =>
+                              staffelAendern(i, { values: { ...sn.values, [c.key]: v } })
+                            }
+                          />
+                        ))}
+                        <div style={{ padding: "16px 14px", background: "#141416", border: "1px dashed var(--accent, #C9A227)", borderRadius: 8 }}>
+                          <Slider
+                            label="Bauchgefühl (rein subjektiv)"
+                            weightLabel="25%"
+                            hint="Nur für diese Staffel."
+                            value={sn.personal}
+                            onChange={(v) => staffelAendern(i, { personal: v })}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      )}
 
       <div style={{ fontSize: 13.5, color: "#9A968C", marginTop: 12, lineHeight: 1.8 }}>
         Kriterien-Note: <strong style={{ color: "#EDEAE3" }}>{criteriaScore.toFixed(2)}</strong>
-        {typeof personal === "number" && (
+        {complete && (
           <>
             {" "}· Endnote (live):{" "}
-            <strong style={{ color: "var(--accent, #C9A227)", fontSize: 16 }}>{computeFinalScore(values, personal, category).toFixed(2)}</strong>
+            <strong style={{ color: "var(--accent, #C9A227)", fontSize: 16 }}>{finalScore.toFixed(2)}</strong>
           </>
         )}
       </div>
 
       {touched && !complete && (
         <div style={{ color: "#d9736a", fontSize: 13, marginTop: 10 }}>
-          Bitte Titel eingeben und alle {criteria.length + 1} Werte ({criteria.length} Kriterien + Bauchgefühl) setzen.
+          {mitStaffeln
+            ? "Bitte Titel eingeben und jede Staffel vollständig bewerten."
+            : `Bitte Titel eingeben und alle ${criteria.length + 1} Werte (${criteria.length} Kriterien + Bauchgefühl) setzen.`}
         </div>
       )}
 
@@ -808,7 +1078,8 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
    ============================================================ */
 function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
   const criteria = criteriaFor(category);
-  const criteriaScore = computeCriteriaScore(entry.values, category);
+  const criteriaScore = entryCriteriaScore(entry, category);
+  const staffeln = hasSeasons(entry) ? entry.seasons : null;
   return (
     <div style={{ position: "fixed", inset: 0, background: "#17171A", zIndex: 50, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 40px" }}>
@@ -838,10 +1109,37 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
           <ScoreBadge score={entry.score} size="lg" />
         </div>
 
-        <div style={{ display: "flex", gap: 20, marginBottom: 20, fontSize: 14, color: "#9A968C" }}>
+        <div style={{ display: "flex", gap: 20, marginBottom: 20, fontSize: 14, color: "#9A968C", flexWrap: "wrap" }}>
           <div>Kriterien-Note: <strong style={{ color: "#EDEAE3" }}>{criteriaScore.toFixed(2)}</strong></div>
-          <div>Bauchgefühl: <strong style={{ color: "#EDEAE3" }}>{entry.personal.toFixed(2)}</strong></div>
+          <div>
+            Bauchgefühl:{" "}
+            <strong style={{ color: "#EDEAE3" }}>
+              {typeof entryPersonal(entry) === "number" ? entryPersonal(entry).toFixed(2) : "–"}
+            </strong>
+          </div>
+          {staffeln && <div>{staffeln.length} Staffeln</div>}
         </div>
+
+        {staffeln && (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
+              STAFFELN
+            </div>
+            {staffeln.map((sn, i) => (
+              <div
+                key={sn.seasonNumber || i}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid #232326" }}
+              >
+                <span style={{ fontSize: 14.5 }}>Staffel {sn.seasonNumber || i + 1}</span>
+                <ScoreBadge score={seasonScore(sn, category)} />
+              </div>
+            ))}
+            <div style={{ fontSize: 11.5, color: "#77746c", marginTop: 10, lineHeight: 1.5 }}>
+              Die Endnote ist der Durchschnitt aller Staffelnoten. Die Werte
+              darunter sind die Mittelwerte über alle Staffeln.
+            </div>
+          </div>
+        )}
 
         <div style={{ marginBottom: 24 }}>
           {criteria.map((c) => (
@@ -855,7 +1153,9 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
                   {Math.round(c.weight * 100)}%
                 </span>
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }}>
-                  {typeof entry.values[c.key] === "number" ? entry.values[c.key].toFixed(1) : "–"}
+                  {typeof entryCriterionValue(entry, c.key) === "number"
+                    ? entryCriterionValue(entry, c.key).toFixed(1)
+                    : "–"}
                 </span>
               </div>
             </div>
@@ -865,7 +1165,7 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <span style={{ fontSize: 11, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>25%</span>
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }}>
-                {entry.personal.toFixed(1)}
+                {typeof entryPersonal(entry) === "number" ? entryPersonal(entry).toFixed(1) : "–"}
               </span>
             </div>
           </div>
@@ -939,12 +1239,17 @@ function StatsPage({ ranked }) {
       .filter((g) => g.list.length > 0)
       .map((g) => ({
         ...g,
+        // Jeder Eintrag zaehlt genau einmal. Bei Serien mit Staffeln
+        // geht der Durchschnitt der Staffelwerte je Kriterium ein, nicht
+        // jede Staffel einzeln — sonst haetten lange Serien mehr Gewicht.
         criteria: criteriaFor(g.key).map((c) => {
-          const vals = g.list.map((f) => f.values[c.key]).filter((v) => typeof v === "number");
+          const vals = g.list.map((f) => entryCriterionValue(f, c.key)).filter((v) => typeof v === "number");
           return { ...c, avg: vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0 };
         }),
-        avgPersonal:
-          g.list.reduce((s, f) => s + (typeof f.personal === "number" ? f.personal : 0), 0) / g.list.length,
+        avgPersonal: (() => {
+          const werte = g.list.map(entryPersonal).filter((v) => typeof v === "number");
+          return werte.length ? werte.reduce((a, b) => a + b, 0) / werte.length : 0;
+        })(),
       }));
   }, [ranked, scope]);
 
@@ -956,10 +1261,22 @@ function StatsPage({ ranked }) {
 
   const top10Lists =
     scope === "all"
-      ? CATEGORIES.map((c) => ({
-          label: "Top 10 " + c.label,
-          list: [...ranked[c.key]].sort((a, b) => b.score - a.score).slice(0, 10),
-        }))
+      ? [
+          // Gesamtliste zuerst: alle Kategorien gemeinsam nach Endnote.
+          // Die Kategorie steht als Farbpunkt am Eintrag, da hier Filme,
+          // Serien, Anime und Spiele nebeneinanderstehen.
+          {
+            label: "Top 10 insgesamt",
+            mitKategorie: true,
+            list: CATEGORY_KEYS.flatMap((k) => ranked[k])
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 10),
+          },
+          ...CATEGORIES.map((c) => ({
+            label: "Top 10 " + c.label,
+            list: [...ranked[c.key]].sort((a, b) => b.score - a.score).slice(0, 10),
+          })),
+        ]
       : [{ label: "Top 10", list: [...scopedList].sort((a, b) => b.score - a.score).slice(0, 10) }];
 
   return (
@@ -1068,6 +1385,15 @@ function StatsPage({ ranked }) {
                     <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                       <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 18, flexShrink: 0 }}>{i + 1}</span>
                       <Poster url={f.poster} title={f.title} size={28} />
+                      {group.mitKategorie && (
+                        <span
+                          title={(CATEGORIES.find((c) => c.key === f.category) || {}).label}
+                          style={{
+                            width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                            background: accentFor(f.category),
+                          }}
+                        />
+                      )}
                       <span style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</span>
                     </div>
                     <ScoreBadge score={f.score} />
@@ -1124,6 +1450,13 @@ export default function App() {
       poster: typeof e.poster === "string" ? e.poster : "",
       posterSource: e.posterSource === "manual" || e.posterSource === "auto" ? e.posterSource : undefined,
       backdrop: typeof e.backdrop === "string" ? e.backdrop : "",
+      seasons: Array.isArray(e.seasons)
+        ? e.seasons.map((sn, i) => ({
+            seasonNumber: typeof sn.seasonNumber === "number" ? sn.seasonNumber : i + 1,
+            values: sn.values || {},
+            personal: sn.personal,
+          }))
+        : [],
       genre: Array.isArray(e.genre) ? e.genre : [],
       values: e.values,
       personal: e.personal,
@@ -1195,6 +1528,7 @@ export default function App() {
         try {
           const saved = await api.update(job.entry.id, {
             ...job.entry,
+            seasons: job.entry.seasons || [],
             category: job.catKey,
             poster: neuesPoster || "",
             backdrop: neuesBackdrop || "",
@@ -1222,7 +1556,7 @@ export default function App() {
     for (const cat of CATEGORIES) {
       const list = (items[cat.key] || []).map((f) => ({
         ...f,
-        score: computeFinalScore(f.values, f.personal, cat.key),
+        score: entryScore(f, cat.key),
       }));
       list.sort((a, b) => b.score - a.score);
       result[cat.key] = list;
@@ -1242,18 +1576,47 @@ export default function App() {
      einmalig nachtraeglich, falls beim Wechsel noch keine Daten da
      waren. Bei spaeteren Aenderungen (z. B. neue Bewertung) bleibt sie
      stehen, sonst wuerde der Hintergrund beim Bewerten springen. */
-  const backdropRef = useRef({ cat: null, list: [] });
-  const [backdropList, setBackdropList] = useState([]);
+  /* Gespeichert wird nur die gemischte REIHENFOLGE (als IDs), nicht
+     die Eintraege selbst. Wuerde man die Objekte festhalten, blieben
+     sie auf dem Stand des ersten Ladens stehen — und genau dann sind
+     die Backdrops noch nicht nachgeladen, sodass der Kopfbereich
+     dauerhaft auf die Poster zurueckfiele. */
+  const backdropRef = useRef({ cat: null, ids: [] });
+  const [backdropIds, setBackdropIds] = useState([]);
   const [backdropTitle, setBackdropTitle] = useState("");
 
   useEffect(() => {
-    const posters = (rankedByCategory[category] || []).filter((f) => f.backdrop || f.poster);
-    const kategorieGewechselt = backdropRef.current.cat !== category;
-    const nochLeer = backdropRef.current.list.length === 0;
-    if (!kategorieGewechselt && !nochLeer) return;
-    backdropRef.current = { cat: category, list: shuffled(posters) };
-    setBackdropList(backdropRef.current.list);
+    const infrage = (rankedByCategory[category] || [])
+      .filter((f) => f.backdrop || f.poster)
+      .map((f) => f.id);
+    const bisher = backdropRef.current.ids;
+
+    let ids;
+    if (backdropRef.current.cat !== category) {
+      // Kategoriewechsel: komplett neu mischen.
+      ids = shuffled(infrage);
+    } else {
+      // Sonst Reihenfolge behalten und nur Zu- und Abgaenge pflegen —
+      // so springt der Hintergrund beim Bewerten nicht.
+      const erlaubt = new Set(infrage);
+      const behalten = bisher.filter((id) => erlaubt.has(id));
+      const bekannt = new Set(bisher);
+      const neu = shuffled(infrage.filter((id) => !bekannt.has(id)));
+      if (!neu.length && behalten.length === bisher.length) return;
+      ids = [...behalten, ...neu];
+    }
+
+    backdropRef.current = { cat: category, ids };
+    setBackdropIds(ids);
   }, [category, rankedByCategory]);
+
+  /* Die Eintraege werden bei jedem Rendern frisch aufgeloest. Dadurch
+     wirkt ein nachgeladenes Backdrop sofort, ohne die Reihenfolge zu
+     veraendern. */
+  const backdropList = useMemo(() => {
+    const nach = new Map((rankedByCategory[category] || []).map((f) => [f.id, f]));
+    return backdropIds.map((id) => nach.get(id)).filter(Boolean);
+  }, [backdropIds, rankedByCategory, category]);
 
   // ---- Angezeigte Liste: Suche + Filter (Bereich + Sortierung) ----
   const filtered = useMemo(() => {
@@ -1297,7 +1660,7 @@ export default function App() {
   }, [currentList, selectedId]);
 
   // ---- CRUD ----
-  async function addEntry({ title, poster, values, personal }) {
+  async function addEntry({ title, poster, values, personal, seasons }) {
     setBusy(true);
     try {
       const created = await api.create({
@@ -1307,6 +1670,7 @@ export default function App() {
         posterSource: poster ? "manual" : undefined,
         values,
         personal,
+        seasons: seasons || [],
       });
       setItems((prev) => ({ ...prev, [category]: [normalizeEntry(created), ...prev[category]] }));
       setSaveError("");
@@ -1318,7 +1682,7 @@ export default function App() {
     }
   }
 
-  async function updateEntry(id, { title, poster, values, personal }) {
+  async function updateEntry(id, { title, poster, values, personal, seasons }) {
     const current = (items[category] || []).find((f) => f.id === id);
     if (!current) return;
 
@@ -1350,6 +1714,7 @@ export default function App() {
         backdrop: nextBackdrop,
         values,
         personal,
+        seasons: seasons || [],
         createdAt: current.createdAt,
       });
       setItems((prev) => ({
@@ -1382,10 +1747,10 @@ export default function App() {
   }
 
   // ---- Poster neu suchen lassen ----
-  async function resetPosters() {
+  async function bilderZuruecksetzen(pfad, bezeichnung) {
     setBusy(true);
     try {
-      const res = await fetch("/api/reset-posters", { method: "POST" });
+      const res = await fetch(pfad, { method: "POST" });
       if (!res.ok) throw new Error("Fehlgeschlagen (" + res.status + ")");
       const data = await res.json();
       // Erneute Suche im Client wieder freigeben
@@ -1393,14 +1758,17 @@ export default function App() {
       const fresh = await api.loadAll();
       setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (fresh[k] || []).map(normalizeEntry)])));
       setSaveError(
-        data.zurueckgesetzt + " Poster werden neu gesucht. Das dauert einen Moment."
+        data.zurueckgesetzt + " " + bezeichnung + " werden neu geladen. Das dauert einen Moment."
       );
     } catch (e) {
-      setSaveError("Poster-Rücksetzung fehlgeschlagen: " + e.message);
+      setSaveError(bezeichnung + "-Rücksetzung fehlgeschlagen: " + e.message);
     } finally {
       setBusy(false);
     }
   }
+
+  const resetPosters = () => bilderZuruecksetzen("/api/reset-posters", "Poster");
+  const resetBackdrops = () => bilderZuruecksetzen("/api/reset-backdrops", "Hintergrundbilder");
 
   // ---- Export ----
   function buildExportRows(scopeAll) {
@@ -1416,7 +1784,11 @@ export default function App() {
           backdrop: f.backdrop || "",
           genre: (f.genre || []).join("|"),
           endnote: f.score,
-          kriterienNote: computeCriteriaScore(f.values, catKey),
+          staffeln: hasSeasons(f) ? f.seasons.length : 0,
+          staffelnoten: hasSeasons(f)
+            ? f.seasons.map((sn) => seasonScore(sn, catKey).toFixed(2)).join("|")
+            : "",
+          kriterienNote: entryCriteriaScore(f, catKey),
           bauchgefuehl: f.personal,
           erstelltAm: f.createdAt ? new Date(f.createdAt).toISOString() : "",
           ...Object.fromEntries(criteriaFor(catKey).map((c) => [c.key, f.values[c.key]])),
@@ -1433,7 +1805,7 @@ export default function App() {
       const payload = { exportedAt: new Date().toISOString(), scope: scopeName, data: items };
       downloadFile(`bewertungen-${scopeName}-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
     } else {
-      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
+      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "staffeln", "staffelnoten", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
       const lines = [headers.join(";")];
       rows.forEach((r) => {
         lines.push(headers.map((h) => csvEscape(r[h])).join(";"));
@@ -1472,6 +1844,7 @@ export default function App() {
                 title: entry.title.trim(),
                 poster: typeof entry.poster === "string" ? entry.poster : "",
                 backdrop: typeof entry.backdrop === "string" ? entry.backdrop : "",
+                seasons: gueltigeStaffeln(entry.seasons, catKey),
                 genre: Array.isArray(entry.genre) ? entry.genre : [],
                 values: entry.values,
                 personal: entry.personal,
@@ -1690,6 +2063,7 @@ export default function App() {
               initialPoster={editingEntry.poster}
               initialValues={editingEntry.values}
               initialPersonal={editingEntry.personal}
+              initialSeasons={editingEntry.seasons}
               onSave={(payload) => updateEntry(editingEntry.id, payload)}
               onCancel={() => setMode("list")}
             />
@@ -1746,6 +2120,24 @@ export default function App() {
                     <div style={{ fontSize: 11, color: "#77746c", marginTop: 8, lineHeight: 1.5 }}>
                       Verwirft automatisch gefundene Poster und sucht sie neu.
                       Selbst eingetragene Poster und alle Bewertungen bleiben erhalten.
+                    </div>
+
+                    <button
+                      onClick={resetBackdrops}
+                      disabled={busy}
+                      style={{
+                        width: "100%", padding: "12px", borderRadius: 8, fontSize: 14,
+                        marginTop: 12,
+                        background: "transparent", color: "var(--accent, #C9A227)",
+                        border: "1px solid var(--accent, #C9A227)", cursor: "pointer", fontWeight: 600,
+                        opacity: busy ? 0.5 : 1,
+                      }}
+                    >
+                      Backdrops neu laden
+                    </button>
+                    <div style={{ fontSize: 11, color: "#77746c", marginTop: 8, lineHeight: 1.5 }}>
+                      Verwirft nur die breiten Hintergrundbilder des Kopfbereichs.
+                      Poster und Bewertungen bleiben unberührt.
                     </div>
                   </div>
 

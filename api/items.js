@@ -1,4 +1,44 @@
-import { sql, ensureReady, rowToItem, validateItem, criteriaKeysFor, CATEGORIES } from "./_db.js";
+import {
+  sql, ensureReady, rowToItem, rowToSeason, validateItem,
+  criteriaKeysFor, CATEGORIES, supportsSeasons,
+} from "./_db.js";
+
+/**
+ * Schreibt die Staffeln eines Eintrags neu. Es wird ersetzt statt
+ * einzeln abgeglichen: die Liste ist kurz, und so kann keine
+ * verwaiste Staffel zurueckbleiben.
+ */
+async function saveSeasons(itemId, category, seasons) {
+  await sql`DELETE FROM seasons WHERE item_id = ${itemId}`;
+  if (!supportsSeasons(category) || !Array.isArray(seasons) || !seasons.length) return;
+
+  const now = Date.now();
+  for (let i = 0; i < seasons.length; i++) {
+    const s = seasons[i];
+    const v = s.values || {};
+    await sql`
+      INSERT INTO seasons
+        (id, item_id, season_number, story, charaktere, unterhaltung, emotion,
+         inszenierung, schauspiel, sound, personal, created_at, updated_at)
+      VALUES
+        (${itemId + "_s" + (i + 1)}, ${itemId}, ${i + 1},
+         ${v.story}, ${v.charaktere}, ${v.unterhaltung}, ${v.emotion},
+         ${v.inszenierung}, ${v.schauspiel}, ${v.sound}, ${s.personal},
+         ${s.createdAt || now}, ${now})
+    `;
+  }
+}
+
+/** Laedt die Staffeln zu mehreren Eintraegen, gruppiert nach item_id. */
+async function loadSeasons() {
+  const rows = await sql`SELECT * FROM seasons ORDER BY item_id, season_number`;
+  const nach = new Map();
+  for (const r of rows) {
+    if (!nach.has(r.item_id)) nach.set(r.item_id, []);
+    nach.get(r.item_id).push(rowToSeason(r));
+  }
+  return nach;
+}
 
 /**
  * Bringt die Kriterien-Werte in die feste Spaltenreihenfolge der
@@ -44,9 +84,11 @@ export default async function handler(req, res) {
 /** GET /api/items -> { movie: [...], series: [...], anime: [...] } */
 async function list(req, res) {
   const rows = await sql`SELECT * FROM media_items`;
+  const staffeln = await loadSeasons();
   const grouped = Object.fromEntries(CATEGORIES.map((c) => [c, []]));
   for (const r of rows) {
     const item = rowToItem(r);
+    item.seasons = staffeln.get(r.id) || [];
     if (grouped[item.category]) grouped[item.category].push(item);
   }
   return res.status(200).json(grouped);
@@ -76,7 +118,11 @@ async function create(req, res) {
        ${body.createdAt || now}, ${now})
     RETURNING *
   `;
-  return res.status(201).json(rowToItem(rows[0]));
+
+  await saveSeasons(id, body.category, body.seasons);
+  const angelegt = rowToItem(rows[0]);
+  angelegt.seasons = (await loadSeasons()).get(id) || [];
+  return res.status(201).json(angelegt);
 }
 
 /** PUT /api/items?id=... — Eintrag vollständig aktualisieren */
@@ -113,7 +159,11 @@ async function update(req, res) {
     RETURNING *
   `;
   if (!rows.length) return res.status(404).json({ error: "Eintrag nicht gefunden." });
-  return res.status(200).json(rowToItem(rows[0]));
+
+  await saveSeasons(id, body.category, body.seasons);
+  const gespeichert = rowToItem(rows[0]);
+  gespeichert.seasons = (await loadSeasons()).get(id) || [];
+  return res.status(200).json(gespeichert);
 }
 
 /** DELETE /api/items?id=... */
