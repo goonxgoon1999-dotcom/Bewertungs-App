@@ -341,18 +341,20 @@ function BackdropBild({ entry, className }) {
 
   return (
     <div className={className} style={{ position: "absolute", inset: 0, opacity: 0.8 }}>
-      {/* Fuellung: dasselbe Bild, vergroessert und unscharf. Das
-          Hochskalieren verdeckt die weichen Kanten des Weichzeichners. */}
+      {/* Fuellung: dasselbe Bild formatfuellend, stark vergroessert und
+          unscharf. Der Weichzeichner laesst die Kanten ausfransen —
+          deshalb wird deutlich ueber den Rand hinaus skaliert, sonst
+          blieben helle Streifen an den Seiten stehen. */}
       <div
         style={{
           ...basis,
           backgroundSize: "cover",
-          filter: "blur(28px)",
-          transform: "scale(1.18)",
+          filter: "blur(30px)",
+          transform: "scale(1.45)",
         }}
       />
-      {/* Das Poster selbst: vollstaendig sichtbar, unverzerrt. */}
-      <div style={{ ...basis, backgroundSize: "contain" }} />
+      {/* Darueber dasselbe Bild mittig, unverzerrt und in voller Hoehe. */}
+      <div style={{ ...basis, backgroundSize: "auto 100%" }} />
     </div>
   );
 }
@@ -1942,15 +1944,26 @@ export default function App() {
           .tab-btn { font-size: 11.5px; padding: 13px 3px; }
           .tab-emoji { display: none; }
         }
+
+        /* Etwas hoeher als der Inhalt braucht, damit vom Breitbild mehr
+           zu sehen ist. */
+        .kopfbereich { min-height: 340px; }
+        @media (min-width: 700px) { .kopfbereich { min-height: 400px; } }
       `}</style>
 
       {/* Header — mit laufendem Poster-Hintergrund */}
       <div
+        className="kopfbereich"
         style={{
           position: "relative",
           overflow: "hidden",
           borderBottom: "1px solid #2A2A2E",
           background: "linear-gradient(180deg, #1D1D21 0%, #17171A 100%)",
+          // Der Inhalt sitzt unten; die zusaetzliche Hoehe kommt oben
+          // dazu und zeigt mehr vom Breitbild.
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "flex-end",
         }}
       >
         <PosterBackdrop list={backdropList} onTitleChange={setBackdropTitle} />
