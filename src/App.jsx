@@ -1,9 +1,18 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 
 /* ============================================================
-   KRITERIEN-DEFINITION
+   KRITERIEN-DEFINITION — je Kategorie eigene Kriterien
+
+   Film, Serie und Anime teilen sich dieselben sieben Datenfelder
+   und Gewichte. Anime beschriftet zwei davon nur anders: aus
+   "Inszenierung" wird "Animation", aus "Schauspiel" wird
+   "Synchronstimme". Die Feldnamen (inszenierung, schauspiel) und
+   die Gewichte bleiben identisch — gespeicherte Werte gelten also
+   unverändert weiter, es ändert sich ausschließlich die Anzeige.
+
+   Spiele haben eigene Kriterien und dadurch eigene Datenfelder.
    ============================================================ */
-const CRITERIA = [
+const AV_CRITERIA = [
   { key: "story", label: "Story & Drehbuch", weight: 0.25, hint: "Handlung, Aufbau, Logik, Dialoge, Pacing" },
   { key: "charaktere", label: "Charaktere", weight: 0.20, hint: "Entwicklung, Tiefe, Beziehungen, Motivation" },
   { key: "unterhaltung", label: "Unterhaltung", weight: 0.15, hint: "Wie fesselnd und unterhaltsam ist das Werk?" },
@@ -13,26 +22,67 @@ const CRITERIA = [
   { key: "sound", label: "Soundtrack / Sounddesign", weight: 0.05, hint: "Musik, Score, Soundeffekte" },
 ];
 
+/* Nur die Beschriftung weicht ab — Feld und Gewicht bleiben gleich. */
+const ANIME_LABELS = {
+  inszenierung: { label: "Animation", hint: "Animationsqualität, Bildgestaltung, Atmosphäre" },
+  schauspiel: { label: "Synchronstimme", hint: "Sprecherleistung, Chemie, Performance" },
+};
+
+const ANIME_CRITERIA = AV_CRITERIA.map((c) =>
+  ANIME_LABELS[c.key] ? { ...c, ...ANIME_LABELS[c.key] } : c
+);
+
+const GAME_CRITERIA = [
+  { key: "gameplay", label: "Gameplay", weight: 0.25, hint: "Steuerung, Spielmechanik, Spielgefühl" },
+  { key: "story", label: "Story", weight: 0.25, hint: "Handlung, Aufbau, Erzählung" },
+  { key: "charaktere", label: "Charaktere", weight: 0.15, hint: "Entwicklung, Tiefe, Motivation" },
+  { key: "welt", label: "Welt", weight: 0.15, hint: "Spielwelt, Leveldesign, Atmosphäre" },
+  { key: "grafik", label: "Grafik", weight: 0.10, hint: "Optik, Artdesign, technische Umsetzung" },
+  { key: "sound", label: "Sound", weight: 0.05, hint: "Musik, Effekte, Vertonung" },
+  { key: "wiederspielwert", label: "Wiederspielwert", weight: 0.05, hint: "Motivation für weitere Durchgänge, Umfang" },
+];
+
+const CRITERIA_BY_CATEGORY = {
+  movie: AV_CRITERIA,
+  series: AV_CRITERIA,
+  anime: ANIME_CRITERIA,
+  game: GAME_CRITERIA,
+};
+
+/** Die Kriterien einer Kategorie — nie global, immer über diese Funktion. */
+function criteriaFor(category) {
+  return CRITERIA_BY_CATEGORY[category] || AV_CRITERIA;
+}
+
 const CATEGORIES = [
   { key: "movie", label: "Filme", singular: "Film" },
   { key: "series", label: "Serien", singular: "Serie" },
   { key: "anime", label: "Anime", singular: "Anime" },
+  { key: "game", label: "Spiele", singular: "Spiel" },
 ];
+
+const CATEGORY_KEYS = CATEGORIES.map((c) => c.key);
+
+/* Alle vorkommenden Kriterien-Felder, in stabiler Reihenfolge —
+   für den CSV-Export über mehrere Kategorien hinweg. */
+const ALL_CRITERIA_KEYS = Array.from(
+  new Set(CATEGORY_KEYS.flatMap((k) => criteriaFor(k).map((c) => c.key)))
+);
 
 /* ============================================================
    BERECHNUNG
    ============================================================ */
-function computeCriteriaScore(values) {
+function computeCriteriaScore(values, category) {
   let total = 0;
-  for (const c of CRITERIA) {
+  for (const c of criteriaFor(category)) {
     const v = values ? values[c.key] : undefined;
     if (typeof v === "number") total += v * c.weight;
   }
   return Math.round(total * 100) / 100;
 }
 
-function computeFinalScore(values, personal) {
-  const criteriaScore = computeCriteriaScore(values);
+function computeFinalScore(values, personal, category) {
+  const criteriaScore = computeCriteriaScore(values, category);
   if (typeof personal !== "number") return criteriaScore;
   return Math.round((0.75 * criteriaScore + 0.25 * personal) * 100) / 100;
 }
@@ -75,14 +125,16 @@ const SORT_OPTIONS = [
 
 const DEFAULT_FILTER = { sort: "score-desc", min: 0, max: 10 };
 
-function emptyValues() {
+function emptyValues(category) {
   const v = {};
-  for (const c of CRITERIA) v[c.key] = null;
+  for (const c of criteriaFor(category)) v[c.key] = null;
   return v;
 }
 
-function isValuesComplete(values) {
-  return CRITERIA.every((c) => typeof values[c.key] === "number" && values[c.key] >= 0 && values[c.key] <= 10);
+function isValuesComplete(values, category) {
+  return criteriaFor(category).every(
+    (c) => values && typeof values[c.key] === "number" && values[c.key] >= 0 && values[c.key] <= 10
+  );
 }
 
 function csvEscape(s) {
@@ -453,16 +505,17 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
 /* ============================================================
    BEWERTUNGSFORMULAR (Neu + Bearbeiten) — für jeden Eintrag identisch
    ============================================================ */
-function RatingForm({ categoryLabel, initialTitle, initialPoster, initialValues, initialPersonal, onSave, onCancel }) {
+function RatingForm({ category, categoryLabel, initialTitle, initialPoster, initialValues, initialPersonal, onSave, onCancel }) {
+  const criteria = criteriaFor(category);
   const [title, setTitle] = useState(initialTitle || "");
   const [poster, setPoster] = useState(initialPoster || "");
-  const [values, setValues] = useState(initialValues || emptyValues());
+  const [values, setValues] = useState(initialValues || emptyValues(category));
   const [personal, setPersonal] = useState(typeof initialPersonal === "number" ? initialPersonal : null);
   const [touched, setTouched] = useState(false);
 
-  const complete = title.trim().length > 0 && isValuesComplete(values) && typeof personal === "number";
-  const criteriaScore = computeCriteriaScore(values);
-  const finalScore = complete ? computeFinalScore(values, personal) : null;
+  const complete = title.trim().length > 0 && isValuesComplete(values, category) && typeof personal === "number";
+  const criteriaScore = computeCriteriaScore(values, category);
+  const finalScore = complete ? computeFinalScore(values, personal, category) : null;
 
   function handleSave() {
     setTouched(true);
@@ -507,7 +560,7 @@ function RatingForm({ categoryLabel, initialTitle, initialPoster, initialValues,
         {poster.trim() && <Poster url={poster.trim()} title={title} size={44} />}
       </div>
 
-      {CRITERIA.map((c) => (
+      {criteria.map((c) => (
         <Slider
           key={c.key}
           label={c.label}
@@ -522,7 +575,7 @@ function RatingForm({ categoryLabel, initialTitle, initialPoster, initialValues,
         <Slider
           label="Bauchgefühl (rein subjektiv)"
           weightLabel="25%"
-          hint="Egal was die 7 Kriterien sagen — wie sehr berührt es dich wirklich?"
+          hint={`Egal was die ${criteria.length} Kriterien sagen — wie sehr berührt es dich wirklich?`}
           value={personal}
           onChange={setPersonal}
         />
@@ -533,14 +586,14 @@ function RatingForm({ categoryLabel, initialTitle, initialPoster, initialValues,
         {typeof personal === "number" && (
           <>
             {" "}· Endnote (live):{" "}
-            <strong style={{ color: "#C9A227", fontSize: 16 }}>{computeFinalScore(values, personal).toFixed(2)}</strong>
+            <strong style={{ color: "#C9A227", fontSize: 16 }}>{computeFinalScore(values, personal, category).toFixed(2)}</strong>
           </>
         )}
       </div>
 
       {touched && !complete && (
         <div style={{ color: "#d9736a", fontSize: 13, marginTop: 10 }}>
-          Bitte Titel eingeben und alle 8 Werte (7 Kriterien + Bauchgefühl) setzen.
+          Bitte Titel eingeben und alle {criteria.length + 1} Werte ({criteria.length} Kriterien + Bauchgefühl) setzen.
         </div>
       )}
 
@@ -572,8 +625,9 @@ function RatingForm({ categoryLabel, initialTitle, initialPoster, initialValues,
 /* ============================================================
    DETAILANSICHT — identisch für jeden Eintrag
    ============================================================ */
-function DetailView({ entry, singular, onBack, onEdit, onDelete }) {
-  const criteriaScore = computeCriteriaScore(entry.values);
+function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
+  const criteria = criteriaFor(category);
+  const criteriaScore = computeCriteriaScore(entry.values, category);
   return (
     <div style={{ position: "fixed", inset: 0, background: "#17171A", zIndex: 50, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 40px" }}>
@@ -609,7 +663,7 @@ function DetailView({ entry, singular, onBack, onEdit, onDelete }) {
         </div>
 
         <div style={{ marginBottom: 24 }}>
-          {CRITERIA.map((c) => (
+          {criteria.map((c) => (
             <div key={c.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: "1px solid #232326" }}>
               <div>
                 <div style={{ fontSize: 14.5, fontWeight: 600 }}>{c.label}</div>
@@ -620,7 +674,7 @@ function DetailView({ entry, singular, onBack, onEdit, onDelete }) {
                   {Math.round(c.weight * 100)}%
                 </span>
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }}>
-                  {entry.values[c.key].toFixed(1)}
+                  {typeof entry.values[c.key] === "number" ? entry.values[c.key].toFixed(1) : "–"}
                 </span>
               </div>
             </div>
@@ -668,42 +722,50 @@ function statsFor(list) {
   return { count, avg, max, min };
 }
 
-const STATS_SCOPES = [
-  { key: "all", label: "Alle" },
-  { key: "movie", label: "Filme" },
-  { key: "series", label: "Serien" },
-  { key: "anime", label: "Anime" },
-];
+const STATS_SCOPES = [{ key: "all", label: "Alle" }, ...CATEGORIES.map((c) => ({ key: c.key, label: c.label }))];
 
 function StatsPage({ ranked }) {
   const [scope, setScope] = useState("all");
 
   const overall = useMemo(() => {
-    const all = [...ranked.movie, ...ranked.series, ...ranked.anime];
+    const all = CATEGORY_KEYS.flatMap((k) => ranked[k]);
     return {
-      countMovie: ranked.movie.length,
-      countSeries: ranked.series.length,
-      countAnime: ranked.anime.length,
+      counts: Object.fromEntries(CATEGORY_KEYS.map((k) => [k, ranked[k].length])),
       countTotal: all.length,
       ...statsFor(all),
     };
   }, [ranked]);
 
   const scopedList = useMemo(() => {
-    if (scope === "all") return [...ranked.movie, ...ranked.series, ...ranked.anime];
+    if (scope === "all") return CATEGORY_KEYS.flatMap((k) => ranked[k]);
     return ranked[scope];
   }, [ranked, scope]);
 
   const scopedStats = statsFor(scopedList);
 
-  const criteriaAverages = CRITERIA.map((c) => {
-    const vals = scopedList.map((f) => f.values[c.key]).filter((v) => typeof v === "number");
-    const avg = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0;
-    return { ...c, avg };
-  });
-  const avgPersonal = scopedList.length
-    ? scopedList.reduce((s, f) => s + (typeof f.personal === "number" ? f.personal : 0), 0) / scopedList.length
-    : 0;
+  /* Kriterien-Durchschnitte werden ausschließlich innerhalb einer
+     Kategorie gebildet. Bei "Alle" gibt es deshalb einen Block je
+     Kategorie statt eines gemeinsamen — die Kriterien von Spielen
+     und Filmen sind schlicht nicht dieselben und dürfen nicht in
+     einen Topf. */
+  const criteriaGroups = useMemo(() => {
+    const base =
+      scope === "all"
+        ? CATEGORIES.map((c) => ({ key: c.key, label: c.label, list: ranked[c.key] }))
+        : [{ key: scope, label: null, list: ranked[scope] }];
+
+    return base
+      .filter((g) => g.list.length > 0)
+      .map((g) => ({
+        ...g,
+        criteria: criteriaFor(g.key).map((c) => {
+          const vals = g.list.map((f) => f.values[c.key]).filter((v) => typeof v === "number");
+          return { ...c, avg: vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0 };
+        }),
+        avgPersonal:
+          g.list.reduce((s, f) => s + (typeof f.personal === "number" ? f.personal : 0), 0) / g.list.length,
+      }));
+  }, [ranked, scope]);
 
   const bands = DISTRIBUTION_BANDS.map((b) => ({
     ...b,
@@ -713,20 +775,19 @@ function StatsPage({ ranked }) {
 
   const top10Lists =
     scope === "all"
-      ? [
-          { label: "Top 10 Filme", list: [...ranked.movie].sort((a, b) => b.score - a.score).slice(0, 10) },
-          { label: "Top 10 Serien", list: [...ranked.series].sort((a, b) => b.score - a.score).slice(0, 10) },
-          { label: "Top 10 Anime", list: [...ranked.anime].sort((a, b) => b.score - a.score).slice(0, 10) },
-        ]
+      ? CATEGORIES.map((c) => ({
+          label: "Top 10 " + c.label,
+          list: [...ranked[c.key]].sort((a, b) => b.score - a.score).slice(0, 10),
+        }))
       : [{ label: "Top 10", list: [...scopedList].sort((a, b) => b.score - a.score).slice(0, 10) }];
 
   return (
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
       <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>Gesamtstatistik</h2>
       <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-        <StatCard label="FILME" value={overall.countMovie} />
-        <StatCard label="SERIEN" value={overall.countSeries} />
-        <StatCard label="ANIME" value={overall.countAnime} />
+        {CATEGORIES.map((c) => (
+          <StatCard key={c.key} label={c.label.toUpperCase()} value={overall.counts[c.key]} />
+        ))}
         <StatCard label="GESAMT" value={overall.countTotal} />
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
@@ -766,28 +827,41 @@ function StatsPage({ ranked }) {
           </div>
 
           <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 14px" }}>Ø je Kriterium</h3>
-          <div style={{ marginBottom: 12 }}>
-            {criteriaAverages.map((c) => (
-              <div key={c.key} style={{ marginBottom: 12 }}>
+          {scope === "all" && (
+            <div style={{ fontSize: 12, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
+              Getrennt nach Kategorie — die Kriterien unterscheiden sich je Kategorie
+              und werden deshalb nicht zusammengerechnet.
+            </div>
+          )}
+          {criteriaGroups.map((group) => (
+            <div key={group.key} style={{ marginBottom: 18 }}>
+              {group.label && (
+                <div style={{ fontSize: 12, letterSpacing: 1, color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
+                  {group.label.toUpperCase()}
+                </div>
+              )}
+              {group.criteria.map((c) => (
+                <div key={c.key} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                    <span>{c.label} <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>{Math.round(c.weight * 100)}%</span></span>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{c.avg.toFixed(2)}</span>
+                  </div>
+                  <div style={{ height: 8, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{ width: `${(c.avg / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
+                  </div>
+                </div>
+              ))}
+              <div style={{ marginBottom: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-                  <span>{c.label} <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>{Math.round(c.weight * 100)}%</span></span>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{c.avg.toFixed(2)}</span>
+                  <span>Bauchgefühl <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>25% der Endnote</span></span>
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{group.avgPersonal.toFixed(2)}</span>
                 </div>
                 <div style={{ height: 8, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ width: `${(c.avg / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
+                  <div style={{ width: `${(group.avgPersonal / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
                 </div>
               </div>
-            ))}
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-                <span>Bauchgefühl <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>25% der Endnote</span></span>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{avgPersonal.toFixed(2)}</span>
-              </div>
-              <div style={{ height: 8, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
-                <div style={{ width: `${(avgPersonal / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
-              </div>
             </div>
-          </div>
+          ))}
 
           <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "24px 0 14px" }}>Bewertungsverteilung</h3>
           <div style={{ marginBottom: 28 }}>
@@ -839,7 +913,7 @@ function StatCard({ label, value, color }) {
 /* ============================================================
    HAUPT-APP
    ============================================================ */
-const EMPTY_ITEMS = { movie: [], series: [], anime: [] };
+const EMPTY_ITEMS = Object.fromEntries(CATEGORY_KEYS.map((k) => [k, []]));
 
 export default function App() {
   const [items, setItems] = useState(EMPTY_ITEMS);
@@ -882,11 +956,7 @@ export default function App() {
       try {
         const data = await api.loadAll();
         if (cancelled) return;
-        setItems({
-          movie: (data.movie || []).map(normalizeEntry),
-          series: (data.series || []).map(normalizeEntry),
-          anime: (data.anime || []).map(normalizeEntry),
-        });
+        setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (data[k] || []).map(normalizeEntry)])));
         setSaveError("");
       } catch (e) {
         if (!cancelled) {
@@ -916,7 +986,7 @@ export default function App() {
 
     (async () => {
       const todo = [];
-      for (const catKey of ["movie", "series", "anime"]) {
+      for (const catKey of CATEGORY_KEYS) {
         for (const entry of items[catKey] || []) {
           if (entry.poster) continue;
           if (posterAttempted.current.has(entry.id)) continue;
@@ -962,7 +1032,7 @@ export default function App() {
     for (const cat of CATEGORIES) {
       const list = (items[cat.key] || []).map((f) => ({
         ...f,
-        score: computeFinalScore(f.values, f.personal),
+        score: computeFinalScore(f.values, f.personal, cat.key),
       }));
       list.sort((a, b) => b.score - a.score);
       result[cat.key] = list;
@@ -1102,11 +1172,7 @@ export default function App() {
       // Erneute Suche im Client wieder freigeben
       posterAttempted.current = new Set();
       const fresh = await api.loadAll();
-      setItems({
-        movie: (fresh.movie || []).map(normalizeEntry),
-        series: (fresh.series || []).map(normalizeEntry),
-        anime: (fresh.anime || []).map(normalizeEntry),
-      });
+      setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (fresh[k] || []).map(normalizeEntry)])));
       setSaveError(
         data.zurueckgesetzt + " Poster werden neu gesucht. Das dauert einen Moment."
       );
@@ -1130,10 +1196,10 @@ export default function App() {
           poster: f.poster || "",
           genre: (f.genre || []).join("|"),
           endnote: f.score,
-          kriterienNote: computeCriteriaScore(f.values),
+          kriterienNote: computeCriteriaScore(f.values, catKey),
           bauchgefuehl: f.personal,
           erstelltAm: f.createdAt ? new Date(f.createdAt).toISOString() : "",
-          ...Object.fromEntries(CRITERIA.map((c) => [c.key, f.values[c.key]])),
+          ...Object.fromEntries(criteriaFor(catKey).map((c) => [c.key, f.values[c.key]])),
         });
       });
     });
@@ -1147,7 +1213,7 @@ export default function App() {
       const payload = { exportedAt: new Date().toISOString(), scope: scopeName, data: items };
       downloadFile(`bewertungen-${scopeName}-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
     } else {
-      const headers = ["kategorie", "position", "titel", "poster", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...CRITERIA.map((c) => c.key)];
+      const headers = ["kategorie", "position", "titel", "poster", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
       const lines = [headers.join(";")];
       rows.forEach((r) => {
         lines.push(headers.map((h) => csvEscape(r[h])).join(";"));
@@ -1165,9 +1231,9 @@ export default function App() {
       try {
         const parsed = JSON.parse(String(reader.result));
         const data = parsed && parsed.data ? parsed.data : parsed;
-        const cleaned = { movie: [], series: [], anime: [] };
+        const cleaned = Object.fromEntries(CATEGORY_KEYS.map((k) => [k, []]));
         let totalValid = 0;
-        for (const catKey of ["movie", "series", "anime"]) {
+        for (const catKey of CATEGORY_KEYS) {
           const arr = Array.isArray(data[catKey]) ? data[catKey] : [];
           for (const entry of arr) {
             if (
@@ -1175,7 +1241,7 @@ export default function App() {
               typeof entry.title === "string" &&
               entry.title.trim() &&
               entry.values &&
-              isValuesComplete(entry.values) &&
+              isValuesComplete(entry.values, catKey) &&
               typeof entry.personal === "number" &&
               entry.personal >= 0 &&
               entry.personal <= 10
@@ -1217,7 +1283,7 @@ export default function App() {
     let ok = 0;
     let failed = 0;
     try {
-      for (const catKey of ["movie", "series", "anime"]) {
+      for (const catKey of CATEGORY_KEYS) {
         for (const entry of importPreview.cleaned[catKey]) {
           try {
             const created = await api.create({ ...entry, category: catKey, id: undefined });
@@ -1261,8 +1327,8 @@ export default function App() {
             Dein Bewertungsbogen
           </h1>
           <p style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
-            {currentList.length} {catInfo.label} erfasst · gewichtet nach Story, Charaktere, Unterhaltung, Emotion,
-            Inszenierung, Schauspiel und Sound, plus 25% Bauchgefühl.
+            {currentList.length} {catInfo.label} erfasst · gewichtet nach{" "}
+            {criteriaFor(category).map((c) => c.label.split(" ")[0]).join(", ")}, plus 25% Bauchgefühl.
           </p>
 
           {/* Tabs */}
@@ -1327,11 +1393,12 @@ export default function App() {
           )}
 
           {mode === "form" && (
-            <RatingForm categoryLabel={catInfo.singular} onSave={addEntry} onCancel={() => setMode("list")} />
+            <RatingForm category={category} categoryLabel={catInfo.singular} onSave={addEntry} onCancel={() => setMode("list")} />
           )}
 
           {mode === "edit" && editingEntry && (
             <RatingForm
+              category={category}
               categoryLabel={catInfo.singular}
               initialTitle={editingEntry.title}
               initialPoster={editingEntry.poster}
@@ -1475,6 +1542,7 @@ export default function App() {
       {selectedEntry && mode === "list" && activeTab !== "stats" && (
         <DetailView
           entry={selectedEntry}
+          category={category}
           singular={catInfo.singular}
           onBack={() => setSelectedId(null)}
           onEdit={() => setMode("edit")}
