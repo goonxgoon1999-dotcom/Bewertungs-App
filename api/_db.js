@@ -86,6 +86,7 @@ async function init() {
 
   await migrateForGames();
   await ensureSeasons();
+  await ensureHeaderImages();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -198,6 +199,43 @@ async function ensureSeasons() {
     )
   `;
   await sql`CREATE INDEX IF NOT EXISTS seasons_item_idx ON seasons (item_id)`;
+
+  // Gewichtungsfaktor je Staffel. Bestehende Zeilen bekommen 1.0 und
+  // behalten damit exakt ihre bisherige Note.
+  await sql`ALTER TABLE seasons ADD COLUMN IF NOT EXISTS weight REAL NOT NULL DEFAULT 1.0`;
+}
+
+/**
+ * Bilder fuer den Kopfbereich. Werden von Hand gepflegt — es gibt
+ * keine automatische Suche dafuer. Idempotent angelegt.
+ */
+async function ensureHeaderImages() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS header_images (
+      id         TEXT PRIMARY KEY,
+      url        TEXT NOT NULL,
+      position   INTEGER NOT NULL,
+      created_at BIGINT NOT NULL
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS header_images_pos_idx ON header_images (position)`;
+}
+
+/** Datenbankzeile -> Kopfbild fuer das Frontend. */
+export function rowToHeaderImage(r) {
+  return { id: r.id, url: r.url, position: Number(r.position) };
+}
+
+/** Grenzen des Staffel-Gewichts: 0 bis 3 in 0.1-Schritten. */
+export const SEASON_WEIGHT_MIN = 0;
+export const SEASON_WEIGHT_MAX = 3;
+export const SEASON_WEIGHT_DEFAULT = 1;
+
+export function normalizeWeight(wert) {
+  if (typeof wert !== "number" || Number.isNaN(wert)) return SEASON_WEIGHT_DEFAULT;
+  const begrenzt = Math.min(SEASON_WEIGHT_MAX, Math.max(SEASON_WEIGHT_MIN, wert));
+  // Auf 0.1 runden, damit keine krummen Werte in die Datenbank geraten.
+  return Math.round(begrenzt * 10) / 10;
 }
 
 /** Staffelzeile -> Format, das das Frontend erwartet. */
@@ -209,6 +247,7 @@ export function rowToSeason(r) {
     seasonNumber: Number(r.season_number),
     values,
     personal: Number(r.personal),
+    weight: r.weight === null || r.weight === undefined ? SEASON_WEIGHT_DEFAULT : Number(r.weight),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -244,6 +283,16 @@ export function validateSeasons(seasons, category) {
     }
     if (typeof season.personal !== "number" || season.personal < 0 || season.personal > 10) {
       errors.push("Staffel " + nr + ": ungültiges Bauchgefühl (0–10 erforderlich).");
+    }
+    // Das Gewicht ist optional; fehlt es, gilt 1.0.
+    if (
+      season.weight != null &&
+      (typeof season.weight !== "number" ||
+        Number.isNaN(season.weight) ||
+        season.weight < SEASON_WEIGHT_MIN ||
+        season.weight > SEASON_WEIGHT_MAX)
+    ) {
+      errors.push("Staffel " + nr + ": ungültige Gewichtung (0–3 erforderlich).");
     }
   });
 

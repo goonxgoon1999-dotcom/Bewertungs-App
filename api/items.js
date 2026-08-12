@@ -1,6 +1,6 @@
 import {
   sql, ensureReady, rowToItem, rowToSeason, validateItem,
-  criteriaKeysFor, CATEGORIES, supportsSeasons,
+  criteriaKeysFor, CATEGORIES, supportsSeasons, normalizeWeight,
 } from "./_db.js";
 
 /**
@@ -19,11 +19,12 @@ async function saveSeasons(itemId, category, seasons) {
     await sql`
       INSERT INTO seasons
         (id, item_id, season_number, story, charaktere, unterhaltung, emotion,
-         inszenierung, schauspiel, sound, personal, created_at, updated_at)
+         inszenierung, schauspiel, sound, personal, weight, created_at, updated_at)
       VALUES
         (${itemId + "_s" + (i + 1)}, ${itemId}, ${i + 1},
          ${v.story}, ${v.charaktere}, ${v.unterhaltung}, ${v.emotion},
          ${v.inszenierung}, ${v.schauspiel}, ${v.sound}, ${s.personal},
+         ${normalizeWeight(s.weight)},
          ${s.createdAt || now}, ${now})
     `;
   }
