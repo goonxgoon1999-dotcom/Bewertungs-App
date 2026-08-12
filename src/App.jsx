@@ -288,6 +288,40 @@ function shuffled(list) {
   return out;
 }
 
+/* Wie viele Bilder je Seitenaufruf hoechstens nachgeladen werden.
+   Jede Suche kostet serverseitig mehrere externe Aufrufe — ohne Grenze
+   feuert eine Sammlung mit hunderten Eintraegen bei jedem Oeffnen
+   entsprechend viele Anfragen ab. Der Rest folgt beim naechsten Besuch. */
+const MAX_NACHLADEN_PRO_BESUCH = 20;
+
+const ERFOLGLOS_SCHLUESSEL = "bewertungsapp.ohneBildtreffer";
+
+/** Eintraege, fuer die die Suche schon einmal nichts gefunden hat. */
+function ladeErfolglose() {
+  try {
+    const roh = window.localStorage.getItem(ERFOLGLOS_SCHLUESSEL);
+    return new Set(roh ? JSON.parse(roh) : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function merkeErfolglos(id) {
+  try {
+    const menge = ladeErfolglose();
+    menge.add(id);
+    window.localStorage.setItem(ERFOLGLOS_SCHLUESSEL, JSON.stringify([...menge]));
+  } catch (e) {
+    // Ohne localStorage funktioniert alles weiter, nur ohne Gedaechtnis.
+  }
+}
+
+function vergissErfolglose() {
+  try {
+    window.localStorage.removeItem(ERFOLGLOS_SCHLUESSEL);
+  } catch (e) {}
+}
+
 /** Unter diesem Wert lohnt der Bildwechsel nicht — dann nur dunkler Grund. */
 const MIN_BACKDROP_BILDER = 3;
 
@@ -1500,18 +1534,24 @@ export default function App() {
 
   // ---- Automatische Poster-Suche für Einträge ohne Poster ----
   const posterAttempted = useRef(new Set());
+  const nachladeZaehler = useRef(0);
 
   useEffect(() => {
     if (!loaded) return;
     let cancelled = false;
 
     (async () => {
+      // Bereits erfolglos gesuchte Einträge nicht bei jedem Seitenaufruf
+      // erneut abfragen — sonst laufen dauerhaft hunderte Anfragen.
+      const erfolglos = ladeErfolglose();
+
       const todo = [];
       for (const catKey of CATEGORY_KEYS) {
         for (const entry of items[catKey] || []) {
           // Nachgeladen wird, was fehlt: Poster, Backdrop oder beides.
           if (entry.poster && entry.backdrop) continue;
           if (posterAttempted.current.has(entry.id)) continue;
+          if (erfolglos.has(entry.id)) continue;
           todo.push({ catKey, entry });
         }
       }
@@ -1519,6 +1559,11 @@ export default function App() {
 
       for (const job of todo) {
         if (cancelled) return;
+        // Pro Seitenaufruf nur eine begrenzte Zahl nachladen. Jede Suche
+        // kostet serverseitig mehrere externe Aufrufe; bei vielen
+        // Einträgen würde das die App sonst lahmlegen.
+        if (nachladeZaehler.current >= MAX_NACHLADEN_PRO_BESUCH) return;
+        nachladeZaehler.current++;
         posterAttempted.current.add(job.entry.id);
 
         const gefunden = await api.findPoster(job.entry.title, job.catKey);
@@ -1526,9 +1571,21 @@ export default function App() {
 
         // Ein von Hand gesetztes Poster wird nie ueberschrieben; das
         // Backdrop darf trotzdem dazukommen.
-        const neuesPoster = job.entry.poster ? job.entry.poster : gefunden.url;
-        const neuesBackdrop = job.entry.backdrop ? job.entry.backdrop : gefunden.backdrop;
-        if (neuesPoster === job.entry.poster && neuesBackdrop === job.entry.backdrop) continue;
+        //
+        // Wichtig: leere Felder sind "" , die Suche liefert aber null.
+        // Ohne Vereinheitlichung schlaegt der Vergleich unten immer fehl
+        // und es wird gespeichert, obwohl sich nichts geaendert hat.
+        const altPoster = job.entry.poster || "";
+        const altBackdrop = job.entry.backdrop || "";
+        const neuesPoster = altPoster || gefunden.url || "";
+        const neuesBackdrop = altBackdrop || gefunden.backdrop || "";
+
+        if (neuesPoster === altPoster && neuesBackdrop === altBackdrop) {
+          // Nichts gefunden: merken, damit der Eintrag beim naechsten
+          // Besuch nicht wieder abgefragt wird.
+          merkeErfolglos(job.entry.id);
+          continue;
+        }
 
         try {
           const saved = await api.update(job.entry.id, {
@@ -1760,6 +1817,8 @@ export default function App() {
       const data = await res.json();
       // Erneute Suche im Client wieder freigeben
       posterAttempted.current = new Set();
+      nachladeZaehler.current = 0;
+      vergissErfolglose();
       const fresh = await api.loadAll();
       setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (fresh[k] || []).map(normalizeEntry)])));
       setSaveError(
