@@ -63,6 +63,20 @@ const CATEGORIES = [
 
 const CATEGORY_KEYS = CATEGORIES.map((c) => c.key);
 
+/* Akzentfarbe je Kategorie. Sie faerbt nur Bedienelemente —
+   Notenfarben (scoreToColor) bleiben davon unberuehrt, weil sie die
+   Hoehe der Bewertung codieren und nicht die Kategorie. */
+const CATEGORY_COLORS = {
+  movie: "#C9A227",
+  series: "#3E9C8F",
+  anime: "#8B6BC9",
+  game: "#C4633E",
+};
+
+function accentFor(category) {
+  return CATEGORY_COLORS[category] || "#C9A227";
+}
+
 /* Alle vorkommenden Kriterien-Felder, in stabiler Reihenfolge —
    für den CSV-Export über mehrere Kategorien hinweg. */
 const ALL_CRITERIA_KEYS = Array.from(
@@ -157,6 +171,110 @@ function downloadFile(filename, content, mime) {
 
 function isLikelyUrl(s) {
   return typeof s === "string" && /^https?:\/\//i.test(s.trim());
+}
+
+/** Kopie der Liste in zufaelliger Reihenfolge (Fisher-Yates). */
+function shuffled(list) {
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/** Unter diesem Wert lohnt der Bildwechsel nicht — dann nur dunkler Grund. */
+const MIN_BACKDROP_POSTER = 3;
+const BACKDROP_INTERVAL = 8000;
+
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReduced(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return reduced;
+}
+
+/* ------------------------------------------------------------
+   Poster-Hintergrund hinter Titel und Tab-Leiste.
+
+   Zwei Ebenen: die scheidende gleitet nach links hinaus, die neue
+   von rechts herein. Bei prefers-reduced-motion steht das Bild
+   still — kein Wechsel, keine Bewegung.
+   ------------------------------------------------------------ */
+function PosterBackdrop({ list, onTitleChange }) {
+  const reducedMotion = usePrefersReducedMotion();
+  const [index, setIndex] = useState(0);
+  const [prevIndex, setPrevIndex] = useState(null);
+  const [tick, setTick] = useState(0);
+
+  const genug = list.length >= MIN_BACKDROP_POSTER;
+
+  useEffect(() => {
+    setIndex(0);
+    setPrevIndex(null);
+  }, [list]);
+
+  useEffect(() => {
+    if (!genug || reducedMotion) return;
+    const timer = setInterval(() => {
+      setIndex((i) => {
+        setPrevIndex(i);
+        return (i + 1) % list.length;
+      });
+      setTick((t) => t + 1);
+    }, BACKDROP_INTERVAL);
+    return () => clearInterval(timer);
+  }, [genug, reducedMotion, list.length]);
+
+  const current = genug ? list[index] : null;
+
+  useEffect(() => {
+    if (onTitleChange) onTitleChange(current ? current.title : "");
+  }, [current, onTitleChange]);
+
+  if (!genug) return null;
+
+  const layer = {
+    position: "absolute",
+    inset: 0,
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+    backgroundRepeat: "no-repeat",
+    opacity: 0.8,
+  };
+
+  return (
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden" }} aria-hidden="true">
+      {prevIndex !== null && !reducedMotion && (
+        <div
+          key={"weg" + tick}
+          className="backdrop-layer backdrop-out"
+          style={{ ...layer, backgroundImage: `url("${list[prevIndex].poster}")` }}
+        />
+      )}
+      <div
+        key={"da" + tick}
+        className={"backdrop-layer" + (reducedMotion ? "" : " backdrop-in")}
+        style={{ ...layer, backgroundImage: `url("${current.poster}")` }}
+      />
+      {/* Abdunkelung: oben genug Kontrast fuer den Titel, unten weicher
+          Uebergang in die Seitenfarbe. */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          background:
+            "linear-gradient(180deg, rgba(23,23,26,0.62) 0%, rgba(23,23,26,0.72) 45%, rgba(23,23,26,0.92) 82%, #17171A 100%)",
+        }}
+      />
+    </div>
+  );
 }
 
 /* ============================================================
@@ -314,12 +432,12 @@ function Slider({ label, weightLabel, hint, value, onChange }) {
         <span style={{ fontWeight: 600, fontSize: 14.5 }}>
           {label}
           {weightLabel && (
-            <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, marginLeft: 8 }}>
+            <span style={{ color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, marginLeft: 8 }}>
               {weightLabel}
             </span>
           )}
         </span>
-        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, color: "#C9A227", fontWeight: 700 }}>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, color: "var(--accent, #C9A227)", fontWeight: 700 }}>
           {typeof value === "number" ? value.toFixed(1) : "–"}
         </span>
       </div>
@@ -331,9 +449,36 @@ function Slider({ label, weightLabel, hint, value, onChange }) {
         step="0.1"
         value={typeof value === "number" ? value : 5}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ width: "100%", height: 32, accentColor: "#C9A227", touchAction: "pan-y" }}
+        style={{ width: "100%", height: 32, accentColor: "var(--accent, #C9A227)", touchAction: "pan-y" }}
       />
     </div>
+  );
+}
+
+/* Symbolknopf der Suchzeile: feste Breite, damit die Zeile nie
+   umbricht oder ueber den Bildschirmrand laeuft. */
+function IconButton({ title, label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      style={{
+        flex: "0 0 auto",
+        width: 46,
+        padding: 0,
+        background: active ? "var(--accent, #C9A227)" : "#1D1D21",
+        border: "1px solid " + (active ? "var(--accent, #C9A227)" : "#2A2A2E"),
+        borderRadius: 8,
+        color: active ? "#17171A" : "#9A968C",
+        cursor: "pointer",
+        fontSize: 16,
+        lineHeight: 1,
+        fontWeight: active ? 700 : 400,
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -373,7 +518,7 @@ function ConfirmDialog({ title, text, confirmLabel, danger, onConfirm, onCancel 
         <button
           onClick={onConfirm}
           style={{
-            flex: 1, padding: "14px", background: danger ? "#DC2626" : "#C9A227",
+            flex: 1, padding: "14px", background: danger ? "#DC2626" : "var(--accent, #C9A227)",
             color: danger ? "#faf7f0" : "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer",
           }}
         >
@@ -387,8 +532,34 @@ function ConfirmDialog({ title, text, confirmLabel, danger, onConfirm, onCancel 
 /* ============================================================
    FILTER-BOTTOM-SHEET (Sortierung + Bewertungsbereich)
    ============================================================ */
+/* Sortierung hat einen eigenen Knopf und damit ein eigenes Sheet.
+   Die Sortierlogik selbst ist unveraendert — gesetzt wird weiterhin
+   nur filterState.sort. */
+function SortSheet({ initial, onApply, onClose }) {
+  return (
+    <BottomSheet title="Sortieren" onClose={onClose}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+        {SORT_OPTIONS.map((o) => (
+          <button
+            key={o.key}
+            onClick={() => { onApply({ ...initial, sort: o.key }); onClose(); }}
+            style={{
+              textAlign: "left", padding: "13px 14px", borderRadius: 8, fontSize: 14, cursor: "pointer",
+              background: initial.sort === o.key ? "var(--accent, #C9A227)" : "#141416",
+              color: initial.sort === o.key ? "#17171A" : "#EDEAE3",
+              border: "1px solid " + (initial.sort === o.key ? "var(--accent, #C9A227)" : "#2A2A2E"),
+              fontWeight: initial.sort === o.key ? 700 : 400,
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </BottomSheet>
+  );
+}
+
 function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
-  const [sort, setSort] = useState(initial.sort);
   const [min, setMin] = useState(initial.min);
   const [max, setMax] = useState(initial.max);
 
@@ -404,39 +575,18 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
   }
 
   function handleApply() {
-    onApply({ sort, min: Math.min(min, max), max: Math.max(min, max) });
+    // sort bleibt, wie es ist — dafuer gibt es das Sortier-Sheet.
+    onApply({ sort: initial.sort, min: Math.min(min, max), max: Math.max(min, max) });
   }
 
   function handleReset() {
-    setSort(DEFAULT_FILTER.sort);
     setMin(DEFAULT_FILTER.min);
     setMax(DEFAULT_FILTER.max);
-    onApply({ ...DEFAULT_FILTER });
+    onApply({ sort: initial.sort, min: DEFAULT_FILTER.min, max: DEFAULT_FILTER.max });
   }
 
   return (
     <BottomSheet title="Filter" onClose={onClose}>
-      <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
-        SORTIERUNG
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 22 }}>
-        {SORT_OPTIONS.map((o) => (
-          <button
-            key={o.key}
-            onClick={() => setSort(o.key)}
-            style={{
-              textAlign: "left", padding: "12px 14px", borderRadius: 8, fontSize: 14, cursor: "pointer",
-              background: sort === o.key ? "#C9A227" : "#141416",
-              color: sort === o.key ? "#17171A" : "#EDEAE3",
-              border: "1px solid " + (sort === o.key ? "#C9A227" : "#2A2A2E"),
-              fontWeight: sort === o.key ? 700 : 400,
-            }}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-
       <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
         BEWERTUNGSBEREICH
       </div>
@@ -449,9 +599,9 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
               onClick={() => applyPreset(p)}
               style={{
                 padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
-                background: active ? "#C9A227" : "transparent",
+                background: active ? "var(--accent, #C9A227)" : "transparent",
                 color: active ? "#17171A" : "#9A968C",
-                border: "1px solid " + (active ? "#C9A227" : "#33333a"),
+                border: "1px solid " + (active ? "var(--accent, #C9A227)" : "#33333a"),
                 fontWeight: active ? 700 : 400,
               }}
             >
@@ -493,7 +643,7 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
         </button>
         <button
           onClick={handleApply}
-          style={{ flex: 1, padding: "14px", background: "#C9A227", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer" }}
+          style={{ flex: 1, padding: "14px", background: "var(--accent, #C9A227)", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer" }}
         >
           Anwenden
         </button>
@@ -571,7 +721,7 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
         />
       ))}
 
-      <div style={{ marginTop: 6, marginBottom: 4, padding: "16px 14px", background: "#141416", border: "1px dashed #C9A227", borderRadius: 8 }}>
+      <div style={{ marginTop: 6, marginBottom: 4, padding: "16px 14px", background: "#141416", border: "1px dashed var(--accent, #C9A227)", borderRadius: 8 }}>
         <Slider
           label="Bauchgefühl (rein subjektiv)"
           weightLabel="25%"
@@ -586,7 +736,7 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
         {typeof personal === "number" && (
           <>
             {" "}· Endnote (live):{" "}
-            <strong style={{ color: "#C9A227", fontSize: 16 }}>{computeFinalScore(values, personal, category).toFixed(2)}</strong>
+            <strong style={{ color: "var(--accent, #C9A227)", fontSize: 16 }}>{computeFinalScore(values, personal, category).toFixed(2)}</strong>
           </>
         )}
       </div>
@@ -601,7 +751,7 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
         <button
           onClick={handleSave}
           style={{
-            flex: 1, padding: "15px", background: complete ? "#C9A227" : "#3a3a3f",
+            flex: 1, padding: "15px", background: complete ? "var(--accent, #C9A227)" : "#3a3a3f",
             color: complete ? "#17171A" : "#77746c", border: "none", borderRadius: 8,
             fontWeight: 700, fontSize: 15.5, cursor: "pointer",
           }}
@@ -643,7 +793,7 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
             <Poster url={entry.poster} title={entry.title} size={72} />
           </div>
           <div>
-            <div style={{ fontSize: 12, letterSpacing: 1, color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", marginBottom: 6 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 6 }}>
               {singular.toUpperCase()}
             </div>
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 26, margin: 0, lineHeight: 1.2 }}>
@@ -670,7 +820,7 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
                 <div style={{ fontSize: 11.5, color: "#77746c", marginTop: 2 }}>{c.hint}</div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                <span style={{ fontSize: 11, color: "#C9A227", fontFamily: "'JetBrains Mono', monospace" }}>
+                <span style={{ fontSize: 11, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
                   {Math.round(c.weight * 100)}%
                 </span>
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }}>
@@ -680,9 +830,9 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
             </div>
           ))}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0" }}>
-            <div style={{ fontSize: 14.5, fontWeight: 700, color: "#C9A227" }}>Bauchgefühl</div>
+            <div style={{ fontSize: 14.5, fontWeight: 700, color: "var(--accent, #C9A227)" }}>Bauchgefühl</div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 11, color: "#C9A227", fontFamily: "'JetBrains Mono', monospace" }}>25%</span>
+              <span style={{ fontSize: 11, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>25%</span>
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }}>
                 {entry.personal.toFixed(1)}
               </span>
@@ -693,7 +843,7 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
         <div style={{ display: "flex", gap: 10 }}>
           <button
             onClick={onEdit}
-            style={{ flex: 1, padding: "15px", background: "#C9A227", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer" }}
+            style={{ flex: 1, padding: "15px", background: "var(--accent, #C9A227)", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer" }}
           >
             Bearbeiten
           </button>
@@ -928,6 +1078,7 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [showExport, setShowExport] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
+  const [showSort, setShowSort] = useState(false);
   const [exportFormat, setExportFormat] = useState("json");
   const [importPreview, setImportPreview] = useState(null);
   const [importError, setImportError] = useState("");
@@ -1041,6 +1192,25 @@ export default function App() {
   }, [items]);
 
   const currentList = rankedByCategory[category];
+  const accent = accentFor(category);
+
+  /* ---- Poster-Hintergrund im Kopfbereich ----
+     Die Mischung entsteht neu, wenn die Kategorie wechselt — und
+     einmalig nachtraeglich, falls beim Wechsel noch keine Daten da
+     waren. Bei spaeteren Aenderungen (z. B. neue Bewertung) bleibt sie
+     stehen, sonst wuerde der Hintergrund beim Bewerten springen. */
+  const backdropRef = useRef({ cat: null, list: [] });
+  const [backdropList, setBackdropList] = useState([]);
+  const [backdropTitle, setBackdropTitle] = useState("");
+
+  useEffect(() => {
+    const posters = (rankedByCategory[category] || []).filter((f) => f.poster);
+    const kategorieGewechselt = backdropRef.current.cat !== category;
+    const nochLeer = backdropRef.current.list.length === 0;
+    if (!kategorieGewechselt && !nochLeer) return;
+    backdropRef.current = { cat: category, list: shuffled(posters) };
+    setBackdropList(backdropRef.current.list);
+  }, [category, rankedByCategory]);
 
   // ---- Angezeigte Liste: Suche + Filter (Bereich + Sortierung) ----
   const filtered = useMemo(() => {
@@ -1075,7 +1245,8 @@ export default function App() {
     return sorted;
   }, [currentList, search, filterState]);
 
-  const isFilterActive = filterState.min !== DEFAULT_FILTER.min || filterState.max !== DEFAULT_FILTER.max || filterState.sort !== DEFAULT_FILTER.sort;
+  const isFilterActive = filterState.min !== DEFAULT_FILTER.min || filterState.max !== DEFAULT_FILTER.max;
+  const isSortActive = filterState.sort !== DEFAULT_FILTER.sort;
 
   const selectedEntry = useMemo(() => {
     if (!selectedId) return null;
@@ -1308,28 +1479,86 @@ export default function App() {
   const editingEntry = mode === "edit" && selectedEntry ? selectedEntry : null;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#17171A", color: "#EDEAE3", fontFamily: "'Inter', system-ui, sans-serif", padding: "0 0 60px 0" }}>
+    <div style={{ "--accent": accent, minHeight: "100vh", background: "#17171A", color: "#EDEAE3", fontFamily: "'Inter', system-ui, sans-serif", padding: "0 0 60px 0" }}>
       <style>{`
         input[type=range] { -webkit-appearance: none; background: transparent; }
         input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: #2A2A2E; }
-        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; margin-top: -9px; width: 24px; height: 24px; border-radius: 50%; background: #C9A227; border: 3px solid #17171A; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; margin-top: -9px; width: 24px; height: 24px; border-radius: 50%; background: var(--accent, #C9A227); border: 3px solid #17171A; }
         input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: #2A2A2E; }
-        input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: #C9A227; border: 3px solid #17171A; }
+        input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: var(--accent, #C9A227); border: 3px solid #17171A; }
+
+        /* Bildwechsel im Kopfbereich: alt nach links hinaus,
+           neu von rechts herein. */
+        @keyframes backdropIn  { from { transform: translateX(100%); }  to { transform: translateX(0); } }
+        @keyframes backdropOut { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+        .backdrop-in  { animation: backdropIn  850ms cubic-bezier(0.33, 0, 0.15, 1) both; }
+        .backdrop-out { animation: backdropOut 850ms cubic-bezier(0.33, 0, 0.15, 1) both; }
+
+        @media (prefers-reduced-motion: reduce) {
+          .backdrop-layer { animation: none !important; transform: none !important; }
+        }
+
+        input:focus, button:focus-visible, input:focus-visible {
+          outline: 2px solid var(--accent, #C9A227);
+          outline-offset: 1px;
+        }
+
+        /* Fuenf Tabs muessen auch auf schmalen Displays hineinpassen.
+           Ohne min-width: 0 koennen Flex-Elemente nicht unter ihre
+           Textbreite schrumpfen und die Leiste laeuft ueber. */
+        .tab-btn {
+          flex: 1 1 0;
+          min-width: 0;
+          padding: 13px 6px;
+          font-size: 13.5px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        @media (max-width: 400px) {
+          .tab-btn { font-size: 11.5px; padding: 13px 3px; }
+          .tab-emoji { display: none; }
+        }
       `}</style>
 
-      {/* Header */}
-      <div style={{ borderBottom: "1px solid #2A2A2E", padding: "32px 20px 0", background: "linear-gradient(180deg, #1D1D21 0%, #17171A 100%)" }}>
-        <div style={{ maxWidth: 720, margin: "0 auto" }}>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, letterSpacing: 2, color: "#C9A227", marginBottom: 8 }}>
-            LFDNR. {String(currentList.length).padStart(4, "0")}
-          </div>
-          <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 30, margin: 0, lineHeight: 1.1 }}>
-            Dein Bewertungsbogen
-          </h1>
-          <p style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
-            {currentList.length} {catInfo.label} erfasst · gewichtet nach{" "}
-            {criteriaFor(category).map((c) => c.label.split(" ")[0]).join(", ")}, plus 25% Bauchgefühl.
-          </p>
+      {/* Header — mit laufendem Poster-Hintergrund */}
+      <div
+        style={{
+          position: "relative",
+          overflow: "hidden",
+          borderBottom: "1px solid #2A2A2E",
+          background: "linear-gradient(180deg, #1D1D21 0%, #17171A 100%)",
+        }}
+      >
+        <PosterBackdrop list={backdropList} onTitleChange={setBackdropTitle} />
+
+        <div style={{ position: "relative", zIndex: 1, padding: "32px 20px 0" }}>
+          <div style={{ maxWidth: 720, margin: "0 auto" }}>
+            <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 34, margin: 0, lineHeight: 1.08 }}>
+              <span style={{ display: "block" }}>Rifat's</span>
+              <span style={{ display: "block" }}>Archiv</span>
+            </h1>
+            <p style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
+              {currentList.length} {catInfo.label}
+            </p>
+
+            {/* Titel des gerade gezeigten Hintergrundbildes */}
+            <div
+              style={{
+                fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 10.5,
+                letterSpacing: 1.4,
+                color: "#77746c",
+                textTransform: "uppercase",
+                marginBottom: 8,
+                height: 14,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {backdropTitle}
+            </div>
 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 6, marginBottom: 0 }}>
@@ -1343,29 +1572,34 @@ export default function App() {
                   setSelectedId(null);
                   setSearch("");
                 }}
+                className="tab-btn"
                 style={{
-                  flex: 1, padding: "13px 6px", background: activeTab === c.key ? "#C9A227" : "transparent",
+                  background: activeTab === c.key ? "var(--accent, #C9A227)" : "transparent",
                   color: activeTab === c.key ? "#17171A" : "#9A968C",
                   border: activeTab === c.key ? "none" : "1px solid #2A2A2E",
                   borderBottom: activeTab === c.key ? "none" : "1px solid #2A2A2E",
-                  borderRadius: "8px 8px 0 0", fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+                  borderRadius: "8px 8px 0 0", fontWeight: 700, cursor: "pointer",
                 }}
               >
                 {c.label}
               </button>
             ))}
+            {/* Die Statistik ist keine Kategorie und behaelt deshalb das
+                neutrale Gold — sie spannt alle Kategorien. */}
             <button
               onClick={() => setActiveTab("stats")}
+              className="tab-btn"
               style={{
-                flex: 1, padding: "13px 6px", background: activeTab === "stats" ? "#C9A227" : "transparent",
+                background: activeTab === "stats" ? "#C9A227" : "transparent",
                 color: activeTab === "stats" ? "#17171A" : "#9A968C",
                 border: activeTab === "stats" ? "none" : "1px solid #2A2A2E",
                 borderBottom: activeTab === "stats" ? "none" : "1px solid #2A2A2E",
-                borderRadius: "8px 8px 0 0", fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+                borderRadius: "8px 8px 0 0", fontWeight: 700, cursor: "pointer",
               }}
             >
-              📊 Statistik
+              <span className="tab-emoji">📊 </span>Statistik
             </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1387,7 +1621,7 @@ export default function App() {
           )}
 
           {busy && (
-            <div style={{ color: "#C9A227", fontSize: 13, marginBottom: 16 }}>
+            <div style={{ color: "var(--accent, #C9A227)", fontSize: 13, marginBottom: 16 }}>
               Wird gespeichert…
             </div>
           )}
@@ -1413,34 +1647,25 @@ export default function App() {
             <>
               <button
                 onClick={() => setMode("form")}
-                style={{ width: "100%", padding: "16px", background: "#C9A227", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15.5, cursor: "pointer", marginBottom: 20 }}
+                style={{ width: "100%", padding: "16px", background: "var(--accent, #C9A227)", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15.5, cursor: "pointer", marginBottom: 20 }}
               >
                 + Neu bewerten
               </button>
 
+              {/* Suchzeile: Feld schrumpft mit (minWidth 0), die drei
+                  Knoepfe bleiben als Symbole in fester Breite — so passt
+                  die Zeile auch auf schmale Displays ohne Querscrollen. */}
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <input
                   type="text"
                   placeholder={`${catInfo.label} durchsuchen...`}
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  style={{ flex: 1, background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 8, padding: "13px 12px", color: "#EDEAE3", fontSize: 15, boxSizing: "border-box" }}
+                  style={{ flex: "1 1 auto", minWidth: 0, background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 8, padding: "13px 12px", color: "#EDEAE3", fontSize: 15, boxSizing: "border-box" }}
                 />
-                <button
-                  onClick={() => setShowFilter(true)}
-                  style={{
-                    background: isFilterActive ? "#C9A227" : "#1D1D21", border: "1px solid " + (isFilterActive ? "#C9A227" : "#2A2A2E"),
-                    borderRadius: 8, padding: "0 16px", color: isFilterActive ? "#17171A" : "#9A968C", cursor: "pointer", fontSize: 13.5, whiteSpace: "nowrap", fontWeight: isFilterActive ? 700 : 400,
-                  }}
-                >
-                  ⚙ Filter
-                </button>
-                <button
-                  onClick={() => setShowExport((v) => !v)}
-                  style={{ background: showExport ? "#C9A227" : "#1D1D21", border: "1px solid " + (showExport ? "#C9A227" : "#2A2A2E"), borderRadius: 8, padding: "0 14px", color: showExport ? "#17171A" : "#9A968C", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}
-                >
-                  ⇅
-                </button>
+                <IconButton title="Filter" label="⚙" active={isFilterActive} onClick={() => setShowFilter(true)} />
+                <IconButton title="Sortieren" label="↓↑" active={isSortActive} onClick={() => setShowSort(true)} />
+                <IconButton title="Daten (Export & Import)" label="⤓" active={showExport} onClick={() => setShowExport((v) => !v)} />
               </div>
 
               <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
@@ -1448,8 +1673,8 @@ export default function App() {
               </div>
 
               {showExport && (
-                <div style={{ background: "#141416", border: "1px solid #C9A227", borderRadius: 8, padding: 16, marginBottom: 18 }}>
-                  <div style={{ fontSize: 12, letterSpacing: 1, color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
+                <div style={{ background: "#141416", border: "1px solid var(--accent, #C9A227)", borderRadius: 8, padding: 16, marginBottom: 18 }}>
+                  <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
                     EXPORT & BACKUP
                   </div>
 
@@ -1459,8 +1684,8 @@ export default function App() {
                       disabled={busy}
                       style={{
                         width: "100%", padding: "12px", borderRadius: 8, fontSize: 14,
-                        background: "transparent", color: "#C9A227",
-                        border: "1px solid #C9A227", cursor: "pointer", fontWeight: 600,
+                        background: "transparent", color: "var(--accent, #C9A227)",
+                        border: "1px solid var(--accent, #C9A227)", cursor: "pointer", fontWeight: 600,
                         opacity: busy ? 0.5 : 1,
                       }}
                     >
@@ -1475,13 +1700,13 @@ export default function App() {
                   <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
                     <button
                       onClick={() => setExportFormat("json")}
-                      style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "json" ? "#C9A227" : "transparent", color: exportFormat === "json" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "json" ? "#C9A227" : "#33333a"), fontWeight: 700 }}
+                      style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "json" ? "var(--accent, #C9A227)" : "transparent", color: exportFormat === "json" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "json" ? "var(--accent, #C9A227)" : "#33333a"), fontWeight: 700 }}
                     >
                       JSON (Backup)
                     </button>
                     <button
                       onClick={() => setExportFormat("csv")}
-                      style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "csv" ? "#C9A227" : "transparent", color: exportFormat === "csv" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "csv" ? "#C9A227" : "#33333a"), fontWeight: 700 }}
+                      style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "csv" ? "var(--accent, #C9A227)" : "transparent", color: exportFormat === "csv" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "csv" ? "var(--accent, #C9A227)" : "#33333a"), fontWeight: 700 }}
                     >
                       CSV (Tabelle)
                     </button>
@@ -1501,7 +1726,7 @@ export default function App() {
                     <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleImportFile} style={{ display: "none" }} />
                     <button
                       onClick={() => fileInputRef.current && fileInputRef.current.click()}
-                      style={{ width: "100%", padding: "12px", background: "transparent", color: "#C9A227", border: "1px dashed #C9A227", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}
+                      style={{ width: "100%", padding: "12px", background: "transparent", color: "var(--accent, #C9A227)", border: "1px dashed var(--accent, #C9A227)", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}
                     >
                       JSON-Datei importieren
                     </button>
@@ -1547,6 +1772,14 @@ export default function App() {
           onBack={() => setSelectedId(null)}
           onEdit={() => setMode("edit")}
           onDelete={() => setConfirmDelete(selectedEntry.id)}
+        />
+      )}
+
+      {showSort && (
+        <SortSheet
+          initial={filterState}
+          onApply={(f) => setFilterState(f)}
+          onClose={() => setShowSort(false)}
         />
       )}
 
