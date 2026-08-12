@@ -85,6 +85,7 @@ async function init() {
   await sql`CREATE INDEX IF NOT EXISTS media_items_category_idx ON media_items (category)`;
 
   await migrateForGames();
+  await ensureSeasons();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -166,6 +167,89 @@ async function migrateForGames() {
   `;
 }
 
+/* Kategorien, die optional in Staffeln unterteilt werden koennen. */
+export const SEASON_CATEGORIES = ["series", "anime"];
+
+export function supportsSeasons(category) {
+  return SEASON_CATEGORIES.includes(category);
+}
+
+/**
+ * Tabelle fuer die optionale Staffelbewertung. Wird nur angelegt, wenn
+ * sie fehlt — bestehende Daten bleiben unberuehrt. Die Staffeln haengen
+ * per Fremdschluessel am Eintrag und verschwinden mit ihm (CASCADE).
+ */
+async function ensureSeasons() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS seasons (
+      id            TEXT PRIMARY KEY,
+      item_id       TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      season_number INTEGER NOT NULL,
+      story         REAL NOT NULL,
+      charaktere    REAL NOT NULL,
+      unterhaltung  REAL NOT NULL,
+      emotion       REAL NOT NULL,
+      inszenierung  REAL NOT NULL,
+      schauspiel    REAL NOT NULL,
+      sound         REAL NOT NULL,
+      personal      REAL NOT NULL,
+      created_at    BIGINT NOT NULL,
+      updated_at    BIGINT NOT NULL
+    )
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS seasons_item_idx ON seasons (item_id)`;
+}
+
+/** Staffelzeile -> Format, das das Frontend erwartet. */
+export function rowToSeason(r) {
+  const values = {};
+  for (const key of AV_KEYS) values[key] = Number(r[key]);
+  return {
+    id: r.id,
+    seasonNumber: Number(r.season_number),
+    values,
+    personal: Number(r.personal),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at),
+  };
+}
+
+/**
+ * Prueft eine Staffelliste. Staffeln gibt es nur bei Serien und Anime;
+ * jede traegt dieselben sieben Kriterien wie der Eintrag selbst.
+ */
+export function validateSeasons(seasons, category) {
+  const errors = [];
+  if (seasons == null) return errors;
+  if (!Array.isArray(seasons)) return ["Ungültige Staffelliste."];
+  if (!seasons.length) return errors;
+
+  if (!supportsSeasons(category)) {
+    errors.push("Staffeln gibt es nur bei Serien und Anime.");
+    return errors;
+  }
+
+  seasons.forEach((season, i) => {
+    const nr = i + 1;
+    if (!season || typeof season !== "object") {
+      errors.push("Staffel " + nr + " ist ungültig.");
+      return;
+    }
+    const values = season.values || {};
+    for (const key of AV_KEYS) {
+      const v = values[key];
+      if (typeof v !== "number" || Number.isNaN(v) || v < 0 || v > 10) {
+        errors.push("Staffel " + nr + ": ungültiger Wert für " + key + " (0–10 erforderlich).");
+      }
+    }
+    if (typeof season.personal !== "number" || season.personal < 0 || season.personal > 10) {
+      errors.push("Staffel " + nr + ": ungültiges Bauchgefühl (0–10 erforderlich).");
+    }
+  });
+
+  return errors;
+}
+
 /** Datenbankzeile -> Format, das das Frontend erwartet. */
 export function rowToItem(r) {
   // Nur die Felder der jeweiligen Kategorie zurueckgeben. Sonst kaemen
@@ -215,6 +299,8 @@ export function validateItem(body) {
   }
   if (body.poster != null && typeof body.poster !== "string") errors.push("Ungültige Poster-URL.");
   if (body.backdrop != null && typeof body.backdrop !== "string") errors.push("Ungültige Backdrop-URL.");
+
+  errors.push(...validateSeasons(body.seasons, body.category));
 
   return errors;
 }
