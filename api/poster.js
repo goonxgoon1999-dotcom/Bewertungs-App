@@ -1,6 +1,8 @@
 /**
  * GET /api/poster?title=...&category=movie|series|anime|game
- * -> { url: "https://..." } oder { url: null }
+ * -> { url: "https://...", backdrop: "https://..." }
+ *    Beide Felder koennen null sein. `url` ist das Hochkant-Poster,
+ *    `backdrop` ein breites Szenenbild fuer den Kopfbereich.
  *
  * Die Suche läuft bewusst SERVERSEITIG:
  * - keine CORS-Probleme (der Browser spricht nur mit deiner eigenen Domain)
@@ -143,8 +145,8 @@ function similarity(a, b) {
  * Wählt aus den Kandidaten den ähnlichsten aus — oder null, wenn
  * keiner die Mindestähnlichkeit erreicht.
  *
- * candidates: [{ titles: [...], url }]
- * -> { url, bestScore }
+ * candidates: [{ titles: [...], url, backdrop }]
+ * -> { url, backdrop, bestScore }
  *
  * `bestScore` ist der höchste Wert über ALLE Kandidaten, auch über
  * solche ohne Bild. Für die Auswahl zählen nur Kandidaten mit Bild —
@@ -174,8 +176,10 @@ function pickBestMatch(query, candidates) {
     }
   }
 
-  const url = best && bestUsableScore >= MIN_SIMILARITY ? best.url : null;
-  return { url, bestScore };
+  const treffer = best && bestUsableScore >= MIN_SIMILARITY ? best : null;
+  // Das Backdrop stammt immer vom selben Kandidaten wie das Poster —
+  // sonst koennten Bild und Titel auseinanderfallen.
+  return { url: treffer ? treffer.url : null, backdrop: (treffer && treffer.backdrop) || null, bestScore };
 }
 
 /* ---------------------------------------------------------------- *
@@ -221,14 +225,17 @@ async function fromJikan(title) {
     return {
       titles: titles.filter(Boolean),
       url: (img && (img.large_image_url || img.image_url)) || null,
+      // Jikan liefert keine Breitbilder.
+      backdrop: null,
     };
   });
 
-  const { url, bestScore } = pickBestMatch(title, candidates);
-  return { url, debug: buildDebug("Jikan", response, candidates, bestScore) };
+  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
+  return { url, backdrop, debug: buildDebug("Jikan", response, candidates, bestScore) };
 }
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
+const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w780";
 
 /**
  * Der TMDB-Schlüssel ist optional. Fehlt er, wird die Quelle
@@ -270,12 +277,14 @@ async function fromTmdb(title, kind) {
       // Ohne poster_path gibt es kein Bild: Der Eintrag zählt für die
       // Diagnose noch mit, kommt für die Auswahl aber nicht in Frage.
       url: hit.poster_path ? TMDB_IMAGE_BASE + hit.poster_path : null,
+      // Breites Szenenbild fuer den Kopfbereich der App.
+      backdrop: hit.backdrop_path ? TMDB_BACKDROP_BASE + hit.backdrop_path : null,
     };
   });
 
-  const { url, bestScore } = pickBestMatch(title, candidates);
+  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
   const label = "TMDB (" + (isTv ? "tv" : "movie") + ")";
-  return { url, debug: buildDebug(label, response, candidates, bestScore) };
+  return { url, backdrop, debug: buildDebug(label, response, candidates, bestScore) };
 }
 
 /**
@@ -304,10 +313,12 @@ async function fromRawg(title) {
   const candidates = hits.map((hit) => ({
     titles: [hit.name, hit.name_original].filter(Boolean),
     url: hit.background_image || null,
+    // RAWGs background_image ist bereits ein Querformat-Szenenbild.
+    backdrop: hit.background_image || null,
   }));
 
-  const { url, bestScore } = pickBestMatch(title, candidates);
-  return { url, debug: buildDebug("RAWG", response, candidates, bestScore) };
+  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
+  return { url, backdrop, debug: buildDebug("RAWG", response, candidates, bestScore) };
 }
 
 async function fromTvmaze(title) {
@@ -324,11 +335,14 @@ async function fromTvmaze(title) {
     return {
       titles: [show && show.name].filter(Boolean),
       url: (img && (img.original || img.medium)) || null,
+      // TVMaze kennt kein eigenes Breitbild — das vorhandene Bild
+      // dient als Rueckfall.
+      backdrop: (img && (img.original || img.medium)) || null,
     };
   });
 
-  const { url, bestScore } = pickBestMatch(title, candidates);
-  return { url, debug: buildDebug("TVMaze", response, candidates, bestScore) };
+  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
+  return { url, backdrop, debug: buildDebug("TVMaze", response, candidates, bestScore) };
 }
 
 async function fromItunes(title, kind) {
@@ -354,12 +368,14 @@ async function fromItunes(title, kind) {
     return {
       titles: titles.filter(Boolean),
       url: art ? art.replace("100x100bb", "600x600bb") : null,
+      // iTunes liefert quadratische Artworks, kein Breitbild.
+      backdrop: null,
     };
   });
 
-  const { url, bestScore } = pickBestMatch(title, candidates);
+  const { url, backdrop, bestScore } = pickBestMatch(title, candidates);
   const label = "iTunes (" + (isTv ? "tvSeason" : "movie") + ")";
-  return { url, debug: buildDebug(label, response, candidates, bestScore) };
+  return { url, backdrop, debug: buildDebug(label, response, candidates, bestScore) };
 }
 
 /** "Breaking Bad, Season 2" -> "Breaking Bad" */
@@ -383,7 +399,8 @@ export default async function handler(req, res) {
   // Im Diagnose-Modus wird der Cache übersprungen — sonst käme eine
   // Antwort ohne jede Information darüber, was die Quellen gesagt haben.
   if (!debug && CACHE.has(cacheKey)) {
-    return res.status(200).json({ url: CACHE.get(cacheKey), cached: true });
+    const treffer = CACHE.get(cacheKey);
+    return res.status(200).json({ url: treffer.url, backdrop: treffer.backdrop, cached: true });
   }
 
   const hasTmdb = !!tmdbKey();
@@ -413,17 +430,27 @@ export default async function handler(req, res) {
   }
 
   let url = null;
+  let backdrop = null;
   const sources = [];
   for (const step of chain) {
     const result = await step();
     sources.push(result.debug);
+
     if (!url && result.url) {
       url = result.url;
       result.debug.used = true;
-      // Ohne Diagnose endet die Kette beim ersten Treffer; mit Diagnose
-      // laufen alle Quellen durch, damit man sie vergleichen kann.
-      if (!debug) break;
     }
+    // Nicht jede Quelle kennt Breitbilder (Jikan und iTunes etwa gar
+    // nicht). Deshalb wird weitergesucht, bis auch ein Backdrop da ist
+    // — sonst blieben Anime dauerhaft ohne.
+    if (!backdrop && result.backdrop) {
+      backdrop = result.backdrop;
+      result.debug.usedBackdrop = true;
+    }
+
+    // Ohne Diagnose endet die Kette, sobald beides gefunden ist; mit
+    // Diagnose laufen alle Quellen durch, damit man sie vergleichen kann.
+    if (!debug && url && backdrop) break;
   }
 
   if (debug) {
@@ -431,6 +458,7 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
       url,
+      backdrop,
       debug: {
         title,
         category,
@@ -442,8 +470,8 @@ export default async function handler(req, res) {
     });
   }
 
-  CACHE.set(cacheKey, url);
+  CACHE.set(cacheKey, { url, backdrop });
   // Ergebnis einen Tag im CDN cachen — spart Aufrufe bei den freien APIs.
   res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
-  return res.status(200).json({ url });
+  return res.status(200).json({ url, backdrop });
 }
