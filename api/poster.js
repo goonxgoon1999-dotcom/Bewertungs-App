@@ -57,7 +57,7 @@ const MIN_SIMILARITY = 0.6; // darunter: lieber null
  * damit die Suche wie bisher weiterläuft, aber der Grund geht nicht
  * verloren und ist über ?debug=1 sichtbar.
  */
-async function getJson(url, zusatzKopfzeilen) {
+export async function getJson(url, zusatzKopfzeilen) {
   let res;
   try {
     res = await fetch(url, {
@@ -374,7 +374,7 @@ function nameOrdnen(name) {
   return vorne && hinten ? vorne + " " + hinten : String(name).trim();
 }
 
-const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
+export const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
 const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w780";
 
 /**
@@ -382,7 +382,7 @@ const TMDB_BACKDROP_BASE = "https://image.tmdb.org/t/p/w780";
  * übersprungen und die Suche läuft wie zuvor über die freien APIs —
  * die App darf daran nicht scheitern.
  */
-function tmdbKey() {
+export function tmdbKey() {
   const key = process.env.TMDB_API_KEY;
   return key && key.trim() ? key.trim() : null;
 }
@@ -450,7 +450,7 @@ async function fromTmdb(title, kind) {
  * gar keine automatische Suche — TMDB und die uebrigen Quellen kennen
  * keine Spiele, ein Treffer dort waere zwangslaeufig falsch.
  */
-function steamGridKey() {
+export function steamGridKey() {
   const key = process.env.STEAMGRIDDB_API_KEY;
   return key && key.trim() ? key.trim() : null;
 }
@@ -645,7 +645,7 @@ function stripSeasonSuffix(name) {
  * ---------------------------------------------------------------- */
 
 /** "2001-12-19" -> 2001; alles andere -> null. */
-function jahrAus(datum) {
+export function jahrAus(datum) {
   const treffer = /^(\d{4})/.exec(String(datum || ""));
   return treffer ? Number(treffer[1]) : null;
 }

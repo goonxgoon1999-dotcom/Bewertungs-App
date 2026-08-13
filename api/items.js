@@ -108,7 +108,16 @@ async function loadSeasons() {
  * werden bewusst NULL — ein Spiel hat kein "Schauspiel", und eine 0
  * waere dort eine erfundene Bewertung.
  */
-function criteriaColumns(category, values) {
+function criteriaColumns(category, values, watchlist) {
+  // Vorgemerkte Eintraege sind noch nicht bewertet: alle Wertspalten
+  // bleiben leer, bis daraus ein bewerteter Eintrag wird.
+  if (watchlist) {
+    return {
+      story: null, charaktere: null, unterhaltung: null, emotion: null,
+      inszenierung: null, schauspiel: null, sound: null,
+      gameplay: null, welt: null, grafik: null, wiederspielwert: null,
+    };
+  }
   const allowed = new Set(criteriaKeysFor(category));
   const pick = (key) => (allowed.has(key) ? values[key] : null);
   return {
@@ -178,7 +187,8 @@ async function create(req, res) {
 
   const now = Date.now();
   const id = body.id || body.category + "_" + now + "_" + Math.random().toString(36).slice(2, 8);
-  const v = criteriaColumns(body.category, body.values);
+  const merkliste = body.watchlist === true;
+  const v = criteriaColumns(body.category, body.values, merkliste);
   const a = angabenColumns(body.category, body);
 
   // Eintrag und Staffeln gehen gemeinsam in einer Transaktion in die
@@ -188,14 +198,15 @@ async function create(req, res) {
       INSERT INTO media_items
         (id, category, title, poster, poster_source, backdrop, story, charaktere, unterhaltung,
          emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
-         personal, release_year, director, imdb_rating, created_at, updated_at)
+         personal, release_year, director, imdb_rating, watchlist, created_at, updated_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
          ${body.backdrop || ""},
          ${v.story}, ${v.charaktere}, ${v.unterhaltung}, ${v.emotion},
          ${v.inszenierung}, ${v.schauspiel}, ${v.sound},
-         ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert}, ${body.personal},
-         ${a.releaseYear}, ${a.director}, ${a.imdbRating},
+         ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert},
+         ${merkliste ? null : body.personal},
+         ${a.releaseYear}, ${a.director}, ${a.imdbRating}, ${merkliste},
          ${body.createdAt || now}, ${now})
       RETURNING *
     `,
@@ -225,7 +236,8 @@ async function update(req, res) {
   // aktualisiert, eingefuegt und geloescht werden muss.
   const vorhandene = await currentSeasonRows(id);
 
-  const v = criteriaColumns(body.category, body.values);
+  const merkliste = body.watchlist === true;
+  const v = criteriaColumns(body.category, body.values, merkliste);
   const a = angabenColumns(body.category, body);
   const ergebnis = await sql.transaction([
     sql`
@@ -246,10 +258,11 @@ async function update(req, res) {
         welt            = ${v.welt},
         grafik          = ${v.grafik},
         wiederspielwert = ${v.wiederspielwert},
-        personal        = ${body.personal},
+        personal        = ${merkliste ? null : body.personal},
         release_year    = ${a.releaseYear},
         director        = ${a.director},
         imdb_rating     = ${a.imdbRating},
+        watchlist       = ${merkliste},
         updated_at      = ${Date.now()}
       WHERE id = ${id}
       RETURNING *

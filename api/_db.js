@@ -86,6 +86,7 @@ async function init() {
 
   await migrateForGames();
   await ensureAngaben();
+  await ensureWatchlist();
   await ensureSeasons();
   await ensureHeaderImages();
 
@@ -179,6 +180,27 @@ async function ensureAngaben() {
   await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS release_year INTEGER`;
   await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS director TEXT`;
   await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS imdb_rating REAL`;
+}
+
+/**
+ * Watchlist: ein Eintrag ist entweder vorgemerkt oder bewertet.
+ *
+ * Vorgemerkte Eintraege haben Titel, Poster, Jahr und Kategorie wie
+ * jeder andere — nur eben keine Note. Damit sie ueberhaupt in die
+ * Tabelle passen, duerfen die vier bisher verpflichtenden Wertspalten
+ * leer bleiben. Wie schon bei den Spielen ist das rein strukturell:
+ * Es wird KEINE bestehende Zeile angefasst, alle Bewertungen bleiben
+ * Bit fuer Bit erhalten.
+ */
+async function ensureWatchlist() {
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS watchlist BOOLEAN NOT NULL DEFAULT FALSE`;
+
+  await sql`ALTER TABLE media_items ALTER COLUMN story DROP NOT NULL`;
+  await sql`ALTER TABLE media_items ALTER COLUMN charaktere DROP NOT NULL`;
+  await sql`ALTER TABLE media_items ALTER COLUMN sound DROP NOT NULL`;
+  await sql`ALTER TABLE media_items ALTER COLUMN personal DROP NOT NULL`;
+
+  await sql`CREATE INDEX IF NOT EXISTS media_items_watchlist_idx ON media_items (watchlist)`;
 }
 
 /* Kategorien, die optional in Staffeln unterteilt werden koennen. */
@@ -374,8 +396,12 @@ export function rowToItem(r) {
     releaseYear: r.release_year === null || r.release_year === undefined ? null : Number(r.release_year),
     director: r.director || null,
     imdbRating: r.imdb_rating === null || r.imdb_rating === undefined ? null : Number(r.imdb_rating),
+    // Vorgemerkt statt bewertet: dann gibt es keine Werte und keine Note.
+    watchlist: r.watchlist === true,
     values,
-    personal: Number(r.personal),
+    // Ohne Bauchgefuehl bleibt es null — Number(null) waere 0 und saehe
+    // aus wie eine echte, sehr schlechte Bewertung.
+    personal: r.personal === null || r.personal === undefined ? null : Number(r.personal),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -394,6 +420,16 @@ export function validateItem(body) {
     return errors;
   }
 
+  // Vorgemerkte Eintraege haben noch keine Bewertung — dort gibt es
+  // weder Kriterien-Werte noch Bauchgefuehl zu pruefen. Alles Uebrige
+  // (Titel, Kategorie, Poster, Angaben) gilt unveraendert.
+  if (body.watchlist === true) {
+    if (body.seasons != null && Array.isArray(body.seasons) && body.seasons.length) {
+      errors.push("Vorgemerkte Einträge haben keine Staffeln.");
+    }
+    return errors.concat(angabenFehler(body));
+  }
+
   const values = body.values || {};
   for (const key of criteriaKeysFor(body.category)) {
     const v = values[key];
@@ -404,11 +440,24 @@ export function validateItem(body) {
   if (typeof body.personal !== "number" || body.personal < 0 || body.personal > 10) {
     errors.push("Ungültiges Bauchgefühl (0–10 erforderlich).");
   }
+  errors.push(...angabenFehler(body));
+  errors.push(...validateSeasons(body.seasons, body.category));
+
+  return errors;
+}
+
+/**
+ * Bilder und Angaben zum Werk. Beides gilt fuer bewertete wie fuer
+ * vorgemerkte Eintraege gleichermassen und ist durchweg optional —
+ * die Angaben werden automatisch nachgeladen und duerfen deshalb
+ * jederzeit fehlen.
+ */
+function angabenFehler(body) {
+  const errors = [];
+
   if (body.poster != null && typeof body.poster !== "string") errors.push("Ungültige Poster-URL.");
   if (body.backdrop != null && typeof body.backdrop !== "string") errors.push("Ungültige Backdrop-URL.");
 
-  // Angaben zum Werk sind durchweg optional — sie werden automatisch
-  // nachgeladen und duerfen deshalb jederzeit fehlen.
   if (
     body.releaseYear != null &&
     (typeof body.releaseYear !== "number" || !Number.isFinite(body.releaseYear))
@@ -427,8 +476,6 @@ export function validateItem(body) {
   ) {
     errors.push("Ungültige IMDb-Note (0–10 erforderlich).");
   }
-
-  errors.push(...validateSeasons(body.seasons, body.category));
 
   return errors;
 }
