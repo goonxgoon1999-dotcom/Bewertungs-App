@@ -277,6 +277,15 @@ function buildDebug(source, response, candidates, bestScore, ueberEnthaltung) {
   return block;
 }
 
+/** Englischer Titel aus Jikans `titles`-Liste, falls vorhanden. */
+function englischerTitel(hit) {
+  if (!hit || !Array.isArray(hit.titles)) return null;
+  const treffer = hit.titles.find(
+    (t) => t && t.title && typeof t.type === "string" && t.type.toLowerCase() === "english"
+  );
+  return treffer ? treffer.title : null;
+}
+
 async function fromJikan(title) {
   const response = await getJson(
     "https://api.jikan.moe/v4/anime?limit=" +
@@ -303,8 +312,12 @@ async function fromJikan(title) {
         typeof hit.year === "number"
           ? hit.year
           : jahrAus(hit.aired && hit.aired.from),
-      // OMDb kennt Anime fast nur unter dem englischen Titel.
-      englishTitle: hit.title_english || null,
+      // OMDb kennt Anime fast nur unter dem englischen Titel. `title`
+      // ist bei Jikan der romanisierte japanische ("Shingeki no
+      // Kyojin") und fuehrt dort zu nichts. `title_english` fehlt aber
+      // bei vielen Eintraegen — dann steht der englische Titel noch in
+      // der Liste `titles` unter dem Typ "English".
+      englishTitle: hit.title_english || englischerTitel(hit) || null,
       url: (img && (img.large_image_url || img.image_url)) || null,
       // Jikan liefert keine Breitbilder.
       backdrop: null,
