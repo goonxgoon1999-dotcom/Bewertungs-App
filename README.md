@@ -9,6 +9,8 @@ getrennten Rankings, Filtern, Statistik, Postern und echter Datenbank.
 - **Datenbank:** Neon Postgres (kostenloser Plan)
 - **Kategorien:** Filme, Serien, Anime und Spiele — je mit eigenen Kriterien
 - **Poster:** automatisch über TMDB / Jikan / TVMaze / iTunes, Spiele über SteamGridDB
+- **Angaben zum Werk:** Erscheinungsjahr und Regie über TMDB, IMDb-Note als
+  Vergleichswert über OMDb — bei Filmen, Serien und Anime
 
 ---
 
@@ -214,6 +216,50 @@ Ohne diesen Schlüssel findet für Spiele **keine** automatische Suche
 statt — Bilder lassen sich dann nur von Hand im Formular eintragen.
 Filme, Serien und Anime sind davon nicht betroffen.
 
+---
+
+## Erscheinungsjahr, Regie und IMDb-Note
+
+Bei Filmen, Serien und Anime kommen im **selben** Abruf, der schon die
+Poster ermittelt (`api/poster.js`), drei weitere Angaben mit:
+
+| Angabe | Quelle |
+|--------|--------|
+| Erscheinungsjahr | TMDB (`release_date` bzw. `first_air_date`) |
+| Regie | TMDB-Credits; bei Serien ersatzweise die Schöpfer (`created_by`) |
+| IMDb-Note | OMDb, über die IMDb-Kennung aus TMDB |
+
+Sie werden am Eintrag gespeichert und nicht bei jedem Aufruf neu geholt.
+Auch bereits vorhandene Einträge laden sie automatisch nach — genauso wie
+die Poster, mit derselben Obergrenze pro Seitenaufruf. Angezeigt wird das
+Ganze nur in der Detailansicht: Jahr und Regie unter dem Titel, die
+IMDb-Note neben der eigenen Endnote. Die Ranglisten bleiben unberührt.
+
+Bei **Spielen** entfällt das vollständig — dort gibt es weiterhin nur
+Bilder.
+
+Wird der Titel eines Eintrags geändert, gelten die Angaben nicht mehr und
+werden beim nächsten Öffnen neu geholt.
+
+### OMDb-Schlüssel für die IMDb-Note (optional)
+
+Die IMDb-Note kommt von [OMDb](https://www.omdbapi.com/apikey.aspx). Den
+kostenlosen Schlüssel dort anlegen und in Vercel unter **Settings →
+Environment Variables** als `OMDB_API_KEY` hinterlegen, danach einmal neu
+deployen.
+
+Ohne den Schlüssel wird OMDb gar nicht erst gefragt: Die Note wird dann
+schlicht nicht angezeigt — ein Fehler ist das nicht, alles andere läuft
+unverändert weiter. Der Schlüssel bleibt auf dem Server und taucht nie im
+Browser auf.
+
+Gesucht wird bevorzugt über die IMDb-Kennung aus TMDB, damit der Treffer
+eindeutig ist. Fehlt sie, bleibt die Titelsuche — deren Ergebnis wird wie
+überall auf Titelähnlichkeit geprüft, damit nicht die Note eines fremden
+Werks am Eintrag landet.
+
+---
+
 Sind bereits falsche Poster gespeichert, lassen sie sich alle auf einmal
 zum Neusuchen freigeben — per Button in der App oder von Hand:
 
@@ -224,7 +270,9 @@ curl -X POST https://<deine-domain>/api/reset-posters
 
 Das leert nur automatisch gefundene Poster — von Hand eingetragene
 (`posterSource: "manual"`) bleiben erhalten. Beim nächsten Öffnen der App
-werden die geleerten Einträge neu gesucht.
+werden die geleerten Einträge neu gesucht. Der Knopf in der App gibt
+dabei auch die Suche nach Jahr, Regie und IMDb-Note wieder frei; das ist
+der Weg, sie nach dem Nachtragen eines Schlüssels erneut zu holen.
 
 ### Wenn ein Poster fehlt
 
@@ -243,7 +291,7 @@ fünf Kandidatentitel und den höchsten erreichten Ähnlichkeitswert:
   "url": null,
   "debug": {
     "title": "Severance", "category": "series", "minSimilarity": 0.6,
-    "tmdb": "aktiv", "steamgriddb": "aktiv",
+    "tmdb": "aktiv", "steamgriddb": "aktiv", "omdb": "aktiv",
     "sources": [
       { "source": "TVMaze", "status": 200, "error": null,
         "candidates": 3, "titles": ["Severance", "..."], "bestScore": 1 },
@@ -261,6 +309,11 @@ zu weit auseinanderlag (`bestScore` unter `minSimilarity`). Das Feld
 `TMDB` bedeutet, dass er nicht gültig ist. Ein hoher
 `bestScore` bei `url: null` heißt: Titel gefunden, aber ohne Bild.
 Ohne `debug=1` bleibt die Antwort unverändert schlank.
+
+Unter `angaben` steht daneben, was TMDB-Details und OMDb geantwortet
+haben — damit lässt sich eine fehlende IMDb-Note genauso nachvollziehen
+wie ein fehlendes Poster. `omdb` zeigt, ob der OMDb-Schlüssel erkannt
+wurde.
 
 ---
 
@@ -284,7 +337,7 @@ vercel dev          # startet Frontend + API zusammen
 | POST | `/api/items` | Neuen Eintrag anlegen |
 | PUT | `/api/items?id=…` | Eintrag ändern |
 | DELETE | `/api/items?id=…` | Eintrag löschen |
-| GET | `/api/poster?title=…&category=…` | Poster-URL suchen (`&debug=1` für Diagnose) |
+| GET | `/api/poster?title=…&category=…` | Poster-URL suchen, dazu Jahr, Regie und IMDb-Note (`&debug=1` für Diagnose) |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |

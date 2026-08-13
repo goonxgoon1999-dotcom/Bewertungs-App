@@ -85,6 +85,7 @@ async function init() {
   await sql`CREATE INDEX IF NOT EXISTS media_items_category_idx ON media_items (category)`;
 
   await migrateForGames();
+  await ensureAngaben();
   await ensureSeasons();
   await ensureHeaderImages();
 
@@ -166,6 +167,18 @@ async function migrateForGames() {
       END IF;
     END $$
   `;
+}
+
+/**
+ * Angaben zum Werk: Erscheinungsjahr, Regie und die IMDb-Note als
+ * Vergleichswert. Alle drei sind NULL-bar — bestehende Zeilen bleiben
+ * unveraendert und laden die Werte spaeter automatisch nach, genau wie
+ * es bei den Postern schon laeuft. Bei Spielen bleiben sie leer.
+ */
+async function ensureAngaben() {
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS release_year INTEGER`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS director TEXT`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS imdb_rating REAL`;
 }
 
 /* Kategorien, die optional in Staffeln unterteilt werden koennen. */
@@ -356,6 +369,11 @@ export function rowToItem(r) {
     poster: r.poster || "",
     posterSource: r.poster_source || undefined,
     backdrop: r.backdrop || "",
+    // Angaben zum Werk. Nicht gesetzt heisst null, nicht 0 — sonst
+    // stuende bei jedem Eintrag ohne Daten das Jahr 0 in der App.
+    releaseYear: r.release_year === null || r.release_year === undefined ? null : Number(r.release_year),
+    director: r.director || null,
+    imdbRating: r.imdb_rating === null || r.imdb_rating === undefined ? null : Number(r.imdb_rating),
     values,
     personal: Number(r.personal),
     createdAt: Number(r.created_at),
@@ -388,6 +406,27 @@ export function validateItem(body) {
   }
   if (body.poster != null && typeof body.poster !== "string") errors.push("Ungültige Poster-URL.");
   if (body.backdrop != null && typeof body.backdrop !== "string") errors.push("Ungültige Backdrop-URL.");
+
+  // Angaben zum Werk sind durchweg optional — sie werden automatisch
+  // nachgeladen und duerfen deshalb jederzeit fehlen.
+  if (
+    body.releaseYear != null &&
+    (typeof body.releaseYear !== "number" || !Number.isFinite(body.releaseYear))
+  ) {
+    errors.push("Ungültiges Erscheinungsjahr.");
+  }
+  if (body.director != null && typeof body.director !== "string") {
+    errors.push("Ungültiger Regisseur.");
+  }
+  if (
+    body.imdbRating != null &&
+    (typeof body.imdbRating !== "number" ||
+      Number.isNaN(body.imdbRating) ||
+      body.imdbRating < 0 ||
+      body.imdbRating > 10)
+  ) {
+    errors.push("Ungültige IMDb-Note (0–10 erforderlich).");
+  }
 
   errors.push(...validateSeasons(body.seasons, body.category));
 
