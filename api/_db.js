@@ -87,6 +87,7 @@ async function init() {
   await migrateForGames();
   await ensureAngaben();
   await ensureWatchlist();
+  await ensureWatchCount();
   await ensureSeasons();
   await ensureHeaderImages();
 
@@ -201,6 +202,49 @@ async function ensureWatchlist() {
   await sql`ALTER TABLE media_items ALTER COLUMN personal DROP NOT NULL`;
 
   await sql`CREATE INDEX IF NOT EXISTS media_items_watchlist_idx ON media_items (watchlist)`;
+}
+
+/* ----------------------------------------------------------------
+   Zaehler: wie oft wurde das Werk geschaut bzw. gespielt?
+
+   Ein bewerteter Eintrag wurde mindestens einmal gesehen — deshalb ist
+   1 der Startwert und zugleich die Untergrenze. Die Obergrenze ist rein
+   defensiv: sie haelt Tippfehler aus der Datenbank heraus.
+   ---------------------------------------------------------------- */
+export const WATCH_COUNT_DEFAULT = 1;
+export const WATCH_COUNT_MIN = 1;
+export const WATCH_COUNT_MAX = 9999;
+
+/**
+ * Spalte fuer den Zaehler. Wie alle Migrationen hier rein strukturell:
+ * bestehende Zeilen bekommen ueber den DEFAULT die 1 und bleiben damit
+ * genau das, was sie sind — einmal geschaut, einmal bewertet.
+ *
+ * Die 1 steht als Literal im Befehl, nicht als eingesetzter Wert:
+ * Postgres erlaubt in DDL keine Parameter. Sie muss deshalb zu
+ * WATCH_COUNT_DEFAULT passen.
+ */
+async function ensureWatchCount() {
+  await sql`
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS watch_count INTEGER NOT NULL DEFAULT 1
+  `;
+}
+
+/**
+ * Zaehlerwert aus einer Anfrage.
+ *
+ * Fehlt das Feld, kommt `null` zurueck — der Aufrufer laesst den
+ * gespeicherten Wert dann unangetastet. Das ist wichtig, weil nicht
+ * jeder Speichervorgang den Zaehler mitschickt (das automatische
+ * Nachladen von Postern etwa): ohne diese Unterscheidung wuerde jeder
+ * solche Aufruf den Zaehler stillschweigend auf 1 zuruecksetzen.
+ */
+export function normalizeWatchCount(wert) {
+  if (wert == null) return null;
+  if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
+  const ganz = Math.round(wert);
+  return Math.min(WATCH_COUNT_MAX, Math.max(WATCH_COUNT_MIN, ganz));
 }
 
 /* Kategorien, die optional in Staffeln unterteilt werden koennen. */
@@ -398,6 +442,12 @@ export function rowToItem(r) {
     imdbRating: r.imdb_rating === null || r.imdb_rating === undefined ? null : Number(r.imdb_rating),
     // Vorgemerkt statt bewertet: dann gibt es keine Werte und keine Note.
     watchlist: r.watchlist === true,
+    // Wie oft geschaut/gespielt. Aeltere Zeilen ohne Spalte gelten als
+    // einmal gesehen — dasselbe, was der Spalten-DEFAULT vorgibt.
+    watchCount:
+      r.watch_count === null || r.watch_count === undefined
+        ? WATCH_COUNT_DEFAULT
+        : Number(r.watch_count),
     values,
     // Ohne Bauchgefuehl bleibt es null — Number(null) waere 0 und saehe
     // aus wie eine echte, sehr schlechte Bewertung.
@@ -427,7 +477,7 @@ export function validateItem(body) {
     if (body.seasons != null && Array.isArray(body.seasons) && body.seasons.length) {
       errors.push("Vorgemerkte Einträge haben keine Staffeln.");
     }
-    return errors.concat(angabenFehler(body));
+    return errors.concat(angabenFehler(body)).concat(zaehlerFehler(body));
   }
 
   const values = body.values || {};
@@ -441,9 +491,28 @@ export function validateItem(body) {
     errors.push("Ungültiges Bauchgefühl (0–10 erforderlich).");
   }
   errors.push(...angabenFehler(body));
+  errors.push(...zaehlerFehler(body));
   errors.push(...validateSeasons(body.seasons, body.category));
 
   return errors;
+}
+
+/**
+ * Der Zaehler ist optional: fehlt er, bleibt der gespeicherte Wert
+ * stehen. Kommt er mit, muss es eine ganze Zahl ab 1 sein — 0 oder
+ * negative Werte waeren keine Ansicht, die je stattgefunden hat.
+ */
+function zaehlerFehler(body) {
+  if (body.watchCount == null) return [];
+  if (
+    typeof body.watchCount !== "number" ||
+    !Number.isFinite(body.watchCount) ||
+    body.watchCount < WATCH_COUNT_MIN ||
+    body.watchCount > WATCH_COUNT_MAX
+  ) {
+    return ["Ungültiger Zähler (" + WATCH_COUNT_MIN + "–" + WATCH_COUNT_MAX + " erforderlich)."];
+  }
+  return [];
 }
 
 /**
