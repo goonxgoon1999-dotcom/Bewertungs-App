@@ -1109,6 +1109,16 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
    eingegebene Titel selbst zur Auswahl — so bleibt das Anlegen von
    Hand moeglich wie bisher.
    ============================================================ */
+/* Stabile Kennung eines Treffers: normalisierter Titel und Jahr.
+   Bewusst NICHT die Position in der Trefferliste — die zeigt nach einer
+   zweiten Suche auf einen voellig anderen Titel, und der Haken „vorgemerkt"
+   landete dann beim Falschen. */
+function kandidatSchluessel(kandidat) {
+  const name = kandidat && typeof kandidat.title === "string" ? kandidat.title.trim().toLowerCase() : "";
+  const jahr = kandidat && typeof kandidat.year === "number" ? kandidat.year : "";
+  return name + "::" + jahr;
+}
+
 function TrefferZeile({ treffer, busy, vorgemerkt, onWatchlist, onBewerten }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}>
@@ -1163,6 +1173,8 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
   const [fehler, setFehler] = useState("");
   // Was in diesem Durchgang schon vorgemerkt wurde — so laesst sich
   // mehreres hintereinander hinzufuegen, ohne den Ueberblick zu verlieren.
+  // Gemerkt wird der Kandidat selbst (Titel + Jahr), nicht seine Position:
+  // eine zweite Suche stellt die Liste komplett neu zusammen.
   const [vorgemerkt, setVorgemerkt] = useState(() => new Set());
 
   async function suchen() {
@@ -1183,9 +1195,9 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
     }
   }
 
-  async function vormerken(kandidat, schluessel) {
+  async function vormerken(kandidat) {
     const ok = await onWatchlist(kandidat);
-    if (ok) setVorgemerkt((alt) => new Set([...alt, schluessel]));
+    if (ok) setVorgemerkt((alt) => new Set(alt).add(kandidatSchluessel(kandidat)));
   }
 
   const eigener = { title: text.trim(), year: null, poster: "" };
@@ -1243,8 +1255,8 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
                 key={t.title + "::" + i}
                 treffer={t}
                 busy={busy}
-                vorgemerkt={vorgemerkt.has(i)}
-                onWatchlist={() => vormerken(t, i)}
+                vorgemerkt={vorgemerkt.has(kandidatSchluessel(t))}
+                onWatchlist={() => vormerken(t)}
                 onBewerten={() => onBewerten(t)}
               />
             ))
@@ -1260,8 +1272,8 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
               <TrefferZeile
                 treffer={eigener}
                 busy={busy}
-                vorgemerkt={vorgemerkt.has("eigen")}
-                onWatchlist={() => vormerken(eigener, "eigen")}
+                vorgemerkt={vorgemerkt.has(kandidatSchluessel(eigener))}
+                onWatchlist={() => vormerken(eigener)}
                 onBewerten={() => onBewerten(eigener)}
               />
             </div>
