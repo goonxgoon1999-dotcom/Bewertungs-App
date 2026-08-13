@@ -364,6 +364,7 @@ vercel dev          # startet Frontend + API zusammen
 | PUT | `/api/items?id=…` | Eintrag ändern |
 | DELETE | `/api/items?id=…` | Eintrag löschen |
 | GET | `/api/poster?title=…&category=…` | Poster-URL suchen, dazu Jahr, Regie und IMDb-Note (`&debug=1` für Diagnose) |
+| GET | `/api/search?title=…&category=…` | Mehrere Titel-Treffer zur Auswahl beim Anlegen |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |
@@ -371,6 +372,34 @@ vercel dev          # startet Frontend + API zusammen
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
 alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
+
+---
+
+## Watchlist
+
+Jede Kategorie hat zwei Unter-Reiter: **Bewertet** (die gewohnte
+Rangliste) und **Watchlist** mit der Zahl der Vormerkungen. Ein Eintrag
+ist immer nur eines von beidem — vorgemerkt **oder** bewertet.
+
+Vorgemerkte Einträge stehen in derselben Tabelle, tragen aber
+`watchlist = true` und haben weder Kriterien-Werte noch Bauchgefühl.
+Sie tauchen deshalb in keiner Rangliste, keiner Statistik und keinem
+CSV-Export auf. Poster, Jahr und Regie werden trotzdem automatisch
+nachgeladen wie bei jedem anderen Eintrag.
+
+**Anlegen:** „+ Neu hinzufügen" öffnet eine Titelsuche (`api/search.js`)
+in denselben Quellen wie die Poster — TMDB für Filme, TVMaze für Serien,
+Jikan für Anime, SteamGridDB für Spiele. Je Treffer stehen zwei Wege
+offen: **+ Watchlist** merkt nur vor, **Bewerten** führt direkt ins
+gewohnte Bewertungsformular. Was keine Quelle kennt, lässt sich unter
+den Treffern mit dem eingegebenen Titel von Hand anlegen.
+
+**Aus der Watchlist heraus bewerten:** „✓ Ansehen" öffnet dasselbe
+Bewertungsformular. Nach dem Speichern behält der Eintrag seine ID,
+verliert die Vormerkung und steht in der Rangliste.
+
+**Entfernen:** das kleine × neben dem Eintrag löscht die Vormerkung
+sofort — es gibt dort nichts zu verlieren außer dem Titel selbst.
 
 ---
 

@@ -439,6 +439,26 @@ function angabenUnvollstaendig(entry) {
   return entry.releaseYear == null || !entry.director || entry.imdbRating == null;
 }
 
+/* ------------------------------------------------------------
+   Watchlist
+
+   Ein Eintrag ist entweder vorgemerkt oder bewertet, nie beides. Das
+   Merkmal steht am Eintrag selbst; vorgemerkte tauchen in keiner
+   Rangliste und in keiner Statistik auf.
+   ------------------------------------------------------------ */
+function istVorgemerkt(entry) {
+  return entry && entry.watchlist === true;
+}
+
+/** "hinzugefuegt vor X Tagen" — angefangen bei heute. */
+function hinzugefuegtVor(zeit) {
+  if (!zeit) return "hinzugefügt";
+  const tage = Math.floor((Date.now() - zeit) / 86400000);
+  if (tage <= 0) return "heute hinzugefügt";
+  if (tage === 1) return "gestern hinzugefügt";
+  return "hinzugefügt vor " + tage + " Tagen";
+}
+
 /* Fassung der Angaben, muss zu ANGABEN_VERSION in api/poster.js passen.
    Sie haengt an jeder Anfrage, damit eine aeltere Antwort aus dem CDN
    nicht faelschlich als "nichts gefunden" durchgeht. */
@@ -658,6 +678,16 @@ const api = {
     );
     if (!res.ok) return null;
     return res.json();
+  },
+  /* Mehrere Treffer zur Auswahl — fuer das Anlegen neuer Eintraege.
+     Anders als findMedia, das genau einen bestmoeglichen liefert. */
+  async searchTitles(title, category) {
+    const res = await fetch(
+      "/api/search?title=" + encodeURIComponent(title) + "&category=" + encodeURIComponent(category)
+    );
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Suche fehlgeschlagen");
+    const data = await res.json();
+    return Array.isArray(data.results) ? data.results : [];
   },
   async loadHeaderImages() {
     const res = await fetch("/api/header-images");
@@ -1068,6 +1098,234 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
 /* ============================================================
    BEWERTUNGSFORMULAR (Neu + Bearbeiten) — für jeden Eintrag identisch
    ============================================================ */
+/* ============================================================
+   NEUER EINTRAG — Titelsuche mit Trefferliste
+
+   Gesucht wird serverseitig in denselben Quellen, aus denen auch die
+   Poster kommen (TMDB, TVMaze, Jikan, SteamGridDB). Je Treffer stehen
+   zwei Wege offen: nur vormerken oder gleich bewerten.
+
+   Was keine Quelle kennt, geht trotzdem: unter den Treffern steht der
+   eingegebene Titel selbst zur Auswahl — so bleibt das Anlegen von
+   Hand moeglich wie bisher.
+   ============================================================ */
+function TrefferZeile({ treffer, busy, vorgemerkt, onWatchlist, onBewerten }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}>
+      <Poster url={treffer.poster} title={treffer.title} size={40} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {treffer.title}
+        </div>
+        {treffer.year && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2 }}>
+            {treffer.year}
+          </div>
+        )}
+      </div>
+      {vorgemerkt ? (
+        <span style={{ fontSize: 12.5, color: "#77746c", flexShrink: 0 }}>✓ vorgemerkt</span>
+      ) : (
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <button
+            onClick={onWatchlist}
+            disabled={busy}
+            style={{
+              padding: "8px 10px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
+              background: "transparent", color: "var(--accent, #C9A227)",
+              border: "1px solid var(--accent, #C9A227)", fontWeight: 600, opacity: busy ? 0.5 : 1,
+            }}
+          >
+            + Watchlist
+          </button>
+          <button
+            onClick={onBewerten}
+            disabled={busy}
+            style={{
+              padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
+              background: "var(--accent, #C9A227)", color: "#17171A",
+              border: "1px solid var(--accent, #C9A227)", fontWeight: 700, opacity: busy ? 0.5 : 1,
+            }}
+          >
+            Bewerten
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, onCancel }) {
+  const [text, setText] = useState("");
+  const [treffer, setTreffer] = useState(null); // null = noch nicht gesucht
+  const [gesuchtNach, setGesuchtNach] = useState("");
+  const [laeuft, setLaeuft] = useState(false);
+  const [fehler, setFehler] = useState("");
+  // Was in diesem Durchgang schon vorgemerkt wurde — so laesst sich
+  // mehreres hintereinander hinzufuegen, ohne den Ueberblick zu verlieren.
+  const [vorgemerkt, setVorgemerkt] = useState(() => new Set());
+
+  async function suchen() {
+    const frage = text.trim();
+    if (!frage || laeuft) return;
+    setLaeuft(true);
+    setFehler("");
+    try {
+      const ergebnis = await api.searchTitles(frage, category);
+      setTreffer(ergebnis);
+      setGesuchtNach(frage);
+    } catch (e) {
+      setFehler(e.message);
+      setTreffer([]);
+      setGesuchtNach(frage);
+    } finally {
+      setLaeuft(false);
+    }
+  }
+
+  async function vormerken(kandidat, schluessel) {
+    const ok = await onWatchlist(kandidat);
+    if (ok) setVorgemerkt((alt) => new Set([...alt, schluessel]));
+  }
+
+  const eigener = { title: text.trim(), year: null, poster: "" };
+
+  return (
+    <div style={{ background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12, padding: 20, marginBottom: 28 }}>
+      <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace", marginBottom: 14 }}>
+        {categoryLabel.toUpperCase()} · HINZUFÜGEN
+      </div>
+
+      <label style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace" }}>
+        TITEL SUCHEN
+      </label>
+      <div style={{ display: "flex", gap: 8, marginTop: 6, marginBottom: 14 }}>
+        <input
+          type="text"
+          value={text}
+          autoFocus
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") suchen(); }}
+          placeholder="Titel eingeben"
+          style={{
+            flex: "1 1 auto", minWidth: 0, boxSizing: "border-box", background: "#141416",
+            border: "1px solid #33333a", borderRadius: 8, padding: "14px 12px",
+            color: "#EDEAE3", fontSize: 16,
+          }}
+        />
+        <button
+          onClick={suchen}
+          disabled={!text.trim() || laeuft}
+          style={{
+            flex: "0 0 auto", padding: "0 18px", borderRadius: 8, fontSize: 14, fontWeight: 700,
+            background: text.trim() ? "var(--accent, #C9A227)" : "#2A2A2E",
+            color: text.trim() ? "#17171A" : "#77746c",
+            border: "none", cursor: text.trim() ? "pointer" : "default",
+          }}
+        >
+          Suchen
+        </button>
+      </div>
+
+      {laeuft && <div style={{ fontSize: 13, color: "#9A968C", marginBottom: 10 }}>Wird gesucht…</div>}
+      {fehler && <div style={{ color: "#d9736a", fontSize: 12.5, marginBottom: 10 }}>{fehler}</div>}
+
+      {treffer && !laeuft && (
+        <>
+          {treffer.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5, marginBottom: 6 }}>
+              Keine Treffer für „{gesuchtNach}". Du kannst den Titel trotzdem
+              unten von Hand übernehmen.
+            </div>
+          ) : (
+            treffer.map((t, i) => (
+              <TrefferZeile
+                key={t.title + "::" + i}
+                treffer={t}
+                busy={busy}
+                vorgemerkt={vorgemerkt.has(i)}
+                onWatchlist={() => vormerken(t, i)}
+                onBewerten={() => onBewerten(t)}
+              />
+            ))
+          )}
+
+          {/* Eigener Titel: fuer alles, was keine Quelle kennt. */}
+          {eigener.title && (
+            <div style={{ border: "1px dashed #33333a", borderRadius: 8, padding: 12, marginTop: 14 }}>
+              <div style={{ fontSize: 11.5, color: "#77746c", marginBottom: 8, lineHeight: 1.5 }}>
+                Nicht dabei? Mit dem eingegebenen Titel anlegen — Poster und
+                Angaben werden wie gewohnt automatisch nachgeladen.
+              </div>
+              <TrefferZeile
+                treffer={eigener}
+                busy={busy}
+                vorgemerkt={vorgemerkt.has("eigen")}
+                onWatchlist={() => vormerken(eigener, "eigen")}
+                onBewerten={() => onBewerten(eigener)}
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      <button
+        onClick={onCancel}
+        style={{
+          width: "100%", marginTop: 18, padding: "13px", background: "transparent",
+          color: "#9A968C", border: "1px solid #33333a", borderRadius: 8,
+          cursor: "pointer", fontSize: 15,
+        }}
+      >
+        {vorgemerkt.size ? "Fertig" : "Abbrechen"}
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   WATCHLIST — vorgemerkt, noch ohne Note
+   ============================================================ */
+function WatchlistZeile({ eintrag, busy, onBewerten, onEntfernen }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326" }}>
+      <Poster url={eintrag.poster} title={eintrag.title} size={34} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {eintrag.title}
+        </div>
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {typeof eintrag.releaseYear === "number" ? eintrag.releaseYear + " · " : ""}
+          {hinzugefuegtVor(eintrag.createdAt)}
+        </div>
+      </div>
+      <button
+        onClick={onBewerten}
+        disabled={busy}
+        style={{
+          flexShrink: 0, padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
+          background: "transparent", color: "var(--accent, #C9A227)",
+          border: "1px solid var(--accent, #C9A227)", fontWeight: 600, opacity: busy ? 0.5 : 1,
+        }}
+      >
+        ✓ Ansehen
+      </button>
+      <button
+        onClick={onEntfernen}
+        disabled={busy}
+        title="Aus der Watchlist entfernen"
+        aria-label={eintrag.title + " aus der Watchlist entfernen"}
+        style={{
+          flexShrink: 0, background: "transparent", border: "none", color: "#d9736a",
+          fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1,
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 function RatingForm({ category, categoryLabel, initialTitle, initialPoster, initialValues, initialPersonal, initialSeasons, onSave, onCancel }) {
   const criteria = criteriaFor(category);
   const [title, setTitle] = useState(initialTitle || "");
@@ -2059,7 +2317,14 @@ export default function App() {
   const [category, setCategory] = useState("movie");
   const [activeTab, setActiveTab] = useState("movie"); // movie | series | anime | stats
   const [search, setSearch] = useState("");
-  const [mode, setMode] = useState("list"); // list | form | edit
+  // list | suche | form | edit | watchlist-form
+  const [mode, setMode] = useState("list");
+  // Unter-Reiter innerhalb einer Kategorie: bewertet | watchlist
+  const [unterReiter, setUnterReiter] = useState("bewertet");
+  // Der aus der Suche gewaehlte Treffer, den das Formular vorbelegt.
+  const [gewaehlterTreffer, setGewaehlterTreffer] = useState(null);
+  // Der vorgemerkte Eintrag, der gerade bewertet wird.
+  const [bewerteVorgemerkt, setBewerteVorgemerkt] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [showExport, setShowExport] = useState(false);
@@ -2084,6 +2349,8 @@ export default function App() {
       releaseYear: typeof e.releaseYear === "number" ? e.releaseYear : null,
       director: typeof e.director === "string" && e.director.trim() ? e.director.trim() : null,
       imdbRating: typeof e.imdbRating === "number" ? e.imdbRating : null,
+      // Vorgemerkt statt bewertet — ohne Werte und ohne Endnote.
+      watchlist: e.watchlist === true,
       seasons: Array.isArray(e.seasons)
         ? e.seasons.map((sn, i) => ({
             // Die ID kommt aus der Datenbank und muss beim Speichern
@@ -2251,17 +2518,34 @@ export default function App() {
   const rankedByCategory = useMemo(() => {
     const result = {};
     for (const cat of CATEGORIES) {
-      const list = (items[cat.key] || []).map((f) => ({
-        ...f,
-        score: entryScore(f, cat.key),
-      }));
+      // Vorgemerkte Eintraege haben keine Note und gehoeren deshalb in
+      // keine Rangliste — und damit auch in keine Statistik.
+      const list = (items[cat.key] || [])
+        .filter((f) => !istVorgemerkt(f))
+        .map((f) => ({
+          ...f,
+          score: entryScore(f, cat.key),
+        }));
       list.sort((a, b) => sortWert(b.score) - sortWert(a.score));
       result[cat.key] = list;
     }
     return result;
   }, [items]);
 
+  /* Die Watchlist je Kategorie: neueste Vormerkung zuerst. Eine
+     Sortierung nach Note gibt es hier nicht — es gibt noch keine. */
+  const watchlistByCategory = useMemo(() => {
+    const result = {};
+    for (const cat of CATEGORIES) {
+      result[cat.key] = (items[cat.key] || [])
+        .filter(istVorgemerkt)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    }
+    return result;
+  }, [items]);
+
   const currentList = rankedByCategory[category];
+  const watchlistList = watchlistByCategory[category] || [];
   const accent = accentFor(category);
 
   /* Im Statistik-Tab zaehlt die Kopfzeile alle Kategorien zusammen,
@@ -2372,15 +2656,104 @@ export default function App() {
         title,
         poster,
         posterSource: poster ? "manual" : undefined,
+        // Aus der Suche uebernommenes Jahr; sonst traegt es das
+        // automatische Nachladen nach.
+        releaseYear: gewaehlterTreffer ? gewaehlterTreffer.year : undefined,
         values,
         personal,
         seasons: seasons || [],
       });
       setItems((prev) => ({ ...prev, [category]: [normalizeEntry(created), ...prev[category]] }));
       setSaveError("");
+      setGewaehlterTreffer(null);
       setMode("list");
     } catch (e) {
       setSaveError("Nicht gespeichert: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ---- Watchlist ----
+     Vormerken legt einen Eintrag ohne jede Bewertung an. Poster und
+     Angaben holt danach dasselbe automatische Nachladen wie bei jedem
+     anderen Eintrag. */
+  async function watchlistHinzufuegen({ title, poster, year }) {
+    const name = (title || "").trim();
+    if (!name) return false;
+    setBusy(true);
+    try {
+      const created = await api.create({
+        category,
+        title: name,
+        poster: poster || "",
+        posterSource: poster ? "auto" : undefined,
+        releaseYear: typeof year === "number" ? year : undefined,
+        watchlist: true,
+      });
+      setItems((prev) => ({ ...prev, [category]: [normalizeEntry(created), ...prev[category]] }));
+      setSaveError("");
+      return true;
+    } catch (e) {
+      setSaveError("Nicht vorgemerkt: " + e.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function watchlistEntfernen(id) {
+    setBusy(true);
+    try {
+      await api.remove(id);
+      setItems((prev) => ({ ...prev, [category]: prev[category].filter((f) => f.id !== id) }));
+      setSaveError("");
+    } catch (e) {
+      setSaveError("Entfernen fehlgeschlagen: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* Aus vorgemerkt wird bewertet: derselbe Eintrag behaelt seine ID,
+     verliert das Merkmal und bekommt seine Werte. Damit verschwindet er
+     aus der Watchlist und steht in der Rangliste. */
+  async function watchlistBewerten(id, { title, poster, values, personal, seasons }) {
+    const current = (items[category] || []).find((f) => f.id === id);
+    if (!current) return;
+
+    // Ein von Hand geaendertes Poster gilt als selbst gesetzt; das
+    // automatisch gefundene behaelt seine Herkunft.
+    const nextSource = !poster
+      ? undefined
+      : poster !== current.poster
+        ? "manual"
+        : current.posterSource;
+
+    setBusy(true);
+    try {
+      const saved = await api.update(id, {
+        ...current,
+        category,
+        title,
+        poster,
+        posterSource: nextSource,
+        values,
+        personal,
+        seasons: seasons || [],
+        watchlist: false,
+      });
+      setItems((prev) => ({
+        ...prev,
+        [category]: prev[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      }));
+      setSaveError("");
+      setBewerteVorgemerkt(null);
+      // Der Eintrag steht jetzt in der Rangliste — dorthin auch zeigen.
+      setUnterReiter("bewertet");
+      setMode("list");
+    } catch (e) {
+      setSaveError("Bewertung nicht gespeichert: " + e.message);
     } finally {
       setBusy(false);
     }
@@ -2621,17 +2994,22 @@ export default function App() {
         for (const catKey of CATEGORY_KEYS) {
           const arr = Array.isArray(data[catKey]) ? data[catKey] : [];
           for (const entry of arr) {
+            // Vorgemerkte Eintraege haben keine Werte — sie waeren sonst
+            // beim Einspielen eines Backups stillschweigend verloren.
+            const vorgemerkt = !!(entry && entry.watchlist === true);
             if (
               entry &&
               typeof entry.title === "string" &&
               entry.title.trim() &&
-              entry.values &&
-              isValuesComplete(entry.values, catKey) &&
-              typeof entry.personal === "number" &&
-              entry.personal >= 0 &&
-              entry.personal <= 10
+              (vorgemerkt ||
+                (entry.values &&
+                  isValuesComplete(entry.values, catKey) &&
+                  typeof entry.personal === "number" &&
+                  entry.personal >= 0 &&
+                  entry.personal <= 10))
             ) {
               cleaned[catKey].push({
+                watchlist: vorgemerkt,
                 id: entry.id || catKey + "_import_" + Date.now() + "_" + totalValid,
                 category: catKey,
                 title: entry.title.trim(),
@@ -2643,10 +3021,10 @@ export default function App() {
                 releaseYear: typeof entry.releaseYear === "number" ? entry.releaseYear : null,
                 director: typeof entry.director === "string" ? entry.director : null,
                 imdbRating: typeof entry.imdbRating === "number" ? entry.imdbRating : null,
-                seasons: gueltigeStaffeln(entry.seasons, catKey),
+                seasons: vorgemerkt ? [] : gueltigeStaffeln(entry.seasons, catKey),
                 genre: Array.isArray(entry.genre) ? entry.genre : [],
-                values: entry.values,
-                personal: entry.personal,
+                values: vorgemerkt ? emptyValues(catKey) : entry.values,
+                personal: vorgemerkt ? null : entry.personal,
                 createdAt: entry.createdAt || Date.now(),
                 updatedAt: entry.updatedAt || Date.now(),
               });
@@ -2804,6 +3182,7 @@ export default function App() {
                   setCategory(c.key);
                   setActiveTab(c.key);
                   setMode("list");
+                  setUnterReiter("bewertet");
                   setSelectedId(null);
                   setSearch("");
                 }}
@@ -2861,8 +3240,37 @@ export default function App() {
             </div>
           )}
 
+          {mode === "suche" && (
+            <NeuerEintrag
+              category={category}
+              categoryLabel={catInfo.singular}
+              busy={busy}
+              onWatchlist={(t) => watchlistHinzufuegen({ title: t.title, poster: t.poster, year: t.year })}
+              onBewerten={(t) => { setGewaehlterTreffer(t); setMode("form"); }}
+              onCancel={() => setMode("list")}
+            />
+          )}
+
           {mode === "form" && (
-            <RatingForm category={category} categoryLabel={catInfo.singular} onSave={addEntry} onCancel={() => setMode("list")} />
+            <RatingForm
+              category={category}
+              categoryLabel={catInfo.singular}
+              initialTitle={gewaehlterTreffer ? gewaehlterTreffer.title : ""}
+              initialPoster={gewaehlterTreffer ? gewaehlterTreffer.poster || "" : ""}
+              onSave={addEntry}
+              onCancel={() => { setGewaehlterTreffer(null); setMode("list"); }}
+            />
+          )}
+
+          {mode === "watchlist-form" && bewerteVorgemerkt && (
+            <RatingForm
+              category={category}
+              categoryLabel={catInfo.singular}
+              initialTitle={bewerteVorgemerkt.title}
+              initialPoster={bewerteVorgemerkt.poster}
+              onSave={(payload) => watchlistBewerten(bewerteVorgemerkt.id, payload)}
+              onCancel={() => { setBewerteVorgemerkt(null); setMode("list"); }}
+            />
           )}
 
           {mode === "edit" && editingEntry && (
@@ -2881,13 +3289,69 @@ export default function App() {
 
           {mode === "list" && (
             <>
+              {/* Unter-Reiter: bewertete Eintraege oder Watchlist. */}
+              <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+                {[
+                  { key: "bewertet", label: "Bewertet" },
+                  {
+                    key: "watchlist",
+                    label: "Watchlist" + (watchlistList.length ? " · " + watchlistList.length : ""),
+                  },
+                ].map((r) => (
+                  <button
+                    key={r.key}
+                    onClick={() => setUnterReiter(r.key)}
+                    aria-pressed={unterReiter === r.key}
+                    style={{
+                      padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                      background: unterReiter === r.key ? "var(--accent, #C9A227)" : "transparent",
+                      color: unterReiter === r.key ? "#17171A" : "#9A968C",
+                      border: "1px solid " + (unterReiter === r.key ? "var(--accent, #C9A227)" : "#33333a"),
+                      fontWeight: unterReiter === r.key ? 700 : 400,
+                    }}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+
               <button
-                onClick={() => setMode("form")}
+                onClick={() => setMode("suche")}
                 style={{ width: "100%", padding: "16px", background: "var(--accent, #C9A227)", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15.5, cursor: "pointer", marginBottom: 20 }}
               >
-                + Neu bewerten
+                + Neu hinzufügen
               </button>
+            </>
+          )}
 
+          {mode === "list" && unterReiter === "watchlist" && (
+            <>
+              <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
+                {watchlistList.length === 0
+                  ? "Nichts vorgemerkt."
+                  : watchlistList.length + (watchlistList.length === 1 ? " Eintrag vorgemerkt" : " Einträge vorgemerkt")}
+              </div>
+              {watchlistList.length === 0 ? (
+                <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
+                  Noch nichts vorgemerkt. Über „+ Neu hinzufügen" kannst du
+                  Titel auf die Watchlist setzen, ohne sie schon zu bewerten.
+                </div>
+              ) : (
+                watchlistList.map((f) => (
+                  <WatchlistZeile
+                    key={f.id}
+                    eintrag={f}
+                    busy={busy}
+                    onBewerten={() => { setBewerteVorgemerkt(f); setMode("watchlist-form"); }}
+                    onEntfernen={() => watchlistEntfernen(f.id)}
+                  />
+                ))
+              )}
+            </>
+          )}
+
+          {mode === "list" && unterReiter === "bewertet" && (
+            <>
               {/* Suchzeile: Feld schrumpft mit (minWidth 0), die drei
                   Knoepfe bleiben als Symbole in fester Breite — so passt
                   die Zeile auch auf schmale Displays ohne Querscrollen. */}
