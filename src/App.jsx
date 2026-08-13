@@ -1565,9 +1565,99 @@ function statsFor(list) {
 
 const STATS_SCOPES = [{ key: "all", label: "Alle" }, ...CATEGORIES.map((c) => ({ key: c.key, label: c.label }))];
 
-/* Die gemeinsame Rangliste umfasst Filme, Serien und Anime. Spiele
-   bleiben aussen vor — sie werden nach anderen Kriterien bewertet. */
-const TOP10_GESAMT_KEYS = ["movie", "series", "anime"];
+/* Eine Zeile der Rangliste — dasselbe Format wie ueberall:
+   Rang, Poster, Titel, Endnote. */
+function RanglistenZeile({ platz, eintrag }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #232326" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 18, flexShrink: 0 }}>{platz}</span>
+        <Poster url={eintrag.poster} title={eintrag.title} size={28} />
+        <span style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{eintrag.title}</span>
+      </div>
+      <ScoreBadge score={eintrag.score} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------
+   Top 10 — eine Liste ueber frei kombinierbare Kategorien.
+
+   Die Knoepfe sind einzeln an- und abschaltbar; ein aktiver traegt
+   die Farbe seiner Kategorie. Die Auswahl ist unabhaengig von der
+   Detailauswertung darueber und aendert an keiner Berechnung etwas:
+   sortiert wird wie in jeder Rangliste nach der Endnote.
+   ------------------------------------------------------------ */
+function TopTen({ ranked }) {
+  const [gewaehlt, setGewaehlt] = useState(() => new Set(CATEGORY_KEYS));
+
+  function umschalten(key) {
+    setGewaehlt((alt) => {
+      const neu = new Set(alt);
+      if (neu.has(key)) neu.delete(key);
+      else neu.add(key);
+      return neu;
+    });
+  }
+
+  const auswahl = CATEGORIES.filter((c) => gewaehlt.has(c.key));
+
+  const { liste, gesamt } = useMemo(() => {
+    const alle = CATEGORY_KEYS.filter((k) => gewaehlt.has(k)).flatMap((k) => ranked[k]);
+    return {
+      liste: [...alle].sort((a, b) => sortWert(b.score) - sortWert(a.score)).slice(0, 10),
+      gesamt: alle.length,
+    };
+  }, [ranked, gewaehlt]);
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>Top 10</h3>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+        {CATEGORIES.map((c) => {
+          const aktiv = gewaehlt.has(c.key);
+          const farbe = accentFor(c.key);
+          return (
+            <button
+              key={c.key}
+              onClick={() => umschalten(c.key)}
+              aria-pressed={aktiv}
+              style={{
+                padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                background: aktiv ? farbe : "transparent",
+                color: aktiv ? "#17171A" : "#9A968C",
+                border: "1px solid " + (aktiv ? farbe : "#33333a"),
+                fontWeight: aktiv ? 700 : 400,
+              }}
+            >
+              {c.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
+        {auswahl.length === 0
+          ? "Keine Kategorie ausgewählt"
+          : auswahl.map((c) => c.label).join(", ") +
+            " · " +
+            gesamt +
+            (gesamt === 1 ? " Eintrag" : " Einträge")}
+      </div>
+
+      {auswahl.length === 0 ? (
+        <div style={{ color: "#55524c", fontSize: 13, padding: "8px 0" }}>
+          Wähle oben mindestens eine Kategorie aus.
+        </div>
+      ) : liste.length === 0 ? (
+        <div style={{ color: "#55524c", fontSize: 13, padding: "8px 0" }}>Keine Einträge.</div>
+      ) : (
+        liste.map((f, i) => <RanglistenZeile key={f.id} platz={i + 1} eintrag={f} />)
+      )}
+    </div>
+  );
+}
 
 function StatsPage({ ranked }) {
   const [scope, setScope] = useState("all");
@@ -1623,24 +1713,6 @@ function StatsPage({ ranked }) {
   }));
   const maxBandCount = Math.max(1, ...bands.map((b) => b.count));
 
-  const top10Lists =
-    scope === "all"
-      ? [
-          // Gesamtliste zuerst: Filme, Serien und Anime gemeinsam nach
-          // Endnote, ohne Kennzeichnung der Herkunftskategorie.
-          {
-            label: "Top 10 Gesamt",
-            list: TOP10_GESAMT_KEYS.flatMap((k) => ranked[k])
-              .sort((a, b) => sortWert(b.score) - sortWert(a.score))
-              .slice(0, 10),
-          },
-          ...CATEGORIES.map((c) => ({
-            label: "Top 10 " + c.label,
-            list: [...ranked[c.key]].sort((a, b) => sortWert(b.score) - sortWert(a.score)).slice(0, 10),
-          })),
-        ]
-      : [{ label: "Top 10", list: [...scopedList].sort((a, b) => sortWert(b.score) - sortWert(a.score)).slice(0, 10) }];
-
   return (
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
       <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>Gesamtstatistik</h2>
@@ -1678,12 +1750,31 @@ function StatsPage({ ranked }) {
       {scopedList.length === 0 ? (
         <div style={{ color: "#77746c", padding: 30, textAlign: "center" }}>Noch keine Einträge in diesem Bereich.</div>
       ) : (
+        <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
+          <StatCard label="ANZAHL" value={scopedStats.count} />
+          <StatCard label="Ø ENDNOTE" value={scopedStats.avg.toFixed(2)} color={scoreToColor(scopedStats.avg)} />
+          <StatCard label="HÖCHSTE" value={scopedStats.max.toFixed(2)} color={scoreToColor(scopedStats.max)} />
+          <StatCard label="NIEDRIGSTE" value={scopedStats.min.toFixed(2)} color={scoreToColor(scopedStats.min)} />
+        </div>
+      )}
+
+      {/* Top 10 steht mit eigenem Filter zwischen Detailauswertung und
+          Bewertungsverteilung — unabhaengig von der Auswahl darueber. */}
+      <TopTen ranked={ranked} />
+
+      {scopedList.length > 0 && (
         <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
-            <StatCard label="ANZAHL" value={scopedStats.count} />
-            <StatCard label="Ø ENDNOTE" value={scopedStats.avg.toFixed(2)} color={scoreToColor(scopedStats.avg)} />
-            <StatCard label="HÖCHSTE" value={scopedStats.max.toFixed(2)} color={scoreToColor(scopedStats.max)} />
-            <StatCard label="NIEDRIGSTE" value={scopedStats.min.toFixed(2)} color={scoreToColor(scopedStats.min)} />
+          <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 14px" }}>Bewertungsverteilung</h3>
+          <div style={{ marginBottom: 28 }}>
+            {bands.map((b) => (
+              <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 62, fontSize: 12, color: "#9A968C", flexShrink: 0 }}>{b.label}</div>
+                <div style={{ flex: 1, height: 14, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ width: `${(b.count / maxBandCount) * 100}%`, height: "100%", background: scoreToColor(b.at) }} />
+                </div>
+                <div style={{ width: 26, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, flexShrink: 0 }}>{b.count}</div>
+              </div>
+            ))}
           </div>
 
           <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 14px" }}>Ø je Kriterium</h3>
@@ -1720,39 +1811,6 @@ function StatsPage({ ranked }) {
                   <div style={{ width: `${(group.avgPersonal / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
                 </div>
               </div>
-            </div>
-          ))}
-
-          <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "24px 0 14px" }}>Bewertungsverteilung</h3>
-          <div style={{ marginBottom: 28 }}>
-            {bands.map((b) => (
-              <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <div style={{ width: 62, fontSize: 12, color: "#9A968C", flexShrink: 0 }}>{b.label}</div>
-                <div style={{ flex: 1, height: 14, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ width: `${(b.count / maxBandCount) * 100}%`, height: "100%", background: scoreToColor(b.at) }} />
-                </div>
-                <div style={{ width: 26, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, flexShrink: 0 }}>{b.count}</div>
-              </div>
-            ))}
-          </div>
-
-          {top10Lists.map((group) => (
-            <div key={group.label} style={{ marginBottom: 24 }}>
-              <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>{group.label}</h3>
-              {group.list.length === 0 ? (
-                <div style={{ color: "#55524c", fontSize: 13, padding: "8px 0" }}>Keine Einträge.</div>
-              ) : (
-                group.list.map((f, i) => (
-                  <div key={f.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #232326" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 18, flexShrink: 0 }}>{i + 1}</span>
-                      <Poster url={f.poster} title={f.title} size={28} />
-                      <span style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</span>
-                    </div>
-                    <ScoreBadge score={f.score} />
-                  </div>
-                ))
-              )}
             </div>
           ))}
         </>
