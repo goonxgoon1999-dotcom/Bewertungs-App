@@ -31,6 +31,19 @@
 
 const CACHE = new Map(); // einfacher Cache pro laufender Funktion
 
+/**
+ * Fassung der Angaben zum Werk (Jahr, Regie, IMDb-Note).
+ *
+ * Die Antwort dieser Funktion wird einen Tag im CDN gehalten und bis zu
+ * eine Woche als veralteter Stand weitergereicht. Wird hier etwas
+ * ergaenzt, kaemen ohne diese Zahl tagelang alte Antworten zurueck, in
+ * denen die neuen Felder fehlen — das Frontend haelt den Eintrag dann
+ * faelschlich fuer aussichtslos. Die Zahl steckt im Cache-Schluessel und
+ * schickt das Frontend als `v` mit; sie hochzuzaehlen entwertet beide
+ * Caches auf einen Schlag.
+ */
+export const ANGABEN_VERSION = 2;
+
 const RESULT_LIMIT = 15; // 10–15 Kandidaten pro Quelle
 const MIN_SIMILARITY = 0.6; // darunter: lieber null
 
@@ -283,6 +296,15 @@ async function fromJikan(title) {
     }
     return {
       titles: titles.filter(Boolean),
+      // Fuer die Angaben zum Werk: Jikan kennt das Startjahr direkt,
+      // die Regie steht hinter der mal_id in einer eigenen Abfrage.
+      malId: hit.mal_id,
+      year:
+        typeof hit.year === "number"
+          ? hit.year
+          : jahrAus(hit.aired && hit.aired.from),
+      // OMDb kennt Anime fast nur unter dem englischen Titel.
+      englishTitle: hit.title_english || null,
       url: (img && (img.large_image_url || img.image_url)) || null,
       // Jikan liefert keine Breitbilder.
       backdrop: null,
@@ -290,7 +312,66 @@ async function fromJikan(title) {
   });
 
   const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
-  return { url, backdrop, debug: buildDebug("Jikan", response, candidates, bestScore, ueberEnthaltung) };
+
+  // Fuer die Angaben zaehlt allein der Titel — ein Treffer ohne Bild
+  // ist als Quelle fuer Jahr und Regie genauso gut.
+  const fuerAngaben = pickBestMatch(title, candidates, () => true).treffer;
+
+  return {
+    url,
+    backdrop,
+    eigeneAngaben:
+      fuerAngaben && fuerAngaben.malId != null
+        ? {
+            quelle: "jikan",
+            id: fuerAngaben.malId,
+            year: fuerAngaben.year,
+            originalTitle: fuerAngaben.englishTitle,
+            imdbId: null,
+          }
+        : null,
+    debug: buildDebug("Jikan", response, candidates, bestScore, ueberEnthaltung),
+  };
+}
+
+/**
+ * Regie eines Anime ueber die Stab-Liste. Jikan fuehrt Personen mit
+ * ihren Positionen ("Director", "Chief Director", …); die exakte
+ * Position "Director" hat Vorrang.
+ *
+ * Die Namen stehen dort mit Komma ("Araki, Tetsuro") — fuer die Anzeige
+ * wird daraus die uebliche Reihenfolge.
+ */
+async function jikanRegie(malId) {
+  const response = await getJson("https://api.jikan.moe/v4/anime/" + encodeURIComponent(malId) + "/staff");
+  const liste = (response.data && response.data.data) || [];
+
+  let genau = null;
+  let irgendein = null;
+  for (const eintrag of liste) {
+    const name = eintrag && eintrag.person && eintrag.person.name;
+    const positionen = (eintrag && eintrag.positions) || [];
+    if (!name || !Array.isArray(positionen)) continue;
+    if (positionen.includes("Director")) { genau = name; break; }
+    if (!irgendein && positionen.some((p) => typeof p === "string" && p.includes("Director"))) {
+      irgendein = name;
+    }
+  }
+
+  return {
+    director: nameOrdnen(genau || irgendein),
+    debug: { source: "Jikan (staff)", status: response.status, error: response.error },
+  };
+}
+
+/** "Araki, Tetsuro" -> "Tetsuro Araki"; alles ohne Komma bleibt, wie es ist. */
+function nameOrdnen(name) {
+  if (!name) return null;
+  const teile = String(name).split(",");
+  if (teile.length !== 2) return String(name).trim();
+  const vorne = teile[1].trim();
+  const hinten = teile[0].trim();
+  return vorne && hinten ? vorne + " " + hinten : String(name).trim();
 }
 
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500";
@@ -454,8 +535,16 @@ async function fromTvmaze(title) {
   const candidates = hits.map((entry) => {
     const show = entry && entry.show;
     const img = show && show.image;
+    const externals = (show && show.externals) || {};
     return {
       titles: [show && show.name].filter(Boolean),
+      // Fuer die Angaben zum Werk: TVMaze nennt das Startdatum und —
+      // besonders wertvoll — die IMDb-Kennung direkt mit. Damit ist die
+      // Note eindeutig zu holen, ohne ueber Titel zu raten.
+      showId: show && show.id,
+      year: jahrAus(show && show.premiered),
+      imdbId: externals.imdb || null,
+      originalTitle: (show && show.name) || null,
       url: (img && (img.original || img.medium)) || null,
       // TVMaze kennt kein eigenes Breitbild — das vorhandene Bild
       // dient als Rueckfall.
@@ -464,7 +553,48 @@ async function fromTvmaze(title) {
   });
 
   const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
-  return { url, backdrop, debug: buildDebug("TVMaze", response, candidates, bestScore, ueberEnthaltung) };
+
+  // Wie bei den anderen Quellen: fuer die Angaben zaehlt nur der Titel.
+  const fuerAngaben = pickBestMatch(title, candidates, () => true).treffer;
+
+  return {
+    url,
+    backdrop,
+    eigeneAngaben:
+      fuerAngaben && fuerAngaben.showId != null
+        ? {
+            quelle: "tvmaze",
+            id: fuerAngaben.showId,
+            year: fuerAngaben.year,
+            originalTitle: fuerAngaben.originalTitle,
+            imdbId: fuerAngaben.imdbId,
+          }
+        : null,
+    debug: buildDebug("TVMaze", response, candidates, bestScore, ueberEnthaltung),
+  };
+}
+
+/**
+ * Ersteller einer Serie ueber die Stab-Liste von TVMaze. Bei Serien
+ * gibt es meist keinen einzelnen Regisseur — der Schoepfer beantwortet
+ * dieselbe Frage. Gibt es keinen, wird ersatzweise die Regie genommen.
+ */
+async function tvmazeErsteller(showId) {
+  const response = await getJson("https://api.tvmaze.com/shows/" + encodeURIComponent(showId) + "/crew");
+  const liste = Array.isArray(response.data) ? response.data : [];
+
+  const namenMit = (typ) =>
+    liste
+      .filter((e) => e && e.type === typ && e.person && e.person.name)
+      .map((e) => e.person.name);
+
+  const schoepfer = namenMit("Creator");
+  const regie = schoepfer.length ? schoepfer : namenMit("Director");
+
+  return {
+    director: regie.length ? regie.join(", ") : null,
+    debug: { source: "TVMaze (crew)", status: response.status, error: response.error },
+  };
 }
 
 async function fromItunes(title, kind) {
@@ -641,7 +771,10 @@ export default async function handler(req, res) {
 
   if (!title) return res.status(400).json({ error: "title fehlt." });
 
-  const cacheKey = category + "::" + title.toLowerCase();
+  // Der Cache-Schluessel traegt die Fassung der Angaben mit. Ohne das
+  // wuerden nach einer Erweiterung noch tagelang alte Antworten aus dem
+  // CDN ausgeliefert, in denen die neuen Felder schlicht fehlen.
+  const cacheKey = ANGABEN_VERSION + "::" + category + "::" + title.toLowerCase();
   // Im Diagnose-Modus wird der Cache übersprungen — sonst käme eine
   // Antwort ohne jede Information darüber, was die Quellen gesagt haben.
   if (!debug && CACHE.has(cacheKey)) {
@@ -681,6 +814,7 @@ export default async function handler(req, res) {
   let url = null;
   let backdrop = null;
   let tmdbTreffer = null;
+  let eigenTreffer = null; // Angaben direkt von TVMaze oder Jikan
   const sources = [];
   for (const step of chain) {
     const result = await step();
@@ -697,12 +831,19 @@ export default async function handler(req, res) {
       backdrop = result.backdrop;
       result.debug.usedBackdrop = true;
     }
-    // Jahr und Regie kennt nur TMDB. Bei Serien liefert TVMaze zwar
-    // schon beide Bilder, die Kette laeuft aber weiter bis TMDB —
-    // sonst blieben Serien dauerhaft ohne Angaben.
+    // TMDB ist die ergiebigste Quelle fuer Jahr und Regie. Bei Serien
+    // liefert TVMaze zwar schon beide Bilder, die Kette laeuft aber
+    // weiter bis TMDB — sonst blieben Serien dauerhaft ohne Angaben.
     if (!tmdbTreffer && result.meta) {
       tmdbTreffer = result.meta;
       result.debug.usedMeta = true;
+    }
+    // TVMaze und Jikan bringen das Jahr (TVMaze sogar die IMDb-Kennung)
+    // schon aus der Suche mit. Das traegt Serien und Anime auch dann,
+    // wenn TMDB sie nicht kennt oder kein Schluessel gesetzt ist.
+    if (!eigenTreffer && result.eigeneAngaben) {
+      eigenTreffer = result.eigeneAngaben;
+      result.debug.usedAngaben = true;
     }
 
     // Ohne Diagnose endet die Kette, sobald alles Gesuchte da ist; mit
@@ -711,24 +852,50 @@ export default async function handler(req, res) {
     if (!debug && url && backdrop && !angabenOffen) break;
   }
 
-  // Zusatzangaben: Details zum TMDB-Treffer, danach die IMDb-Note.
-  let year = tmdbTreffer ? tmdbTreffer.year : null;
+  // Zusatzangaben: erst die Details des TMDB-Treffers, dann was die
+  // Kategorie-Quelle beisteuert, zuletzt die IMDb-Note.
+  let year = null;
   let director = null;
   let imdbRating = null;
   const angabenDebug = [];
 
   if (willAngaben) {
-    let angaben = null;
+    let tmdbInfo = null;
     if (tmdbTreffer) {
-      angaben = await tmdbAngaben(tmdbTreffer.kind, tmdbTreffer.id);
-      angabenDebug.push(angaben.debug);
-      if (angaben.year) year = angaben.year;
-      director = angaben.director;
+      tmdbInfo = await tmdbAngaben(tmdbTreffer.kind, tmdbTreffer.id);
+      angabenDebug.push(tmdbInfo.debug);
     }
-    // Ohne TMDB-Treffer bleibt die Titelsuche bei OMDb — besser eine
-    // Note ueber den Titel als gar keine.
+
+    // Jahr: die genaueste Angabe zuerst, danach der Reihe nach zurueck.
+    year =
+      (tmdbInfo && tmdbInfo.year) ||
+      (tmdbTreffer && tmdbTreffer.year) ||
+      (eigenTreffer && eigenTreffer.year) ||
+      null;
+    director = (tmdbInfo && tmdbInfo.director) || null;
+
+    // Regie bzw. Ersteller bei der Kategorie-Quelle nachfragen, wenn
+    // TMDB keinen nennt — bei Serien und Anime ist das die Regel. Der
+    // Aufruf kostet eine Anfrage und laeuft deshalb nur dann.
+    if (!director && eigenTreffer) {
+      const nachgefragt =
+        eigenTreffer.quelle === "tvmaze"
+          ? await tvmazeErsteller(eigenTreffer.id)
+          : await jikanRegie(eigenTreffer.id);
+      angabenDebug.push(nachgefragt.debug);
+      director = nachgefragt.director;
+    }
+
+    // Die IMDb-Kennung ist der einzige eindeutige Weg zur Note. TMDB
+    // und TVMaze liefern sie beide — die erste, die da ist, zaehlt.
+    // Sonst bleibt die Titelsuche.
     if (hasOmdb) {
-      const omdb = await fromOmdb(title, category, angaben);
+      const omdb = await fromOmdb(title, category, {
+        imdbId: (tmdbInfo && tmdbInfo.imdbId) || (eigenTreffer && eigenTreffer.imdbId) || null,
+        originalTitle:
+          (tmdbInfo && tmdbInfo.originalTitle) || (eigenTreffer && eigenTreffer.originalTitle) || null,
+        year,
+      });
       angabenDebug.push(omdb.debug);
       imdbRating = omdb.rating;
     }
@@ -743,6 +910,9 @@ export default async function handler(req, res) {
     // Sagt dem Frontend, ob eine fehlende Note am fehlenden Schluessel
     // liegt — dann ist es kein erfolgloser Versuch.
     imdbVerfuegbar: willAngaben && hasOmdb,
+    // Fassung der Angaben. Fehlt sie in einer Antwort, stammt diese aus
+    // einem alten Cache und zaehlt nicht als Versuch.
+    angabenVersion: ANGABEN_VERSION,
   };
 
   if (debug) {

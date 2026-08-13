@@ -225,9 +225,13 @@ Poster ermittelt (`api/poster.js`), drei weitere Angaben mit:
 
 | Angabe | Quelle |
 |--------|--------|
-| Erscheinungsjahr | TMDB (`release_date` bzw. `first_air_date`) |
-| Regie | TMDB-Credits; bei Serien ersatzweise die Schöpfer (`created_by`) |
-| IMDb-Note | OMDb, über die IMDb-Kennung aus TMDB |
+| Erscheinungsjahr | TMDB (`release_date` / `first_air_date`), sonst TVMaze (`premiered`) bzw. Jikan (`year`) |
+| Regie | TMDB-Credits; bei Serien ersatzweise die Schöpfer (`created_by`), sonst TVMaze `/crew` (Creator) bzw. Jikan `/staff` (Director) |
+| IMDb-Note | OMDb, über die IMDb-Kennung aus TMDB oder aus TVMaze (`externals.imdb`) |
+
+Serien und Anime hängen damit nicht mehr an TMDB: TVMaze und Jikan
+bringen Jahr und Ersteller selbst mit, TVMaze sogar die IMDb-Kennung.
+Auch ohne `TMDB_API_KEY` sind die Angaben dort vollständig.
 
 Sie werden am Eintrag gespeichert und nicht bei jedem Aufruf neu geholt.
 Auch bereits vorhandene Einträge laden sie automatisch nach — genauso wie
@@ -240,6 +244,28 @@ Bilder.
 
 Wird der Titel eines Eintrags geändert, gelten die Angaben nicht mehr und
 werden beim nächsten Öffnen neu geholt.
+
+### Von Hand eintragen und überschreiben
+
+Alle drei Angaben lassen sich in der Detailansicht über das Stift-Symbol
+jederzeit selbst setzen — auch wenn die automatische Suche schon etwas
+gefunden hat. Fehlt eine Angabe, steht an ihrer Stelle ein Feld zum
+Anklicken („Jahr · Regie eingeben" bzw. „IMDB eingeben"). Von Hand
+eingetragene Werte werden wie die automatisch gefundenen gespeichert und
+von der Suche **nie** überschrieben: nachgetragen wird nur, was leer ist.
+Ein leeres Feld löscht den Wert wieder und gibt ihn für die Suche frei.
+
+### Fassung der Angaben (`ANGABEN_VERSION`)
+
+Die Antwort von `api/poster.js` liegt einen Tag im CDN und wird bis zu
+eine Woche als veralteter Stand weitergereicht. Kommt eine neue Angabe
+dazu, lieferte das CDN sonst tagelang alte Antworten ohne die neuen
+Felder — das Frontend hielte den Eintrag dann für aussichtslos und würde
+ihn nie wieder abfragen. Deshalb trägt jede Antwort eine `angabenVersion`;
+die Zahl steckt im Cache-Schlüssel und hängt als `v` an jeder Anfrage.
+Wird `ANGABEN_VERSION` in `api/poster.js` erhöht, muss dieselbe Zahl in
+`src/App.jsx` mitgezogen werden — dann sind beide Caches auf einen Schlag
+entwertet.
 
 ### OMDb-Schlüssel für die IMDb-Note (optional)
 

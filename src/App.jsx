@@ -439,6 +439,11 @@ function angabenUnvollstaendig(entry) {
   return entry.releaseYear == null || !entry.director || entry.imdbRating == null;
 }
 
+/* Fassung der Angaben, muss zu ANGABEN_VERSION in api/poster.js passen.
+   Sie haengt an jeder Anfrage, damit eine aeltere Antwort aus dem CDN
+   nicht faelschlich als "nichts gefunden" durchgeht. */
+const ANGABEN_VERSION = 2;
+
 /** Wechselabstand der Kopfbilder. */
 const BACKDROP_INTERVAL = 8000;
 
@@ -647,7 +652,9 @@ const api = {
      Breitbild und — ausser bei Spielen — Jahr, Regie und IMDb-Note. */
   async findMedia(title, category) {
     const res = await fetch(
-      "/api/poster?title=" + encodeURIComponent(title) + "&category=" + encodeURIComponent(category)
+      "/api/poster?title=" + encodeURIComponent(title) +
+        "&category=" + encodeURIComponent(category) +
+        "&v=" + ANGABEN_VERSION
     );
     if (!res.ok) return null;
     return res.json();
@@ -1377,18 +1384,183 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
 /* ============================================================
    DETAILANSICHT — identisch für jeden Eintrag
    ============================================================ */
-function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
+/* ------------------------------------------------------------
+   Jahr und Regie/Ersteller als schmale Zeile unter einem Listentitel.
+
+   Bewusst kleiner und blasser als der Titel, damit sie ihn nicht
+   ueberdeckt. Bei Spielen und ohne Angaben faellt sie ganz weg —
+   dann bleibt die Zeile so hoch wie bisher.
+   ------------------------------------------------------------ */
+function AngabenZeile({ eintrag }) {
+  if (!unterstuetztAngaben(eintrag.category)) return null;
+
+  const teile = [];
+  if (typeof eintrag.releaseYear === "number") teile.push(String(eintrag.releaseYear));
+  if (eintrag.director) teile.push(eintrag.director);
+  if (!teile.length) return null;
+
+  return (
+    <div
+      style={{
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: 11,
+        color: "#77746c",
+        marginTop: 2,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      {teile.join(" · ")}
+    </div>
+  );
+}
+
+/* Kleiner Stiftknopf — oeffnet die Eingabe der Angaben zum Werk. */
+function StiftKnopf({ title, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      style={{
+        background: "transparent", border: "none", color: "#77746c",
+        fontSize: 13, cursor: "pointer", padding: "0 4px", lineHeight: 1,
+      }}
+    >
+      ✎
+    </button>
+  );
+}
+
+/* Beschriftung im Eingabeblock — derselbe Stil wie im Bewertungsformular. */
+const angabenLabel = {
+  fontSize: 12, letterSpacing: 1, color: "#9A968C",
+  fontFamily: "'JetBrains Mono', monospace",
+};
+
+const angabenFeld = {
+  width: "100%", boxSizing: "border-box", background: "#141416",
+  border: "1px solid #33333a", borderRadius: 8, padding: "12px",
+  color: "#EDEAE3", fontSize: 15, marginTop: 6,
+};
+
+/* ------------------------------------------------------------
+   Angaben zum Werk von Hand eintragen oder ueberschreiben.
+
+   Gilt fuer Jahr, Regie und die IMDb-Note gemeinsam — sie stehen in
+   der Detailansicht beieinander und werden in einem Zug gespeichert.
+   Ein leeres Feld loescht den Wert; die automatische Suche traegt
+   spaeter nur nach, was leer ist, und ueberschreibt nie.
+   ------------------------------------------------------------ */
+function AngabenEditor({ entry, regieLabel, busy, onSave, onCancel }) {
+  const [jahr, setJahr] = useState(entry.releaseYear == null ? "" : String(entry.releaseYear));
+  const [regie, setRegie] = useState(entry.director || "");
+  const [note, setNote] = useState(entry.imdbRating == null ? "" : String(entry.imdbRating));
+
+  function speichern() {
+    const jahrZahl = parseInt(jahr, 10);
+    const noteZahl = parseFloat(String(note).replace(",", "."));
+    onSave({
+      releaseYear: Number.isNaN(jahrZahl) ? null : jahrZahl,
+      director: regie.trim() || null,
+      // Die Note liegt wie jede Note zwischen 0 und 10.
+      imdbRating: Number.isNaN(noteZahl) ? null : Math.min(10, Math.max(0, noteZahl)),
+    });
+  }
+
+  return (
+    <div style={{ background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12, padding: 16, marginBottom: 20 }}>
+      <div style={{ ...angabenLabel, marginBottom: 12 }}>ANGABEN BEARBEITEN</div>
+
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ flex: "1 1 110px", minWidth: 0 }}>
+          <label style={angabenLabel} htmlFor="angaben-jahr">JAHR</label>
+          <input
+            id="angaben-jahr"
+            type="number"
+            inputMode="numeric"
+            placeholder="z. B. 1999"
+            value={jahr}
+            onChange={(e) => setJahr(e.target.value)}
+            style={{ ...angabenFeld, fontFamily: "'JetBrains Mono', monospace" }}
+          />
+        </div>
+        <div style={{ flex: "1 1 110px", minWidth: 0 }}>
+          <label style={angabenLabel} htmlFor="angaben-imdb">IMDB-NOTE</label>
+          <input
+            id="angaben-imdb"
+            type="number"
+            inputMode="decimal"
+            min="0"
+            max="10"
+            step="0.1"
+            placeholder="0–10"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            style={{ ...angabenFeld, fontFamily: "'JetBrains Mono', monospace" }}
+          />
+        </div>
+      </div>
+
+      <label style={angabenLabel} htmlFor="angaben-regie">{regieLabel.toUpperCase()}</label>
+      <input
+        id="angaben-regie"
+        type="text"
+        placeholder="Name eingeben"
+        value={regie}
+        onChange={(e) => setRegie(e.target.value)}
+        style={{ ...angabenFeld, marginBottom: 4 }}
+      />
+
+      <div style={{ fontSize: 11.5, color: "#77746c", lineHeight: 1.5, marginTop: 10 }}>
+        Leere Felder löschen den jeweiligen Wert. Von Hand eingetragene
+        Angaben werden von der automatischen Suche nicht überschrieben.
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <button
+          onClick={speichern}
+          disabled={busy}
+          style={{
+            flex: 1, padding: "13px", background: "var(--accent, #C9A227)", color: "#17171A",
+            border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer",
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          Speichern
+        </button>
+        <button
+          onClick={onCancel}
+          style={{
+            padding: "13px 18px", background: "transparent", color: "#9A968C",
+            border: "1px solid #33333a", borderRadius: 8, cursor: "pointer", fontSize: 15,
+          }}
+        >
+          Abbrechen
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben }) {
   const criteria = criteriaFor(category);
   const criteriaScore = entryCriteriaScore(entry, category);
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
+  const [angabenOffen, setAngabenOffen] = useState(false);
 
   /* Jahr und Regie stehen unter dem Titel, die IMDb-Note neben der
-     eigenen Endnote. Beides gibt es nur bei Film, Serie und Anime und
-     nur, wenn die Angaben schon vorliegen. */
+     eigenen Endnote. Beides gibt es nur bei Film, Serie und Anime.
+     Fehlt ein Wert, steht dort ein Platzhalter, der die Eingabe
+     oeffnet — so laesst sich jederzeit von Hand nachtragen. */
   const zeigtAngaben = unterstuetztAngaben(category);
   const jahr = zeigtAngaben && typeof entry.releaseYear === "number" ? entry.releaseYear : null;
   const regie = zeigtAngaben && entry.director ? entry.director : null;
   const imdb = zeigtAngaben && typeof entry.imdbRating === "number" ? entry.imdbRating : null;
+  // Bei Serien und Anime steht am Werk der Ersteller, nicht die Regie.
+  const regieLabel = supportsSeasons(category) ? "Ersteller" : "Regie";
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "#17171A", zIndex: 50, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 40px" }}>
@@ -1410,24 +1582,51 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 26, margin: 0, lineHeight: 1.2 }}>
               {entry.title}
             </h1>
-            {(jahr || regie) && (
+            {zeigtAngaben && (
               <div style={{ fontSize: 13, color: "#9A968C", marginTop: 6, lineHeight: 1.5 }}>
-                {jahr && (
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{jahr}</span>
+                {jahr || regie ? (
+                  <>
+                    {jahr && (
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{jahr}</span>
+                    )}
+                    {jahr && regie && " · "}
+                    {regie && <span>{regieLabel}: {regie}</span>}
+                    <StiftKnopf title="Angaben bearbeiten" onClick={() => setAngabenOffen(true)} />
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setAngabenOffen(true)}
+                    style={{
+                      background: "transparent", border: "1px dashed #33333a", borderRadius: 8,
+                      color: "#77746c", fontSize: 12.5, cursor: "pointer", padding: "5px 10px",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    Jahr · {regieLabel} eingeben
+                  </button>
                 )}
-                {jahr && regie && " · "}
-                {regie && <span>Regie: {regie}</span>}
               </div>
             )}
           </div>
         </div>
 
+        {zeigtAngaben && angabenOffen && (
+          <AngabenEditor
+            entry={entry}
+            regieLabel={regieLabel}
+            busy={busy}
+            onSave={(werte) => { onSaveAngaben(werte); setAngabenOffen(false); }}
+            onCancel={() => setAngabenOffen(false)}
+          />
+        )}
+
         <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
           <span style={{ fontSize: 13, color: "#9A968C" }}>Endnote</span>
           <ScoreBadge score={entry.score} size="lg" />
           {/* Fremdwert: bewusst als schlichte Karte statt als Notenfarbe,
-              damit er nicht mit der eigenen Endnote verwechselt wird. */}
-          {typeof imdb === "number" && (
+              damit er nicht mit der eigenen Endnote verwechselt wird.
+              Ohne Wert steht dort die Einladung, ihn einzutragen. */}
+          {zeigtAngaben && (typeof imdb === "number" ? (
             <span
               title="Vergleichswert von IMDb, über OMDb geholt"
               style={{
@@ -1442,8 +1641,24 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 17, fontWeight: 700, color: "#EDEAE3" }}>
                 {imdb.toFixed(1)}
               </span>
+              <StiftKnopf title="IMDb-Note bearbeiten" onClick={() => setAngabenOffen(true)} />
             </span>
-          )}
+          ) : (
+            <button
+              onClick={() => setAngabenOffen(true)}
+              title="IMDb-Note von Hand eintragen"
+              style={{
+                display: "inline-flex", alignItems: "baseline", gap: 8,
+                background: "transparent", border: "1px dashed #33333a", borderRadius: 8,
+                padding: "6px 12px", cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              <span style={{ fontSize: 11, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace" }}>
+                IMDB
+              </span>
+              <span style={{ fontSize: 12.5, color: "#77746c" }}>eingeben</span>
+            </button>
+          ))}
         </div>
 
         <div style={{ display: "flex", gap: 20, marginBottom: 20, fontSize: 14, color: "#9A968C", flexWrap: "wrap" }}>
@@ -1573,7 +1788,10 @@ function RanglistenZeile({ platz, eintrag }) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
         <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 18, flexShrink: 0 }}>{platz}</span>
         <Poster url={eintrag.poster} title={eintrag.title} size={28} />
-        <span style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{eintrag.title}</span>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{eintrag.title}</div>
+          <AngabenZeile eintrag={eintrag} />
+        </div>
       </div>
       <ScoreBadge score={eintrag.score} />
     </div>
@@ -1981,7 +2199,9 @@ export default function App() {
         }
 
         if (job.angabenFehlen) {
-          // Nur fehlende Felder fuellen — was schon dasteht, bleibt.
+          // Nur fehlende Felder fuellen — was schon dasteht, bleibt
+          // stehen. Von Hand eingetragene Werte werden dadurch nie
+          // ueberschrieben.
           if (job.entry.releaseYear == null && typeof gefunden.year === "number") {
             aenderung.releaseYear = gefunden.year;
           }
@@ -1991,7 +2211,12 @@ export default function App() {
           if (job.entry.imdbRating == null && typeof gefunden.imdbRating === "number") {
             aenderung.imdbRating = gefunden.imdbRating;
           }
-          if (angabenUnvollstaendig({ ...job.entry, ...aenderung })) {
+          // Als aussichtslos gilt der Eintrag nur, wenn die Antwort auch
+          // wirklich aus dieser Fassung stammt. Eine aeltere Antwort aus
+          // dem CDN kennt die Felder gar nicht — sie duerfte den Eintrag
+          // sonst dauerhaft blockieren, obwohl nie gesucht wurde.
+          const echterVersuch = gefunden.angabenVersion === ANGABEN_VERSION;
+          if (echterVersuch && angabenUnvollstaendig({ ...job.entry, ...aenderung })) {
             merkeOhneAngaben(job.entry.id);
           }
         }
@@ -2222,6 +2447,41 @@ export default function App() {
       setMode("list");
     } catch (e) {
       setSaveError("Änderung nicht gespeichert: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* Jahr, Regie und IMDb-Note von Hand setzen oder aendern. Alles
+     Uebrige des Eintrags geht unveraendert mit, damit das Speichern
+     nichts anderes anfasst. */
+  async function angabenSpeichern(id, { releaseYear, director, imdbRating }) {
+    const current = (items[category] || []).find((f) => f.id === id);
+    if (!current) return;
+
+    setBusy(true);
+    try {
+      const saved = await api.update(id, {
+        ...current,
+        seasons: current.seasons || [],
+        category,
+        releaseYear,
+        director,
+        imdbRating,
+      });
+      setItems((prev) => ({
+        ...prev,
+        [category]: prev[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      }));
+      setSaveError("");
+      // Was von Hand gesetzt wurde, muss nicht mehr gesucht werden;
+      // was geleert wurde, darf wieder gesucht werden.
+      if (angabenUnvollstaendig(normalizeEntry(saved))) {
+        angabenAttempted.current.delete(id);
+        vergissOhneAngaben(id);
+      }
+    } catch (e) {
+      setSaveError("Angaben nicht gespeichert: " + e.message);
     } finally {
       setBusy(false);
     }
@@ -2795,7 +3055,10 @@ export default function App() {
                         {i + 1}
                       </span>
                       <Poster url={f.poster} title={f.title} size={34} />
-                      <span style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</div>
+                        <AngabenZeile eintrag={f} />
+                      </div>
                     </div>
                     <ScoreBadge score={f.score} />
                   </div>
@@ -2816,9 +3079,11 @@ export default function App() {
           entry={selectedEntry}
           category={category}
           singular={catInfo.singular}
+          busy={busy}
           onBack={() => setSelectedId(null)}
           onEdit={() => setMode("edit")}
           onDelete={() => setConfirmDelete(selectedEntry.id)}
+          onSaveAngaben={(werte) => angabenSpeichern(selectedEntry.id, werte)}
         />
       )}
 
