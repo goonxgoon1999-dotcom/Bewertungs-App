@@ -126,6 +126,20 @@ function criteriaColumns(category, values) {
   };
 }
 
+/**
+ * Angaben zum Werk in Spaltenform. Bei Spielen gibt es sie nicht —
+ * dort bleiben alle drei leer, egal was geschickt wurde.
+ */
+function angabenColumns(category, body) {
+  if (category === "game") return { releaseYear: null, director: null, imdbRating: null };
+  const regie = typeof body.director === "string" ? body.director.trim() : "";
+  return {
+    releaseYear: typeof body.releaseYear === "number" ? Math.round(body.releaseYear) : null,
+    director: regie || null,
+    imdbRating: typeof body.imdbRating === "number" ? body.imdbRating : null,
+  };
+}
+
 export default async function handler(req, res) {
   try {
     await ensureReady();
@@ -165,6 +179,7 @@ async function create(req, res) {
   const now = Date.now();
   const id = body.id || body.category + "_" + now + "_" + Math.random().toString(36).slice(2, 8);
   const v = criteriaColumns(body.category, body.values);
+  const a = angabenColumns(body.category, body);
 
   // Eintrag und Staffeln gehen gemeinsam in einer Transaktion in die
   // Datenbank — entweder alles oder nichts.
@@ -173,13 +188,14 @@ async function create(req, res) {
       INSERT INTO media_items
         (id, category, title, poster, poster_source, backdrop, story, charaktere, unterhaltung,
          emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
-         personal, created_at, updated_at)
+         personal, release_year, director, imdb_rating, created_at, updated_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
          ${body.backdrop || ""},
          ${v.story}, ${v.charaktere}, ${v.unterhaltung}, ${v.emotion},
          ${v.inszenierung}, ${v.schauspiel}, ${v.sound},
          ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert}, ${body.personal},
+         ${a.releaseYear}, ${a.director}, ${a.imdbRating},
          ${body.createdAt || now}, ${now})
       RETURNING *
     `,
@@ -210,6 +226,7 @@ async function update(req, res) {
   const vorhandene = await currentSeasonRows(id);
 
   const v = criteriaColumns(body.category, body.values);
+  const a = angabenColumns(body.category, body);
   const ergebnis = await sql.transaction([
     sql`
       UPDATE media_items SET
@@ -230,6 +247,9 @@ async function update(req, res) {
         grafik          = ${v.grafik},
         wiederspielwert = ${v.wiederspielwert},
         personal        = ${body.personal},
+        release_year    = ${a.releaseYear},
+        director        = ${a.director},
+        imdb_rating     = ${a.imdbRating},
         updated_at      = ${Date.now()}
       WHERE id = ${id}
       RETURNING *

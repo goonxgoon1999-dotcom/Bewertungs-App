@@ -392,8 +392,69 @@ function vergissErfolglose() {
   } catch (e) {}
 }
 
+/* Dasselbe Gedaechtnis fuer die Angaben zum Werk (Jahr, Regie,
+   IMDb-Note). Getrennt vom Poster-Gedaechtnis, damit ein erfolgloser
+   Poster-Versuch die Angaben nicht mitblockiert — und umgekehrt. */
+const OHNE_ANGABEN_SCHLUESSEL = "bewertungsapp.ohneAngaben";
+
+function ladeOhneAngaben() {
+  try {
+    const roh = window.localStorage.getItem(OHNE_ANGABEN_SCHLUESSEL);
+    return new Set(roh ? JSON.parse(roh) : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function merkeOhneAngaben(id) {
+  try {
+    const menge = ladeOhneAngaben();
+    menge.add(id);
+    window.localStorage.setItem(OHNE_ANGABEN_SCHLUESSEL, JSON.stringify([...menge]));
+  } catch (e) {}
+}
+
+/** Einen einzelnen Eintrag wieder freigeben — etwa nach Titelaenderung. */
+function vergissOhneAngaben(id) {
+  try {
+    const menge = ladeOhneAngaben();
+    if (!menge.delete(id)) return;
+    window.localStorage.setItem(OHNE_ANGABEN_SCHLUESSEL, JSON.stringify([...menge]));
+  } catch (e) {}
+}
+
+function vergissAlleOhneAngaben() {
+  try {
+    window.localStorage.removeItem(OHNE_ANGABEN_SCHLUESSEL);
+  } catch (e) {}
+}
+
+/* Angaben zum Werk gibt es nur bei Film, Serie und Anime. */
+function unterstuetztAngaben(category) {
+  return category !== "game";
+}
+
+/** Fehlt an einem Eintrag noch eine der drei Angaben? */
+function angabenUnvollstaendig(entry) {
+  return entry.releaseYear == null || !entry.director || entry.imdbRating == null;
+}
+
 /** Wechselabstand der Kopfbilder. */
 const BACKDROP_INTERVAL = 8000;
+
+/**
+ * Zieht zufaellig eines der Bilder — nur nie das, das gerade zu sehen
+ * ist. Gezogen wird aus den (anzahl - 1) uebrigen und der Index danach
+ * um eins angehoben, sobald er den aktuellen erreicht: dadurch hat
+ * jedes andere Bild dieselbe Chance und keines erscheint zweimal
+ * direkt hintereinander.
+ */
+function naechsterZufall(anzahl, aktuell) {
+  if (anzahl <= 1) return 0;
+  const jetzt = ((aktuell % anzahl) + anzahl) % anzahl;
+  const gezogen = Math.floor(Math.random() * (anzahl - 1));
+  return gezogen >= jetzt ? gezogen + 1 : gezogen;
+}
 
 function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(false);
@@ -420,8 +481,9 @@ function usePrefersReducedMotion() {
 
    Feste Adressen, von Hand im Daten-Panel gepflegt — es gibt dafuer
    keine automatische Suche. Mehrere Bilder wechseln alle 8 Sekunden
-   mit derselben Gleit-Animation wie zuvor; bei einem Bild steht es
-   fest, bei keinem bleibt der Bereich schlicht dunkel.
+   mit derselben Gleit-Animation wie zuvor, dabei jedes Mal zufaellig
+   ausgewaehlt (nie zweimal dasselbe hintereinander); bei einem Bild
+   steht es fest, bei keinem bleibt der Bereich schlicht dunkel.
    ------------------------------------------------------------ */
 function HeaderSlideshow({ urls }) {
   const reducedMotion = usePrefersReducedMotion();
@@ -444,7 +506,7 @@ function HeaderSlideshow({ urls }) {
     const timer = setInterval(() => {
       setIndex((i) => {
         setPrevIndex(i);
-        return (i + 1) % brauchbar.length;
+        return naechsterZufall(brauchbar.length, i);
       });
       setTick((t) => t + 1);
     }, BACKDROP_INTERVAL);
@@ -581,13 +643,14 @@ const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Löschen fehlgeschlagen");
     return res.json();
   },
-  async findPoster(title, category) {
+  /* Ein Aufruf liefert alles, was automatisch ermittelt wird: Poster,
+     Breitbild und — ausser bei Spielen — Jahr, Regie und IMDb-Note. */
+  async findMedia(title, category) {
     const res = await fetch(
       "/api/poster?title=" + encodeURIComponent(title) + "&category=" + encodeURIComponent(category)
     );
     if (!res.ok) return null;
-    const data = await res.json();
-    return data.url || null;
+    return res.json();
   },
   async loadHeaderImages() {
     const res = await fetch("/api/header-images");
@@ -1318,6 +1381,14 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
   const criteria = criteriaFor(category);
   const criteriaScore = entryCriteriaScore(entry, category);
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
+
+  /* Jahr und Regie stehen unter dem Titel, die IMDb-Note neben der
+     eigenen Endnote. Beides gibt es nur bei Film, Serie und Anime und
+     nur, wenn die Angaben schon vorliegen. */
+  const zeigtAngaben = unterstuetztAngaben(category);
+  const jahr = zeigtAngaben && typeof entry.releaseYear === "number" ? entry.releaseYear : null;
+  const regie = zeigtAngaben && entry.director ? entry.director : null;
+  const imdb = zeigtAngaben && typeof entry.imdbRating === "number" ? entry.imdbRating : null;
   return (
     <div style={{ position: "fixed", inset: 0, background: "#17171A", zIndex: 50, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 40px" }}>
@@ -1339,12 +1410,40 @@ function DetailView({ entry, category, singular, onBack, onEdit, onDelete }) {
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 26, margin: 0, lineHeight: 1.2 }}>
               {entry.title}
             </h1>
+            {(jahr || regie) && (
+              <div style={{ fontSize: 13, color: "#9A968C", marginTop: 6, lineHeight: 1.5 }}>
+                {jahr && (
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{jahr}</span>
+                )}
+                {jahr && regie && " · "}
+                {regie && <span>Regie: {regie}</span>}
+              </div>
+            )}
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
           <span style={{ fontSize: 13, color: "#9A968C" }}>Endnote</span>
           <ScoreBadge score={entry.score} size="lg" />
+          {/* Fremdwert: bewusst als schlichte Karte statt als Notenfarbe,
+              damit er nicht mit der eigenen Endnote verwechselt wird. */}
+          {typeof imdb === "number" && (
+            <span
+              title="Vergleichswert von IMDb, über OMDb geholt"
+              style={{
+                display: "inline-flex", alignItems: "baseline", gap: 8,
+                background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 8,
+                padding: "6px 12px",
+              }}
+            >
+              <span style={{ fontSize: 11, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace" }}>
+                IMDB
+              </span>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 17, fontWeight: 700, color: "#EDEAE3" }}>
+                {imdb.toFixed(1)}
+              </span>
+            </span>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 20, marginBottom: 20, fontSize: 14, color: "#9A968C", flexWrap: "wrap" }}>
@@ -1466,6 +1565,10 @@ function statsFor(list) {
 
 const STATS_SCOPES = [{ key: "all", label: "Alle" }, ...CATEGORIES.map((c) => ({ key: c.key, label: c.label }))];
 
+/* Die gemeinsame Rangliste umfasst Filme, Serien und Anime. Spiele
+   bleiben aussen vor — sie werden nach anderen Kriterien bewertet. */
+const TOP10_GESAMT_KEYS = ["movie", "series", "anime"];
+
 function StatsPage({ ranked }) {
   const [scope, setScope] = useState("all");
 
@@ -1523,13 +1626,11 @@ function StatsPage({ ranked }) {
   const top10Lists =
     scope === "all"
       ? [
-          // Gesamtliste zuerst: alle Kategorien gemeinsam nach Endnote.
-          // Die Kategorie steht als Farbpunkt am Eintrag, da hier Filme,
-          // Serien, Anime und Spiele nebeneinanderstehen.
+          // Gesamtliste zuerst: Filme, Serien und Anime gemeinsam nach
+          // Endnote, ohne Kennzeichnung der Herkunftskategorie.
           {
-            label: "Top 10 insgesamt",
-            mitKategorie: true,
-            list: CATEGORY_KEYS.flatMap((k) => ranked[k])
+            label: "Top 10 Gesamt",
+            list: TOP10_GESAMT_KEYS.flatMap((k) => ranked[k])
               .sort((a, b) => sortWert(b.score) - sortWert(a.score))
               .slice(0, 10),
           },
@@ -1646,15 +1747,6 @@ function StatsPage({ ranked }) {
                     <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                       <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 18, flexShrink: 0 }}>{i + 1}</span>
                       <Poster url={f.poster} title={f.title} size={28} />
-                      {group.mitKategorie && (
-                        <span
-                          title={(CATEGORIES.find((c) => c.key === f.category) || {}).label}
-                          style={{
-                            width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                            background: accentFor(f.category),
-                          }}
-                        />
-                      )}
                       <span style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</span>
                     </div>
                     <ScoreBadge score={f.score} />
@@ -1711,6 +1803,11 @@ export default function App() {
       poster: typeof e.poster === "string" ? e.poster : "",
       posterSource: e.posterSource === "manual" || e.posterSource === "auto" ? e.posterSource : undefined,
       backdrop: typeof e.backdrop === "string" ? e.backdrop : "",
+      // Angaben zum Werk: fehlen sie, bleibt es bei null — daran
+      // erkennt das Nachladen, was noch zu holen ist.
+      releaseYear: typeof e.releaseYear === "number" ? e.releaseYear : null,
+      director: typeof e.director === "string" && e.director.trim() ? e.director.trim() : null,
+      imdbRating: typeof e.imdbRating === "number" ? e.imdbRating : null,
       seasons: Array.isArray(e.seasons)
         ? e.seasons.map((sn, i) => ({
             // Die ID kommt aus der Datenbank und muss beim Speichern
@@ -1760,8 +1857,9 @@ export default function App() {
      danach in den State übernommen — dadurch kann nichts mehr
      stillschweigend verloren gehen. */
 
-  // ---- Automatische Poster-Suche für Einträge ohne Poster ----
+  // ---- Automatisches Nachladen: Poster sowie Jahr, Regie, IMDb-Note ----
   const posterAttempted = useRef(new Set());
+  const angabenAttempted = useRef(new Set());
   const nachladeZaehler = useRef(0);
 
   useEffect(() => {
@@ -1772,16 +1870,22 @@ export default function App() {
       // Bereits erfolglos gesuchte Einträge nicht bei jedem Seitenaufruf
       // erneut abfragen — sonst laufen dauerhaft hunderte Anfragen.
       const erfolglos = ladeErfolglose();
+      const ohneAngaben = ladeOhneAngaben();
 
       const todo = [];
       for (const catKey of CATEGORY_KEYS) {
         for (const entry of items[catKey] || []) {
-          // Nachgeladen werden nur noch fehlende Poster. Die Bilder des
-          // Kopfbereichs werden von Hand gepflegt.
-          if (entry.poster) continue;
-          if (posterAttempted.current.has(entry.id)) continue;
-          if (erfolglos.has(entry.id)) continue;
-          todo.push({ catKey, entry });
+          // Nachgeladen werden fehlende Poster und fehlende Angaben zum
+          // Werk. Die Bilder des Kopfbereichs bleiben handgepflegt.
+          const posterFehlt =
+            !entry.poster && !posterAttempted.current.has(entry.id) && !erfolglos.has(entry.id);
+          const angabenFehlen =
+            unterstuetztAngaben(catKey) &&
+            angabenUnvollstaendig(entry) &&
+            !angabenAttempted.current.has(entry.id) &&
+            !ohneAngaben.has(entry.id);
+          if (!posterFehlt && !angabenFehlen) continue;
+          todo.push({ catKey, entry, posterFehlt, angabenFehlen });
         }
       }
       if (!todo.length) return;
@@ -1793,29 +1897,55 @@ export default function App() {
         // Einträgen würde das die App sonst lahmlegen.
         if (nachladeZaehler.current >= MAX_NACHLADEN_PRO_BESUCH) return;
         nachladeZaehler.current++;
-        posterAttempted.current.add(job.entry.id);
+        if (job.posterFehlt) posterAttempted.current.add(job.entry.id);
+        if (job.angabenFehlen) angabenAttempted.current.add(job.entry.id);
 
-        const gefunden = await api.findPoster(job.entry.title, job.catKey);
+        // Ein Aufruf deckt beides ab — Poster und Angaben stammen aus
+        // demselben Treffer und koennen so nicht auseinanderfallen.
+        const gefunden = (await api.findMedia(job.entry.title, job.catKey)) || {};
         if (cancelled) return;
 
-        // Leere Felder sind "", die Suche liefert aber null. Ohne
-        // Vereinheitlichung schlaegt der Vergleich fehl und es wird
-        // gespeichert, obwohl sich nichts geaendert hat.
-        const neuesPoster = gefunden || "";
-        if (!neuesPoster) {
-          // Nichts gefunden: merken, damit der Eintrag beim naechsten
-          // Besuch nicht wieder abgefragt wird.
-          merkeErfolglos(job.entry.id);
-          continue;
+        const aenderung = {};
+
+        if (job.posterFehlt) {
+          // Leere Felder sind "", die Suche liefert aber null. Ohne
+          // Vereinheitlichung schlaegt der Vergleich fehl und es wird
+          // gespeichert, obwohl sich nichts geaendert hat.
+          const neuesPoster = gefunden.url || "";
+          if (neuesPoster) {
+            aenderung.poster = neuesPoster;
+            aenderung.posterSource = "auto";
+          } else {
+            // Nichts gefunden: merken, damit der Eintrag beim naechsten
+            // Besuch nicht wieder abgefragt wird.
+            merkeErfolglos(job.entry.id);
+          }
         }
+
+        if (job.angabenFehlen) {
+          // Nur fehlende Felder fuellen — was schon dasteht, bleibt.
+          if (job.entry.releaseYear == null && typeof gefunden.year === "number") {
+            aenderung.releaseYear = gefunden.year;
+          }
+          if (!job.entry.director && typeof gefunden.director === "string" && gefunden.director.trim()) {
+            aenderung.director = gefunden.director.trim();
+          }
+          if (job.entry.imdbRating == null && typeof gefunden.imdbRating === "number") {
+            aenderung.imdbRating = gefunden.imdbRating;
+          }
+          if (angabenUnvollstaendig({ ...job.entry, ...aenderung })) {
+            merkeOhneAngaben(job.entry.id);
+          }
+        }
+
+        if (!Object.keys(aenderung).length) continue;
 
         try {
           const saved = await api.update(job.entry.id, {
             ...job.entry,
             seasons: job.entry.seasons || [],
             category: job.catKey,
-            poster: neuesPoster,
-            posterSource: "auto",
+            ...aenderung,
           });
           if (cancelled) return;
           setItems((prev) => ({
@@ -1823,7 +1953,8 @@ export default function App() {
             [job.catKey]: (prev[job.catKey] || []).map((f) => (f.id === saved.id ? normalizeEntry(saved) : f)),
           }));
         } catch (e) {
-          // Poster ist Nebensache — Fehler hier nicht dem Nutzer aufdrängen.
+          // Poster und Angaben sind Nebensache — Fehler hier nicht dem
+          // Nutzer aufdrängen.
         }
       }
     })();
@@ -1994,6 +2125,23 @@ export default function App() {
       posterAttempted.current.delete(id);
     }
 
+    /* Jahr, Regie und IMDb-Note gehoeren zum Titel. Bleibt er gleich,
+       werden sie unveraendert mitgeschickt — sonst wuerden sie beim
+       Speichern geleert. Wird er geaendert, gelten sie nicht mehr und
+       werden neu geholt. */
+    const titelGeaendert = title.trim() !== current.title.trim();
+    if (titelGeaendert) {
+      angabenAttempted.current.delete(id);
+      vergissOhneAngaben(id);
+    }
+    const angaben = titelGeaendert
+      ? { releaseYear: null, director: null, imdbRating: null }
+      : {
+          releaseYear: current.releaseYear,
+          director: current.director,
+          imdbRating: current.imdbRating,
+        };
+
     setBusy(true);
     try {
       const saved = await api.update(id, {
@@ -2002,6 +2150,7 @@ export default function App() {
         poster: nextPoster,
         posterSource: nextSource,
         backdrop: nextBackdrop,
+        ...angaben,
         values,
         personal,
         seasons: seasons || [],
@@ -2043,10 +2192,14 @@ export default function App() {
       const res = await fetch(pfad, { method: "POST" });
       if (!res.ok) throw new Error("Fehlgeschlagen (" + res.status + ")");
       const data = await res.json();
-      // Erneute Suche im Client wieder freigeben
+      // Erneute Suche im Client wieder freigeben. Die Angaben zum Werk
+      // haengen am selben Abruf und werden deshalb mit freigegeben —
+      // sonst gaebe es keinen Weg, sie noch einmal zu versuchen.
       posterAttempted.current = new Set();
+      angabenAttempted.current = new Set();
       nachladeZaehler.current = 0;
       vergissErfolglose();
+      vergissAlleOhneAngaben();
       const fresh = await api.loadAll();
       setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (fresh[k] || []).map(normalizeEntry)])));
       setSaveError(
@@ -2166,6 +2319,12 @@ export default function App() {
                 title: entry.title.trim(),
                 poster: typeof entry.poster === "string" ? entry.poster : "",
                 backdrop: typeof entry.backdrop === "string" ? entry.backdrop : "",
+                // Angaben zum Werk aus dem Backup uebernehmen; aeltere
+                // Sicherungen haben sie nicht, dann werden sie
+                // nachgeladen wie bei jedem anderen Eintrag auch.
+                releaseYear: typeof entry.releaseYear === "number" ? entry.releaseYear : null,
+                director: typeof entry.director === "string" ? entry.director : null,
+                imdbRating: typeof entry.imdbRating === "number" ? entry.imdbRating : null,
                 seasons: gueltigeStaffeln(entry.seasons, catKey),
                 genre: Array.isArray(entry.genre) ? entry.genre : [],
                 values: entry.values,
@@ -2509,18 +2668,21 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Woher die Bilder stammen. */}
+                    {/* Woher die Daten stammen. */}
                     <div style={{ fontSize: 11, color: "#77746c", marginTop: 14, lineHeight: 1.7 }}>
-                      Bildquellen:{" "}
+                      Poster- und Bilddaten von{" "}
                       <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer" style={quellenLink}>TMDB</a>
-                      {" · "}
+                      {", "}
                       <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer" style={quellenLink}>TVMaze</a>
-                      {" · "}
+                      {", "}
                       <a href="https://jikan.moe" target="_blank" rel="noreferrer" style={quellenLink}>Jikan</a>
-                      {" · "}
+                      {" und "}
                       <a href="https://www.steamgriddb.com" target="_blank" rel="noreferrer" style={quellenLink}>SteamGridDB</a>
-                      {" (Spiele) · "}
-                      <a href="https://www.apple.com/itunes/" target="_blank" rel="noreferrer" style={quellenLink}>iTunes</a>
+                      {". Notendaten zum Vergleich von "}
+                      <a href="https://www.omdbapi.com" target="_blank" rel="noreferrer" style={quellenLink}>OMDb</a>
+                      {" ("}
+                      <a href="https://www.imdb.com" target="_blank" rel="noreferrer" style={quellenLink}>IMDb</a>
+                      {")."}
                     </div>
                   </div>
 

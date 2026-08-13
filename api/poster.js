@@ -1,8 +1,13 @@
 /**
  * GET /api/poster?title=...&category=movie|series|anime|game
- * -> { url: "https://...", backdrop: "https://..." }
- *    Beide Felder koennen null sein. `url` ist das Hochkant-Poster,
+ * -> { url, backdrop, year, director, imdbRating, imdbVerfuegbar }
+ *    Alle Datenfelder koennen null sein. `url` ist das Hochkant-Poster,
  *    `backdrop` ein breites Szenenbild fuer den Kopfbereich.
+ *
+ * Im selben Durchgang kommen bei Film, Serie und Anime die Angaben zum
+ * Werk mit: Erscheinungsjahr und Regie aus TMDB, die IMDb-Note als
+ * Vergleichswert aus OMDb. Bei Spielen entfaellt das — dort gibt es nur
+ * Bilder.
  *
  * Die Suche läuft bewusst SERVERSEITIG:
  * - keine CORS-Probleme (der Browser spricht nur mit deiner eigenen Domain)
@@ -15,7 +20,8 @@
  * alles läuft über die freien Quellen wie zuvor. Spiele brauchen
  * STEAMGRIDDB_API_KEY; fehlt der, findet für sie gar keine
  * automatische Suche statt und es bleibt bei der manuell
- * eingetragenen URL.
+ * eingetragenen URL. Die IMDb-Note braucht OMDB_API_KEY; fehlt der,
+ * bleibt sie leer — ein Fehler ist das nicht.
  *
  * Es wird NICHT blind der erste Treffer genommen: Jede Quelle liefert
  * mehrere Kandidaten, deren Titel mit dem gesuchten Titel verglichen
@@ -327,6 +333,10 @@ async function fromTmdb(title, kind) {
       : [hit.title, hit.original_title];
     return {
       titles: titles.filter(Boolean),
+      // Kennung und Datum des Treffers: daraus entstehen spaeter
+      // Erscheinungsjahr, Regie und die IMDb-Kennung.
+      id: hit.id,
+      year: jahrAus(isTv ? hit.first_air_date : hit.release_date),
       // Ohne poster_path gibt es kein Bild: Der Eintrag zählt für die
       // Diagnose noch mit, kommt für die Auswahl aber nicht in Frage.
       url: hit.poster_path ? TMDB_IMAGE_BASE + hit.poster_path : null,
@@ -336,8 +346,22 @@ async function fromTmdb(title, kind) {
   });
 
   const { url, backdrop, bestScore, ueberEnthaltung } = pickBestMatch(title, candidates);
+
+  // Fuer die Angaben zum Werk zaehlt allein der Titel: ein Treffer ohne
+  // Poster ist als Quelle fuer Jahr und Regie genauso gut. Die Auswahl
+  // des Bildes darueber bleibt davon unberuehrt.
+  const fuerAngaben = pickBestMatch(title, candidates, () => true).treffer;
+
   const label = "TMDB (" + (isTv ? "tv" : "movie") + ")";
-  return { url, backdrop, debug: buildDebug(label, response, candidates, bestScore, ueberEnthaltung) };
+  return {
+    url,
+    backdrop,
+    meta:
+      fuerAngaben && fuerAngaben.id != null
+        ? { id: fuerAngaben.id, kind: isTv ? "tv" : "movie", year: fuerAngaben.year }
+        : null,
+    debug: buildDebug(label, response, candidates, bestScore, ueberEnthaltung),
+  };
 }
 
 /**
@@ -483,6 +507,130 @@ function stripSeasonSuffix(name) {
 }
 
 /* ---------------------------------------------------------------- *
+ * Angaben zum Werk: Erscheinungsjahr, Regie, IMDb-Note
+ *
+ * Nur fuer Film, Serie und Anime. Sie haengen am selben TMDB-Treffer,
+ * der auch das Poster liefert — dadurch koennen Bild und Angaben nicht
+ * zu verschiedenen Werken gehoeren.
+ * ---------------------------------------------------------------- */
+
+/** "2001-12-19" -> 2001; alles andere -> null. */
+function jahrAus(datum) {
+  const treffer = /^(\d{4})/.exec(String(datum || ""));
+  return treffer ? Number(treffer[1]) : null;
+}
+
+/**
+ * Details zu einem TMDB-Treffer — Jahr, Regie und IMDb-Kennung in
+ * einer einzigen Anfrage (`append_to_response`).
+ *
+ * Serien haben oft keinen einzelnen Regisseur. Steht in den Credits
+ * keiner, treten die Schoepfer (`created_by`) an dessen Stelle — das
+ * ist die Angabe, die bei einer Serie dieselbe Frage beantwortet.
+ */
+async function tmdbAngaben(kind, id) {
+  const response = await getJson(
+    "https://api.themoviedb.org/3/" +
+      kind +
+      "/" +
+      encodeURIComponent(id) +
+      "?api_key=" +
+      encodeURIComponent(tmdbKey()) +
+      "&language=de-DE&append_to_response=credits,external_ids"
+  );
+
+  const d = response.data || {};
+  const crew = d.credits && Array.isArray(d.credits.crew) ? d.credits.crew : [];
+
+  let regie = null;
+  for (const person of crew) {
+    if (person && (person.job === "Director" || person.job === "Series Director") && person.name) {
+      regie = person.name;
+      break;
+    }
+  }
+  if (!regie && Array.isArray(d.created_by)) {
+    const namen = d.created_by.map((p) => p && p.name).filter(Boolean);
+    if (namen.length) regie = namen.join(", ");
+  }
+
+  return {
+    year: jahrAus(d.release_date || d.first_air_date),
+    director: regie,
+    // Ueber die IMDb-Kennung wird die Note spaeter eindeutig geholt,
+    // ohne dass noch einmal ueber Titel geraten werden muss.
+    imdbId: d.imdb_id || (d.external_ids && d.external_ids.imdb_id) || null,
+    originalTitle: d.original_title || d.original_name || null,
+    debug: { source: "TMDB (details)", status: response.status, error: response.error },
+  };
+}
+
+/**
+ * Der OMDb-Schluessel ist optional. Fehlt er, wird die IMDb-Note gar
+ * nicht erst abgefragt und bleibt leer — die App laeuft unveraendert
+ * weiter, es gibt keinen Fehler.
+ */
+function omdbKey() {
+  const key = process.env.OMDB_API_KEY;
+  return key && key.trim() ? key.trim() : null;
+}
+
+/* Welcher OMDb-Typ zu welcher Kategorie passt. Anime laeuft bewusst
+   ohne Vorgabe: es gibt Anime-Filme und Anime-Serien. */
+const OMDB_TYP = { movie: "movie", series: "series" };
+
+/**
+ * IMDb-Note ueber OMDb.
+ *
+ * Bevorzugt wird die IMDb-Kennung aus TMDB — damit ist der Treffer
+ * eindeutig. Fehlt sie, bleibt die Titelsuche; deren Ergebnis wird wie
+ * ueberall auf Titelaehnlichkeit geprueft, damit nicht die Note eines
+ * fremden Werks am Eintrag landet.
+ */
+async function fromOmdb(title, category, angaben) {
+  const params = ["apikey=" + encodeURIComponent(omdbKey())];
+  const imdbId = angaben && angaben.imdbId;
+  const originalTitle = angaben && angaben.originalTitle;
+
+  if (imdbId) {
+    params.push("i=" + encodeURIComponent(imdbId));
+  } else {
+    // OMDb kennt fast nur Originaltitel — der aus TMDB passt besser
+    // als ein deutscher Titel aus der Sammlung.
+    params.push("t=" + encodeURIComponent(originalTitle || title));
+    const typ = OMDB_TYP[category];
+    if (typ) params.push("type=" + typ);
+    if (angaben && angaben.year) params.push("y=" + angaben.year);
+  }
+
+  const response = await getJson("https://www.omdbapi.com/?" + params.join("&"));
+  const d = response.data;
+  const debug = { source: "OMDb", status: response.status, error: response.error };
+
+  if (!d || d.Response !== "True") {
+    if (d && d.Error) debug.error = d.Error;
+    return { rating: null, debug };
+  }
+
+  if (!imdbId) {
+    const score = Math.max(
+      similarity(title, d.Title),
+      originalTitle ? similarity(originalTitle, d.Title) : 0
+    );
+    debug.bestScore = Math.round(score * 100) / 100;
+    if (score < MIN_SIMILARITY && !istEnthalten(title, d.Title)) {
+      return { rating: null, debug };
+    }
+  }
+
+  // "N/A" und fehlende Werte ergeben NaN — dann gibt es eben keine Note.
+  const note = parseFloat(d.imdbRating);
+  const rating = Number.isNaN(note) ? null : note;
+  debug.rating = rating;
+  return { rating, debug };
+}
+
+/* ---------------------------------------------------------------- *
  * Handler
  * ---------------------------------------------------------------- */
 
@@ -497,12 +645,15 @@ export default async function handler(req, res) {
   // Im Diagnose-Modus wird der Cache übersprungen — sonst käme eine
   // Antwort ohne jede Information darüber, was die Quellen gesagt haben.
   if (!debug && CACHE.has(cacheKey)) {
-    const treffer = CACHE.get(cacheKey);
-    return res.status(200).json({ url: treffer.url, backdrop: treffer.backdrop, cached: true });
+    return res.status(200).json({ ...CACHE.get(cacheKey), cached: true });
   }
 
   const hasTmdb = !!tmdbKey();
   const hasSgdb = !!steamGridKey();
+  const hasOmdb = !!omdbKey();
+
+  // Jahr, Regie und IMDb-Note gibt es nur bei Film, Serie und Anime.
+  const willAngaben = category !== "game";
 
   let chain;
   if (category === "game") {
@@ -529,6 +680,7 @@ export default async function handler(req, res) {
 
   let url = null;
   let backdrop = null;
+  let tmdbTreffer = null;
   const sources = [];
   for (const step of chain) {
     const result = await step();
@@ -545,31 +697,74 @@ export default async function handler(req, res) {
       backdrop = result.backdrop;
       result.debug.usedBackdrop = true;
     }
+    // Jahr und Regie kennt nur TMDB. Bei Serien liefert TVMaze zwar
+    // schon beide Bilder, die Kette laeuft aber weiter bis TMDB —
+    // sonst blieben Serien dauerhaft ohne Angaben.
+    if (!tmdbTreffer && result.meta) {
+      tmdbTreffer = result.meta;
+      result.debug.usedMeta = true;
+    }
 
-    // Ohne Diagnose endet die Kette, sobald beides gefunden ist; mit
+    // Ohne Diagnose endet die Kette, sobald alles Gesuchte da ist; mit
     // Diagnose laufen alle Quellen durch, damit man sie vergleichen kann.
-    if (!debug && url && backdrop) break;
+    const angabenOffen = willAngaben && hasTmdb && !tmdbTreffer;
+    if (!debug && url && backdrop && !angabenOffen) break;
   }
+
+  // Zusatzangaben: Details zum TMDB-Treffer, danach die IMDb-Note.
+  let year = tmdbTreffer ? tmdbTreffer.year : null;
+  let director = null;
+  let imdbRating = null;
+  const angabenDebug = [];
+
+  if (willAngaben) {
+    let angaben = null;
+    if (tmdbTreffer) {
+      angaben = await tmdbAngaben(tmdbTreffer.kind, tmdbTreffer.id);
+      angabenDebug.push(angaben.debug);
+      if (angaben.year) year = angaben.year;
+      director = angaben.director;
+    }
+    // Ohne TMDB-Treffer bleibt die Titelsuche bei OMDb — besser eine
+    // Note ueber den Titel als gar keine.
+    if (hasOmdb) {
+      const omdb = await fromOmdb(title, category, angaben);
+      angabenDebug.push(omdb.debug);
+      imdbRating = omdb.rating;
+    }
+  }
+
+  const antwort = {
+    url,
+    backdrop,
+    year,
+    director,
+    imdbRating,
+    // Sagt dem Frontend, ob eine fehlende Note am fehlenden Schluessel
+    // liegt — dann ist es kein erfolgloser Versuch.
+    imdbVerfuegbar: willAngaben && hasOmdb,
+  };
 
   if (debug) {
     // Diagnose-Antworten dürfen nicht im CDN hängenbleiben.
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
-      url,
-      backdrop,
+      ...antwort,
       debug: {
         title,
         category,
         minSimilarity: MIN_SIMILARITY,
         tmdb: hasTmdb ? "aktiv" : "übersprungen (TMDB_API_KEY fehlt)",
         steamgriddb: hasSgdb ? "aktiv" : "übersprungen (STEAMGRIDDB_API_KEY fehlt)",
+        omdb: hasOmdb ? "aktiv" : "übersprungen (OMDB_API_KEY fehlt)",
         sources,
+        angaben: angabenDebug,
       },
     });
   }
 
-  CACHE.set(cacheKey, { url, backdrop });
+  CACHE.set(cacheKey, antwort);
   // Ergebnis einen Tag im CDN cachen — spart Aufrufe bei den freien APIs.
   res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
-  return res.status(200).json({ url, backdrop });
+  return res.status(200).json(antwort);
 }
