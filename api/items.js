@@ -1,6 +1,7 @@
 import {
   sql, ensureReady, rowToItem, rowToSeason, validateItem,
   criteriaKeysFor, CATEGORIES, supportsSeasons, normalizeWeight,
+  normalizeWatchCount, WATCH_COUNT_DEFAULT,
 } from "./_db.js";
 
 /** Die Staffelzeilen eines Eintrags, so wie sie gerade gespeichert sind. */
@@ -198,7 +199,8 @@ async function create(req, res) {
       INSERT INTO media_items
         (id, category, title, poster, poster_source, backdrop, story, charaktere, unterhaltung,
          emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
-         personal, release_year, director, imdb_rating, watchlist, created_at, updated_at)
+         personal, release_year, director, imdb_rating, watchlist, watch_count,
+         created_at, updated_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
          ${body.backdrop || ""},
@@ -207,6 +209,7 @@ async function create(req, res) {
          ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert},
          ${merkliste ? null : body.personal},
          ${a.releaseYear}, ${a.director}, ${a.imdbRating}, ${merkliste},
+         ${normalizeWatchCount(body.watchCount) ?? WATCH_COUNT_DEFAULT},
          ${body.createdAt || now}, ${now})
       RETURNING *
     `,
@@ -263,6 +266,11 @@ async function update(req, res) {
         director        = ${a.director},
         imdb_rating     = ${a.imdbRating},
         watchlist       = ${merkliste},
+        -- Fehlt der Zaehler in der Anfrage, bleibt der gespeicherte Wert
+        -- stehen. Nicht jeder Speichervorgang schickt ihn mit (das
+        -- automatische Nachladen von Postern und Angaben etwa) — ohne
+        -- COALESCE wuerde jeder dieser Aufrufe ihn auf 1 zuruecksetzen.
+        watch_count     = COALESCE(${normalizeWatchCount(body.watchCount)}::integer, watch_count),
         updated_at      = ${Date.now()}
       WHERE id = ${id}
       RETURNING *

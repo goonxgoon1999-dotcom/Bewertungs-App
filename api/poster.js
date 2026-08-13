@@ -92,7 +92,7 @@ export async function getJson(url, zusatzKopfzeilen) {
  * keine Sonderzeichen.
  *   "Der Herr der Ringe (2001)" -> "der herr der ringe"
  */
-function normalizeTitle(title) {
+export function normalizeTitle(title) {
   return String(title || "")
     .toLowerCase()
     .replace(/ß/g, "ss")
@@ -142,7 +142,7 @@ function totalWeight(words) {
  * senken den Wert. Damit fällt "Alien" vs. "Aliens vs. Predator"
  * durch, "Herr der Ringe" vs. "Der Herr der Ringe" aber nicht.
  */
-function similarity(a, b) {
+export function similarity(a, b) {
   const normA = normalizeTitle(a);
   const normB = normalizeTitle(b);
   if (!normA || !normB) return 0;

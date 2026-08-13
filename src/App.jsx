@@ -450,6 +450,33 @@ function istVorgemerkt(entry) {
   return entry && entry.watchlist === true;
 }
 
+/* Bei Spielen heisst die Merkliste "Backlog" — der uebliche Begriff fuer
+   Spiele, die man noch vor sich hat. Funktion und Daten sind dieselben,
+   nur die Beschriftung wechselt. */
+function merklisteLabel(category) {
+  return category === "game" ? "Backlog" : "Watchlist";
+}
+
+/* ------------------------------------------------------------
+   Zaehler: wie oft geschaut bzw. gespielt?
+
+   Grenzen und Startwert wie in api/_db.js. Ein bewerteter Eintrag wurde
+   mindestens einmal gesehen, deshalb ist 1 zugleich Startwert und
+   Untergrenze.
+   ------------------------------------------------------------ */
+const WATCH_COUNT_MIN = 1;
+const WATCH_COUNT_MAX = 9999;
+
+/** Ein Spiel wird gespielt, alles Uebrige geschaut. */
+function zaehlerLabel(category) {
+  return category === "game" ? "Gespielt" : "Geschaut";
+}
+
+function entryWatchCount(entry) {
+  const n = entry && entry.watchCount;
+  return typeof n === "number" && Number.isFinite(n) ? Math.max(WATCH_COUNT_MIN, Math.round(n)) : WATCH_COUNT_MIN;
+}
+
 /** "hinzugefuegt vor X Tagen" — angefangen bei heute. */
 function hinzugefuegtVor(zeit) {
   if (!zeit) return "hinzugefügt";
@@ -688,6 +715,22 @@ const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Suche fehlgeschlagen");
     const data = await res.json();
     return Array.isArray(data.results) ? data.results : [];
+  },
+  /* Vorschlaege auf Grundlage der eigenen Bestbewerteten. Die Titel
+     gehen als Seeds mit; geliefert werden Treffer in derselben Form wie
+     bei der Titelsuche, sodass "+ Watchlist" unveraendert damit
+     arbeitet. Fehler bleiben still — Empfehlungen sind Beiwerk. */
+  async loadRecommendations(category, titles) {
+    const res = await fetch(
+      "/api/recommendations?category=" + encodeURIComponent(category) +
+        "&titles=" + encodeURIComponent(titles.join("|"))
+    );
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Empfehlungen fehlgeschlagen");
+    const data = await res.json();
+    return {
+      results: Array.isArray(data.results) ? data.results : [],
+      hinweis: typeof data.hinweis === "string" ? data.hinweis : "",
+    };
   },
   async loadHeaderImages() {
     const res = await fetch("/api/header-images");
@@ -1298,7 +1341,7 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
 /* ============================================================
    WATCHLIST — vorgemerkt, noch ohne Note
    ============================================================ */
-function WatchlistZeile({ eintrag, busy, onBewerten, onEntfernen }) {
+function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326" }}>
       <Poster url={eintrag.poster} title={eintrag.title} size={34} />
@@ -1325,8 +1368,8 @@ function WatchlistZeile({ eintrag, busy, onBewerten, onEntfernen }) {
       <button
         onClick={onEntfernen}
         disabled={busy}
-        title="Aus der Watchlist entfernen"
-        aria-label={eintrag.title + " aus der Watchlist entfernen"}
+        title={"Aus " + (merkliste === "Backlog" ? "dem" : "der") + " " + merkliste + " entfernen"}
+        aria-label={eintrag.title + " aus " + (merkliste === "Backlog" ? "dem" : "der") + " " + merkliste + " entfernen"}
         style={{
           flexShrink: 0, background: "transparent", border: "none", color: "#d9736a",
           fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1,
@@ -1334,6 +1377,202 @@ function WatchlistZeile({ eintrag, busy, onBewerten, onEntfernen }) {
       >
         ×
       </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   EMPFEHLUNGEN — "ähnliche Titel" der ohnehin genutzten Quellen
+
+   Kein eigener Algorithmus: gefragt werden die Empfehlungs-Endpunkte
+   von TMDB (Film, Serie) und Jikan (Anime), und zwar zu den eigenen
+   bestbewerteten Titeln. Spiele haben keinen Abschnitt — SteamGridDB
+   kennt keine Aehnlichkeiten.
+
+   Bei Spielen erscheint dieser Abschnitt gar nicht, deshalb steht hier
+   nirgends "Backlog".
+   ============================================================ */
+
+/* So viele Bestbewertete gehen als Grundlage an den Server. Er kappt
+   die Zahl noch einmal selbst — jeder Titel kostet dort zwei externe
+   Aufrufe. */
+const EMPFEHLUNGS_SEEDS = 6;
+
+/* So viele Vorschlaege stehen am Ende in der Liste. */
+const EMPFEHLUNGEN_SICHTBAR = 8;
+
+/* Vorschlaege ueberdauern den Reiterwechsel: Der Cache liegt neben der
+   Komponente, nicht in ihr. Ohne das liefe bei jedem Wechsel auf den
+   Watchlist-Reiter eine neue Runde externer Aufrufe. Der Schluessel
+   traegt die Grundlage mit — aendert sich die Bestenliste, entsteht von
+   selbst ein neuer Eintrag. */
+const empfehlungsCache = new Map();
+const EMPFEHLUNGS_TTL_MS = 6 * 60 * 60 * 1000; // 6 Stunden
+
+/* Titelvergleich fuers Aussortieren. Bewusst ohne Jahr: Die Quellen
+   liefern es nicht immer mit (Jikan etwa nie), und derselbe Titel ist
+   auch ohne Jahresangabe derselbe Titel. */
+function titelSchluessel(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/ß/g, "ss")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "") // Akzente entfernen: é -> e
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function EmpfehlungsZeile({ vorschlag, busy, vorgemerkt, onWatchlist }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}>
+      <Poster url={vorschlag.poster} title={vorschlag.title} size={34} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {vorschlag.title}
+        </div>
+        {vorschlag.year && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2 }}>
+            {vorschlag.year}
+          </div>
+        )}
+      </div>
+      {vorgemerkt ? (
+        <span style={{ fontSize: 12.5, color: "#77746c", flexShrink: 0 }}>✓ vorgemerkt</span>
+      ) : (
+        <button
+          onClick={onWatchlist}
+          disabled={busy}
+          style={{
+            flexShrink: 0, padding: "8px 10px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
+            background: "transparent", color: "var(--accent, #C9A227)",
+            border: "1px solid var(--accent, #C9A227)", fontWeight: 600, opacity: busy ? 0.5 : 1,
+          }}
+        >
+          + Watchlist
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Empfehlungen({ category, seeds, bekannt, busy, onWatchlist }) {
+  const [zustand, setZustand] = useState({ laeuft: false, vorschlaege: [], hinweis: "", fehler: "" });
+  // Was in diesem Durchgang vorgemerkt wurde — dieselbe Kennung wie in
+  // der Titelsuche, damit der Haken am Titel haengt und nicht an der
+  // Position in der Liste.
+  const [vorgemerkt, setVorgemerkt] = useState(() => new Set());
+
+  // Die Grundlage als Zeichenkette: nur wenn sich die Bestenliste
+  // wirklich aendert, wird neu geladen.
+  const grundlage = seeds.join("|");
+
+  useEffect(() => {
+    if (!grundlage) {
+      setZustand({ laeuft: false, vorschlaege: [], hinweis: "", fehler: "" });
+      return;
+    }
+
+    const schluessel = category + "::" + grundlage;
+    const zwischen = empfehlungsCache.get(schluessel);
+    if (zwischen && Date.now() - zwischen.zeit < EMPFEHLUNGS_TTL_MS) {
+      setZustand({ laeuft: false, ...zwischen.antwort, fehler: "" });
+      return;
+    }
+
+    let abgebrochen = false;
+    setZustand({ laeuft: true, vorschlaege: [], hinweis: "", fehler: "" });
+    (async () => {
+      try {
+        const { results, hinweis } = await api.loadRecommendations(category, grundlage.split("|"));
+        const antwort = { vorschlaege: results, hinweis };
+        empfehlungsCache.set(schluessel, { zeit: Date.now(), antwort });
+        if (!abgebrochen) setZustand({ laeuft: false, ...antwort, fehler: "" });
+      } catch (e) {
+        // Erfolglose Versuche landen nicht im Cache — beim naechsten
+        // Oeffnen darf es noch einmal versucht werden.
+        if (!abgebrochen) {
+          setZustand({ laeuft: false, vorschlaege: [], hinweis: "", fehler: e.message });
+        }
+      }
+    })();
+    return () => { abgebrochen = true; };
+  }, [category, grundlage]);
+
+  /* Was schon bewertet oder vorgemerkt ist, ist kein Vorschlag mehr.
+     Der Abgleich laeuft hier und nicht auf dem Server: Nur die App
+     kennt die Sammlung, und so bleibt die Antwort im CDN gueltig, auch
+     wenn sich die Sammlung aendert.
+
+     Ausgenommen ist, was gerade eben in diesem Durchgang vorgemerkt
+     wurde: Diese Zeilen bleiben mit dem Haken stehen, genau wie in der
+     Titelsuche. Wuerden sie sofort verschwinden, spraenge die Liste bei
+     jedem Klick und man saehe nie eine Bestaetigung. */
+  const sichtbar = useMemo(() => {
+    return zustand.vorschlaege
+      .filter((v) => {
+        if (!v || !v.title) return false;
+        const schluessel = titelSchluessel(v.title);
+        return vorgemerkt.has(schluessel) || !bekannt.has(schluessel);
+      })
+      .slice(0, EMPFEHLUNGEN_SICHTBAR);
+  }, [zustand.vorschlaege, bekannt, vorgemerkt]);
+
+  if (!grundlage && !zustand.laeuft) {
+    return (
+      <EmpfehlungsRahmen>
+        <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
+          Sobald ein paar Titel bewertet sind, stehen hier Vorschläge, die
+          zu den bestbewerteten passen.
+        </div>
+      </EmpfehlungsRahmen>
+    );
+  }
+
+  return (
+    <EmpfehlungsRahmen>
+      {zustand.laeuft && (
+        <div style={{ fontSize: 13, color: "#9A968C" }}>Vorschläge werden geholt…</div>
+      )}
+      {!zustand.laeuft && zustand.fehler && (
+        <div style={{ color: "#d9736a", fontSize: 12.5 }}>{zustand.fehler}</div>
+      )}
+      {!zustand.laeuft && !zustand.fehler && zustand.hinweis && (
+        <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>{zustand.hinweis}</div>
+      )}
+      {!zustand.laeuft && !zustand.fehler && !zustand.hinweis && sichtbar.length === 0 && (
+        <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
+          Gerade nichts Neues — die Quellen schlagen nur Titel vor, die du
+          schon bewertet oder vorgemerkt hast.
+        </div>
+      )}
+      {!zustand.laeuft &&
+        sichtbar.map((v, i) => (
+          <EmpfehlungsZeile
+            key={titelSchluessel(v.title) + "::" + i}
+            vorschlag={v}
+            busy={busy}
+            vorgemerkt={vorgemerkt.has(titelSchluessel(v.title))}
+            onWatchlist={async () => {
+              const ok = await onWatchlist(v);
+              if (ok) setVorgemerkt((alt) => new Set(alt).add(titelSchluessel(v.title)));
+            }}
+          />
+        ))}
+    </EmpfehlungsRahmen>
+  );
+}
+
+/* Gemeinsamer Rahmen — dieselbe Karte wie beim Hinzufuegen-Block. */
+function EmpfehlungsRahmen({ children }) {
+  return (
+    <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid #232326" }}>
+      <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 6 }}>
+        EMPFEHLUNGEN FÜR DICH
+      </div>
+      <div style={{ fontSize: 11.5, color: "#77746c", lineHeight: 1.5, marginBottom: 12 }}>
+        Ähnliche Titel zu deinen bestbewerteten Einträgen.
+      </div>
+      {children}
     </div>
   );
 }
@@ -1814,7 +2053,59 @@ function AngabenEditor({ entry, regieLabel, busy, onSave, onCancel }) {
   );
 }
 
-function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben }) {
+/* ------------------------------------------------------------
+   Zaehler "wie oft geschaut/gespielt" als schmale Meta-Angabe.
+
+   Bewusst im selben Stil wie "Kriterien-Note" und "Bauchgefuehl"
+   daneben: gleiche Schriftgroesse, gleiche Farben. Die beiden Knoepfe
+   speichern sofort; bei 1 ist "−" abgeschaltet, denn wer bewertet hat,
+   hat mindestens einmal gesehen.
+   ------------------------------------------------------------ */
+function ZaehlerFeld({ label, wert, busy, onChange }) {
+  const knopf = (aktiv) => ({
+    width: 26, height: 26, lineHeight: 1, padding: 0,
+    background: "transparent",
+    border: "1px solid " + (aktiv ? "#33333a" : "#232326"),
+    borderRadius: 6,
+    color: aktiv ? "#9A968C" : "#3a3a40",
+    fontSize: 15, cursor: aktiv ? "pointer" : "default",
+    fontFamily: "inherit",
+  });
+
+  const runter = !busy && wert > WATCH_COUNT_MIN;
+  const hoch = !busy && wert < WATCH_COUNT_MAX;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span>{label}:</span>
+      <button
+        onClick={() => runter && onChange(wert - 1)}
+        disabled={!runter}
+        title="Einmal weniger"
+        aria-label="Einmal weniger"
+        style={knopf(runter)}
+      >
+        −
+      </button>
+      <strong
+        style={{ color: "#EDEAE3", fontFamily: "'JetBrains Mono', monospace", minWidth: 28, textAlign: "center" }}
+      >
+        {wert}×
+      </strong>
+      <button
+        onClick={() => hoch && onChange(wert + 1)}
+        disabled={!hoch}
+        title="Einmal mehr"
+        aria-label="Einmal mehr"
+        style={knopf(hoch)}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount }) {
   const criteria = criteriaFor(category);
   const criteriaScore = entryCriteriaScore(entry, category);
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
@@ -1945,6 +2236,12 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
             </strong>
           </div>
           {staffeln && <div>{staffeln.length} Staffeln</div>}
+          <ZaehlerFeld
+            label={zaehlerLabel(category)}
+            wert={entryWatchCount(entry)}
+            busy={busy}
+            onChange={(n) => onSaveWatchCount(n)}
+          />
         </div>
 
         {staffeln && (
@@ -2363,6 +2660,8 @@ export default function App() {
       imdbRating: typeof e.imdbRating === "number" ? e.imdbRating : null,
       // Vorgemerkt statt bewertet — ohne Werte und ohne Endnote.
       watchlist: e.watchlist === true,
+      // Wie oft geschaut/gespielt. Wer bewertet hat, hat einmal gesehen.
+      watchCount: typeof e.watchCount === "number" ? e.watchCount : WATCH_COUNT_MIN,
       seasons: Array.isArray(e.seasons)
         ? e.seasons.map((sn, i) => ({
             // Die ID kommt aus der Datenbank und muss beim Speichern
@@ -2694,6 +2993,26 @@ export default function App() {
     return currentList.find((f) => f.id === selectedId) || null;
   }, [currentList, selectedId]);
 
+  /* ---- Grundlage der Empfehlungen ----
+     Die bestbewerteten Titel der Kategorie. `currentList` ist bereits
+     nach Endnote sortiert; Unbewertetes (Staffelgewichte auf 0) hat
+     keine Note und taugt nicht als Grundlage. */
+  const empfehlungsSeeds = useMemo(
+    () =>
+      currentList
+        .filter((f) => typeof f.score === "number")
+        .slice(0, EMPFEHLUNGS_SEEDS)
+        .map((f) => f.title),
+    [currentList]
+  );
+
+  /* Alles, was in dieser Kategorie schon bekannt ist — bewertet wie
+     vorgemerkt. Daran werden die Vorschlaege aussortiert. */
+  const bekannteTitel = useMemo(
+    () => new Set((items[category] || []).map((f) => titelSchluessel(f.title))),
+    [items, category]
+  );
+
   // ---- CRUD ----
   async function addEntry({ title, poster, values, personal, seasons }) {
     setBusy(true);
@@ -2857,6 +3176,10 @@ export default function App() {
         values,
         personal,
         seasons: seasons || [],
+        // Der Zaehler gehoert nicht ins Bewertungsformular, muss beim
+        // Speichern aber mitgehen — sonst faellt er auf den Startwert
+        // zurueck, sobald eine Bewertung geaendert wird.
+        watchCount: entryWatchCount(current),
         createdAt: current.createdAt,
       });
       setItems((prev) => ({
@@ -2902,6 +3225,36 @@ export default function App() {
       }
     } catch (e) {
       setSaveError("Angaben nicht gespeichert: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* Zaehler setzen. Wie beim Speichern der Angaben geht alles Uebrige
+     des Eintrags unveraendert mit — dieser Aufruf fasst nur die eine
+     Zahl an. */
+  async function zaehlerSpeichern(id, wert) {
+    const current = (items[category] || []).find((f) => f.id === id);
+    if (!current) return;
+
+    const neu = Math.min(WATCH_COUNT_MAX, Math.max(WATCH_COUNT_MIN, Math.round(wert)));
+    if (neu === entryWatchCount(current)) return;
+
+    setBusy(true);
+    try {
+      const saved = await api.update(id, {
+        ...current,
+        seasons: current.seasons || [],
+        category,
+        watchCount: neu,
+      });
+      setItems((prev) => ({
+        ...prev,
+        [category]: prev[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      }));
+      setSaveError("");
+    } catch (e) {
+      setSaveError("Zähler nicht gespeichert: " + e.message);
     } finally {
       setBusy(false);
     }
@@ -3342,7 +3695,9 @@ export default function App() {
                   { key: "bewertet", label: "Bewertet" },
                   {
                     key: "watchlist",
-                    label: "Watchlist" + (watchlistList.length ? " · " + watchlistList.length : ""),
+                    label:
+                      merklisteLabel(category) +
+                      (watchlistList.length ? " · " + watchlistList.length : ""),
                   },
                 ].map((r) => (
                   <button
@@ -3375,13 +3730,22 @@ export default function App() {
             <>
               <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
                 {watchlistList.length === 0
-                  ? "Nichts vorgemerkt."
-                  : watchlistList.length + (watchlistList.length === 1 ? " Eintrag vorgemerkt" : " Einträge vorgemerkt")}
+                  ? category === "game"
+                    ? "Nichts im Backlog."
+                    : "Nichts vorgemerkt."
+                  : watchlistList.length +
+                    (category === "game"
+                      ? watchlistList.length === 1 ? " Eintrag im Backlog" : " Einträge im Backlog"
+                      : watchlistList.length === 1 ? " Eintrag vorgemerkt" : " Einträge vorgemerkt")}
               </div>
               {watchlistList.length === 0 ? (
                 <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
-                  Noch nichts vorgemerkt. Über „+ Neu hinzufügen" kannst du
-                  Titel auf die Watchlist setzen, ohne sie schon zu bewerten.
+                  {category === "game"
+                    ? "Der Backlog ist leer."
+                    : "Noch nichts vorgemerkt."}{" "}
+                  Über „+ Neu hinzufügen" kannst du Titel{" "}
+                  {category === "game" ? "in den Backlog" : "auf die Watchlist"} setzen,
+                  ohne sie schon zu bewerten.
                 </div>
               ) : (
                 watchlistList.map((f) => (
@@ -3389,10 +3753,26 @@ export default function App() {
                     key={f.id}
                     eintrag={f}
                     busy={busy}
+                    merkliste={merklisteLabel(category)}
                     onBewerten={() => { setBewerteVorgemerkt(f); setMode("watchlist-form"); }}
                     onEntfernen={() => watchlistEntfernen(f.id)}
                   />
                 ))
+              )}
+
+              {/* Vorschlaege aus den "aehnliche Titel"-Endpunkten. Bei
+                  Spielen entfaellt der Abschnitt: SteamGridDB kennt
+                  keine Aehnlichkeiten. */}
+              {category !== "game" && (
+                <Empfehlungen
+                  category={category}
+                  seeds={empfehlungsSeeds}
+                  bekannt={bekannteTitel}
+                  busy={busy}
+                  onWatchlist={(v) =>
+                    watchlistHinzufuegen({ title: v.title, poster: v.poster, year: v.year })
+                  }
+                />
               )}
             </>
           )}
@@ -3595,6 +3975,7 @@ export default function App() {
           onEdit={() => setMode("edit")}
           onDelete={() => setConfirmDelete(selectedEntry.id)}
           onSaveAngaben={(werte) => angabenSpeichern(selectedEntry.id, werte)}
+          onSaveWatchCount={(n) => zaehlerSpeichern(selectedEntry.id, n)}
         />
       )}
 
