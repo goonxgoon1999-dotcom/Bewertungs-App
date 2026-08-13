@@ -2405,111 +2405,146 @@ export default function App() {
   const angabenAttempted = useRef(new Set());
   const nachladeZaehler = useRef(0);
 
+  /* Laeuft gerade ein Durchgang? Jeder gespeicherte Eintrag aendert
+     `items` und stoesst diesen Effekt erneut an. Ohne die Sperre
+     loesten sich die Durchgaenge gegenseitig ab: der neue begann von
+     vorn, der alte brach mitten in einem Eintrag ab — dessen bereits
+     geholte Daten waren damit verloren, der Eintrag aber schon als
+     "versucht" vermerkt. */
+  const nachladeLaeuft = useRef(false);
+
+  /* Abbruch nur, wenn die App wirklich verlassen wird. Leere
+     Abhaengigkeiten heisst: dieses Aufraeumen laeuft ausschliesslich
+     beim Aushaengen, nicht bei jedem neuen Effektlauf. */
+  const nachladeEnde = useRef(false);
+  useEffect(() => () => { nachladeEnde.current = true; }, []);
+
   useEffect(() => {
     if (!loaded) return;
-    let cancelled = false;
+    if (nachladeLaeuft.current) return;
+    nachladeLaeuft.current = true;
 
     (async () => {
-      // Bereits erfolglos gesuchte Einträge nicht bei jedem Seitenaufruf
-      // erneut abfragen — sonst laufen dauerhaft hunderte Anfragen.
-      const erfolglos = ladeErfolglose();
-      const ohneAngaben = ladeOhneAngaben();
+      try {
+        // Bereits erfolglos gesuchte Einträge nicht bei jedem Seitenaufruf
+        // erneut abfragen — sonst laufen dauerhaft hunderte Anfragen.
+        const erfolglos = ladeErfolglose();
+        const ohneAngaben = ladeOhneAngaben();
 
-      const todo = [];
-      for (const catKey of CATEGORY_KEYS) {
-        for (const entry of items[catKey] || []) {
-          // Nachgeladen werden fehlende Poster und fehlende Angaben zum
-          // Werk. Die Bilder des Kopfbereichs bleiben handgepflegt.
-          const posterFehlt =
-            !entry.poster && !posterAttempted.current.has(entry.id) && !erfolglos.has(entry.id);
-          const angabenFehlen =
-            unterstuetztAngaben(catKey) &&
-            angabenUnvollstaendig(entry) &&
-            !angabenAttempted.current.has(entry.id) &&
-            !ohneAngaben.has(entry.id);
-          if (!posterFehlt && !angabenFehlen) continue;
-          todo.push({ catKey, entry, posterFehlt, angabenFehlen });
+        const offenJeKategorie = CATEGORY_KEYS.map((catKey) => {
+          const liste = [];
+          for (const entry of items[catKey] || []) {
+            // Nachgeladen werden fehlende Poster und fehlende Angaben zum
+            // Werk. Die Bilder des Kopfbereichs bleiben handgepflegt.
+            const posterFehlt =
+              !entry.poster && !posterAttempted.current.has(entry.id) && !erfolglos.has(entry.id);
+            const angabenFehlen =
+              unterstuetztAngaben(catKey) &&
+              angabenUnvollstaendig(entry) &&
+              !angabenAttempted.current.has(entry.id) &&
+              !ohneAngaben.has(entry.id);
+            if (!posterFehlt && !angabenFehlen) continue;
+            liste.push({ catKey, entry, posterFehlt, angabenFehlen });
+          }
+          return liste;
+        });
+
+        /* Reihum eines aus jeder Kategorie statt erst alle Filme.
+           Die Obergrenze pro Seitenaufruf gilt fuer alle Kategorien
+           gemeinsam: Wird sie streng der Reihe nach vergeben, verbraucht
+           eine grosse Filmsammlung sie vollstaendig, und Serien, Anime
+           und Spiele kommen ueber Besuche hinweg nie an die Reihe. */
+        const todo = [];
+        for (let i = 0; ; i++) {
+          let nochWelche = false;
+          for (const liste of offenJeKategorie) {
+            if (i < liste.length) {
+              todo.push(liste[i]);
+              nochWelche = true;
+            }
+          }
+          if (!nochWelche) break;
         }
-      }
-      if (!todo.length) return;
+        if (!todo.length) return;
 
-      for (const job of todo) {
-        if (cancelled) return;
-        // Pro Seitenaufruf nur eine begrenzte Zahl nachladen. Jede Suche
-        // kostet serverseitig mehrere externe Aufrufe; bei vielen
-        // Einträgen würde das die App sonst lahmlegen.
-        if (nachladeZaehler.current >= MAX_NACHLADEN_PRO_BESUCH) return;
-        nachladeZaehler.current++;
-        if (job.posterFehlt) posterAttempted.current.add(job.entry.id);
-        if (job.angabenFehlen) angabenAttempted.current.add(job.entry.id);
+        for (const job of todo) {
+          if (nachladeEnde.current) return;
+          // Pro Seitenaufruf nur eine begrenzte Zahl nachladen. Jede Suche
+          // kostet serverseitig mehrere externe Aufrufe; bei vielen
+          // Einträgen würde das die App sonst lahmlegen.
+          if (nachladeZaehler.current >= MAX_NACHLADEN_PRO_BESUCH) return;
+          nachladeZaehler.current++;
+          if (job.posterFehlt) posterAttempted.current.add(job.entry.id);
+          if (job.angabenFehlen) angabenAttempted.current.add(job.entry.id);
 
-        // Ein Aufruf deckt beides ab — Poster und Angaben stammen aus
-        // demselben Treffer und koennen so nicht auseinanderfallen.
-        const gefunden = (await api.findMedia(job.entry.title, job.catKey)) || {};
-        if (cancelled) return;
+          // Ein Aufruf deckt beides ab — Poster und Angaben stammen aus
+          // demselben Treffer und koennen so nicht auseinanderfallen.
+          const gefunden = (await api.findMedia(job.entry.title, job.catKey)) || {};
+          if (nachladeEnde.current) return;
 
-        const aenderung = {};
+          const aenderung = {};
 
-        if (job.posterFehlt) {
-          // Leere Felder sind "", die Suche liefert aber null. Ohne
-          // Vereinheitlichung schlaegt der Vergleich fehl und es wird
-          // gespeichert, obwohl sich nichts geaendert hat.
-          const neuesPoster = gefunden.url || "";
-          if (neuesPoster) {
-            aenderung.poster = neuesPoster;
-            aenderung.posterSource = "auto";
-          } else {
-            // Nichts gefunden: merken, damit der Eintrag beim naechsten
-            // Besuch nicht wieder abgefragt wird.
-            merkeErfolglos(job.entry.id);
+          if (job.posterFehlt) {
+            // Leere Felder sind "", die Suche liefert aber null. Ohne
+            // Vereinheitlichung schlaegt der Vergleich fehl und es wird
+            // gespeichert, obwohl sich nichts geaendert hat.
+            const neuesPoster = gefunden.url || "";
+            if (neuesPoster) {
+              aenderung.poster = neuesPoster;
+              aenderung.posterSource = "auto";
+            } else {
+              // Nichts gefunden: merken, damit der Eintrag beim naechsten
+              // Besuch nicht wieder abgefragt wird.
+              merkeErfolglos(job.entry.id);
+            }
+          }
+
+          if (job.angabenFehlen) {
+            // Nur fehlende Felder fuellen — was schon dasteht, bleibt
+            // stehen. Von Hand eingetragene Werte werden dadurch nie
+            // ueberschrieben.
+            if (job.entry.releaseYear == null && typeof gefunden.year === "number") {
+              aenderung.releaseYear = gefunden.year;
+            }
+            if (!job.entry.director && typeof gefunden.director === "string" && gefunden.director.trim()) {
+              aenderung.director = gefunden.director.trim();
+            }
+            if (job.entry.imdbRating == null && typeof gefunden.imdbRating === "number") {
+              aenderung.imdbRating = gefunden.imdbRating;
+            }
+            // Als aussichtslos gilt der Eintrag nur, wenn die Antwort auch
+            // wirklich aus dieser Fassung stammt. Eine aeltere Antwort aus
+            // dem CDN kennt die Felder gar nicht — sie duerfte den Eintrag
+            // sonst dauerhaft blockieren, obwohl nie gesucht wurde.
+            const echterVersuch = gefunden.angabenVersion === ANGABEN_VERSION;
+            if (echterVersuch && angabenUnvollstaendig({ ...job.entry, ...aenderung })) {
+              merkeOhneAngaben(job.entry.id);
+            }
+          }
+
+          if (!Object.keys(aenderung).length) continue;
+
+          try {
+            const saved = await api.update(job.entry.id, {
+              ...job.entry,
+              seasons: job.entry.seasons || [],
+              category: job.catKey,
+              ...aenderung,
+            });
+            if (nachladeEnde.current) return;
+            setItems((prev) => ({
+              ...prev,
+              [job.catKey]: (prev[job.catKey] || []).map((f) => (f.id === saved.id ? normalizeEntry(saved) : f)),
+            }));
+          } catch (e) {
+            // Poster und Angaben sind Nebensache — Fehler hier nicht dem
+            // Nutzer aufdrängen.
           }
         }
-
-        if (job.angabenFehlen) {
-          // Nur fehlende Felder fuellen — was schon dasteht, bleibt
-          // stehen. Von Hand eingetragene Werte werden dadurch nie
-          // ueberschrieben.
-          if (job.entry.releaseYear == null && typeof gefunden.year === "number") {
-            aenderung.releaseYear = gefunden.year;
-          }
-          if (!job.entry.director && typeof gefunden.director === "string" && gefunden.director.trim()) {
-            aenderung.director = gefunden.director.trim();
-          }
-          if (job.entry.imdbRating == null && typeof gefunden.imdbRating === "number") {
-            aenderung.imdbRating = gefunden.imdbRating;
-          }
-          // Als aussichtslos gilt der Eintrag nur, wenn die Antwort auch
-          // wirklich aus dieser Fassung stammt. Eine aeltere Antwort aus
-          // dem CDN kennt die Felder gar nicht — sie duerfte den Eintrag
-          // sonst dauerhaft blockieren, obwohl nie gesucht wurde.
-          const echterVersuch = gefunden.angabenVersion === ANGABEN_VERSION;
-          if (echterVersuch && angabenUnvollstaendig({ ...job.entry, ...aenderung })) {
-            merkeOhneAngaben(job.entry.id);
-          }
-        }
-
-        if (!Object.keys(aenderung).length) continue;
-
-        try {
-          const saved = await api.update(job.entry.id, {
-            ...job.entry,
-            seasons: job.entry.seasons || [],
-            category: job.catKey,
-            ...aenderung,
-          });
-          if (cancelled) return;
-          setItems((prev) => ({
-            ...prev,
-            [job.catKey]: (prev[job.catKey] || []).map((f) => (f.id === saved.id ? normalizeEntry(saved) : f)),
-          }));
-        } catch (e) {
-          // Poster und Angaben sind Nebensache — Fehler hier nicht dem
-          // Nutzer aufdrängen.
-        }
+      } finally {
+        nachladeLaeuft.current = false;
       }
     })();
-
-    return () => { cancelled = true; };
   }, [items, loaded]);
 
   const catInfo = CATEGORIES.find((c) => c.key === category);
