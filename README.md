@@ -458,13 +458,20 @@ einzelner Film sagt über den Geschmack nichts aus.
 |-----------|----------|-----------|
 | Filme | TMDB `/discover/movie` | Genre-Kombination, Genres einzeln, Jahrzehnt, `with_crew` (Regie), `with_companies` (Studio) |
 | Serien | TMDB `/discover/tv` | Genre-Kombination, Genres einzeln, Jahrzehnt |
-| Anime | Jikan `/anime` | Genres, Jahrzehnt, nach Note sortiert, Mindestnote 7 |
+| Anime | Jikan `/anime` | Genres, Jahrzehnt, nach Note sortiert, Mindestnote 7, zwei Seiten je Abfrage |
 
 Bei Serien gibt es keine Abfrage nach Regie: TMDBs Entdecken-Endpunkt für
 Serien kennt `with_crew` nicht. Bei Anime ersetzt dieser Weg den früheren
 Ansatz, der dort regelmäßig ganz leer lief — nach dem Aussortieren des
 bereits Bewerteten blieben von den direkt ähnlichen Titeln zu wenige
 übrig.
+
+Anime holen dabei **zwei Seiten** je Abfrage, Filme und Serien eine. Der
+Grund: Nach Note sortiert liefert jede Genre-Abfrage die Spitze dieses
+Genres, und die Spitzenlisten mehrerer Genres sind fast dieselben Titel.
+Wer eine gewachsene Anime-Sammlung hat, kennt davon praktisch alles —
+mit nur einer Seite bleibt nach dem Ausschluss nichts übrig. TMDBs
+Bestand ist um Größenordnungen größer, dort trägt schon die erste Seite.
 
 **Die Sortierung** addiert die Gewichte aller getroffenen Kategorien.
 Wer in mehreren zugleich trifft (Genre **und** Regie), bekommt zusätzlich
@@ -476,6 +483,16 @@ Sci-Fi-Filme von Christopher Nolan hoch bewertest".
 **Angezeigt** werden höchstens 15 Vorschläge bei Filmen und 10 bei Serien
 und Anime, jeweils mit Poster, Titel, Begründung und „+ Watchlist". Was
 bereits bewertet oder vorgemerkt ist, fällt vorher heraus.
+
+**Der Ausschluss** vergleicht über den Titel — und zwar über **alle**
+Schreibweisen, die die Quelle kennt: deutscher und Originaltitel bei
+TMDB, dazu die englische und japanische Schreibweise samt Synonymen bei
+Jikan. Das ist nötig, weil beide Seiten dasselbe Werk verschieden
+benennen können: In der Sammlung steht „Captain America: The Winter
+Soldier", TMDB antwortet auf Deutsch mit „The Return of the First
+Avenger". Ein Vergleich über nur einen Titel findet das nie. Ein Jahr in
+Klammern („Spider-Man 2 (2004)") zählt dabei nicht zum Titel; eine
+Jahreszahl, die zum Titel gehört, schon („Blade Runner 2049").
 
 **Berechnet** wird nur etwa **einmal im Monat** — jede Runde kostet ein
 gutes Dutzend externer Aufrufe. Gespeichert werden dabei rund 40
