@@ -1734,16 +1734,25 @@ function speichereEmpfehlungen(category, eintrag) {
   }
 }
 
+/* Fassung der gespeicherten Vorschlaege. Sie zaehlt hoch, wenn ein
+   Stand aus einer aelteren Fassung nicht mehr taugt — hier, weil den
+   damals gespeicherten Vorschlaegen die Schreibweisen fehlen, ohne die
+   sich bereits Bewertetes nicht zuverlaessig aussortieren laesst. Ein
+   alter Stand wird dadurch einmal verworfen; am Monatsrhythmus selbst
+   aendert das nichts. */
+const EMPFEHLUNGS_FASSUNG = 2;
+
 /**
  * Ist der gespeicherte Stand noch gueltig?
  *
- * `hatGenres` ist die Ausnahme vom Monat: Genres werden nach und nach
+ * Zwei Ausnahmen vom Monat. `hatGenres`: Genres werden nach und nach
  * nachgeladen, und ein Stand, der ohne sie zustande kam, beruht auf
- * einem halben Profil. Sobald Genres da sind, wird er deshalb einmal
- * verworfen — danach gilt wieder der Monat.
+ * einem halben Profil. Und `fassung`: Ein Stand aus einer aelteren
+ * Fassung der App wird einmal verworfen. Danach gilt wieder der Monat.
  */
 function empfehlungenFrisch(eintrag, profilHatGenres) {
   if (!eintrag) return false;
+  if (eintrag.fassung !== EMPFEHLUNGS_FASSUNG) return false;
   if (profilHatGenres && !eintrag.hatGenres) return false;
   const frist = eintrag.vorschlaege.length ? EMPFEHLUNGS_TTL_MS : EMPFEHLUNGS_TTL_LEER_MS;
   return Date.now() - eintrag.zeit < frist;
@@ -1864,15 +1873,74 @@ function profilLeer(profil) {
 
 /* Titelvergleich fuers Aussortieren. Bewusst ohne Jahr: Die Quellen
    liefern es nicht immer mit (Jikan etwa nie), und derselbe Titel ist
-   auch ohne Jahresangabe derselbe Titel. */
+   auch ohne Jahresangabe derselbe Titel.
+
+   Das gilt auch fuer ein Jahr, das IM Titel steht. In der Sammlung
+   heisst der Film "Spider-Man 2 (2004)", TMDB nennt ihn "Spider-Man 2"
+   — ohne diesen Schritt gelten die beiden als verschiedene Werke und
+   der laengst bewertete Film taucht als Vorschlag wieder auf. Entfernt
+   wird nur ein eingeklammertes Jahr; eine Jahreszahl, die zum Titel
+   selbst gehoert, bleibt stehen ("Blade Runner 2049" ist nicht
+   "Blade Runner"). */
 function titelSchluessel(title) {
   return String(title || "")
     .toLowerCase()
     .replace(/ß/g, "ss")
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "") // Akzente entfernen: é -> e
+    .replace(/[([]\s*(?:19|20)\d{2}\s*[)\]]/g, " ") // "(2004)" ist keine Titelangabe
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+/**
+ * Alle Schreibweisen eines Vorschlags als Vergleichsschluessel.
+ *
+ * Der Server schickt zu jedem Vorschlag die Namen mit, unter denen die
+ * Quelle das Werk fuehrt — deutscher und Originaltitel bei TMDB, dazu
+ * die englische und japanische Schreibweise bei Jikan. Verglichen wird
+ * gegen alle: Die Sammlung fuehrt "Captain America: The Winter
+ * Soldier", TMDB antwortet auf Deutsch mit "The Return of the First
+ * Avenger" — nur ueber den Originaltitel ist das als dasselbe Werk zu
+ * erkennen.
+ *
+ * Aeltere Vorschlaege aus dem Speicher haben das Feld noch nicht; dann
+ * bleibt es beim Anzeigetitel allein.
+ */
+function vorschlagSchluessel(vorschlag) {
+  const namen = Array.isArray(vorschlag.titel) && vorschlag.titel.length
+    ? vorschlag.titel
+    : [vorschlag.title];
+  const schluessel = [];
+  for (const name of namen) {
+    const s = titelSchluessel(name);
+    if (s && !schluessel.includes(s)) schluessel.push(s);
+  }
+  return schluessel;
+}
+
+/**
+ * Die Vorschlaege, die uebrig bleiben.
+ *
+ * Was schon bewertet oder vorgemerkt ist, faellt weg — erkannt ueber
+ * JEDE Schreibweise, nicht nur ueber den Anzeigetitel. Ausgenommen ist,
+ * was gerade eben in diesem Durchgang vorgemerkt wurde: Diese Zeilen
+ * bleiben mit dem Haken stehen, genau wie in der Titelsuche. Wuerden
+ * sie sofort verschwinden, spraenge die Liste bei jedem Klick und man
+ * saehe nie eine Bestaetigung.
+ */
+function sichtbareVorschlaege(vorschlaege, bekannt, vorgemerkt, grenze) {
+  const raus = [];
+  for (const v of vorschlaege) {
+    if (!v || !v.title) continue;
+    const schluessel = vorschlagSchluessel(v);
+    if (!schluessel.some((s) => vorgemerkt.has(s)) && schluessel.some((s) => bekannt.has(s))) {
+      continue;
+    }
+    raus.push(v);
+    if (raus.length >= grenze) break;
+  }
+  return raus;
 }
 
 function EmpfehlungsZeile({ vorschlag, busy, vorgemerkt, onWatchlist }) {
@@ -1952,7 +2020,10 @@ function Empfehlungen({ category, profil, bekannt, busy, onWatchlist }) {
     (async () => {
       try {
         const { results, hinweis } = await api.loadRecommendations(category, profilRef.current);
-        speichereEmpfehlungen(category, { zeit: Date.now(), vorschlaege: results, hinweis, hatGenres });
+        speichereEmpfehlungen(category, {
+          zeit: Date.now(), vorschlaege: results, hinweis, hatGenres,
+          fassung: EMPFEHLUNGS_FASSUNG,
+        });
         if (!abgebrochen) setZustand({ laeuft: false, vorschlaege: results, hinweis, fehler: "" });
       } catch (e) {
         // Erfolglose Versuche landen nicht im Speicher — beim naechsten
@@ -1971,22 +2042,19 @@ function Empfehlungen({ category, profil, bekannt, busy, onWatchlist }) {
      enthaelt als angezeigt werden, rueckt dabei sofort der naechste
      nach, ohne dass ein einziger Aufruf noetig waere.
 
-     Ausgenommen ist, was gerade eben in diesem Durchgang vorgemerkt
-     wurde: Diese Zeilen bleiben mit dem Haken stehen, genau wie in der
-     Titelsuche. Wuerden sie sofort verschwinden, spraenge die Liste bei
-     jedem Klick und man saehe nie eine Bestaetigung. Damit die Liste
-     trotzdem gleich lang bleibt, waechst die Grenze um eben diese
-     Zeilen mit — der Nachruecker steht also sofort darunter. */
-  const sichtbar = useMemo(() => {
-    const grenze = (EMPFEHLUNGEN_SICHTBAR[category] || 10) + vorgemerkt.size;
-    return zustand.vorschlaege
-      .filter((v) => {
-        if (!v || !v.title) return false;
-        const schluessel = titelSchluessel(v.title);
-        return vorgemerkt.has(schluessel) || !bekannt.has(schluessel);
-      })
-      .slice(0, grenze);
-  }, [zustand.vorschlaege, bekannt, vorgemerkt, category]);
+     Damit die Liste trotz der stehenbleibenden Haken gleich lang
+     bleibt, waechst die Grenze um eben diese Zeilen mit — der
+     Nachruecker steht also sofort darunter. */
+  const sichtbar = useMemo(
+    () =>
+      sichtbareVorschlaege(
+        zustand.vorschlaege,
+        bekannt,
+        vorgemerkt,
+        (EMPFEHLUNGEN_SICHTBAR[category] || 10) + vorgemerkt.size
+      ),
+    [zustand.vorschlaege, bekannt, vorgemerkt, category]
+  );
 
   if (!hatProfil && !zustand.laeuft) {
     return (

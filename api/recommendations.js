@@ -51,10 +51,24 @@ const MAX_ERGEBNISSE = 40;
 /* Jikan begrenzt auf drei Anfragen pro Sekunde. */
 const JIKAN_PAUSE_MS = 400;
 
-/* Wie viele Treffer je Abfrage uebernommen werden. TMDB liefert 20 pro
-   Seite, Jikan bis zu 25 — mehr als die Haelfte davon waere ohnehin
-   Fuellmaterial weit unterhalb der eigenen Massstaebe. */
-const PRO_ABFRAGE = 12;
+/* Wie viele Treffer je Abfrage uebernommen werden — die volle Seite,
+   die die Quelle ohnehin schickt (TMDB 20, Jikan 25).
+
+   Frueher wurde hier auf 12 gekuerzt. Das kostete keinen Aufruf
+   weniger, verkleinerte aber den Pool auf die Haelfte, und genau daran
+   scheiterten die Anime: Die Abfragen holen nach Note sortiert die
+   Spitze eines Genres, und die Spitzenlisten mehrerer Genres
+   ueberschneiden sich fast vollstaendig. Wer 30 Anime bewertet hat,
+   kennt davon praktisch alles — nach dem Aussortieren blieb nichts. */
+const PRO_ABFRAGE_TMDB = 20;
+const PRO_ABFRAGE_JIKAN = 25;
+
+/* Anime holen zusaetzlich die zweite Seite je Genre. Der Vorrat an
+   hoch bewerteten Anime ist endlich, und die erste Seite besteht bei
+   einer gewachsenen Sammlung fast nur aus alten Bekannten. Filme und
+   Serien brauchen das nicht: TMDBs Bestand ist um Groessenordnungen
+   groesser, dort traegt schon die erste Seite. */
+const JIKAN_SEITEN = 2;
 
 /* Ergebnisse halten sich im Speicher der laufenden Funktion. Die
    eigentliche Bremse ist der Monatscache in der App; das hier faengt
@@ -184,7 +198,7 @@ async function tmdbDiscover(kind, params) {
     TMDB_BASIS + "/discover/" + kind + "?api_key=" + encodeURIComponent(tmdbKey()) +
       "&language=de-DE&include_adult=false&page=1&" + params
   );
-  return ((response.data && response.data.results) || []).slice(0, PRO_ABFRAGE);
+  return ((response.data && response.data.results) || []).slice(0, PRO_ABFRAGE_TMDB);
 }
 
 /**
@@ -215,13 +229,36 @@ async function tmdbKennungFuer(pfad, name, mindest) {
   return bester >= mindest ? beste : null;
 }
 
+/**
+ * Alle Schreibweisen eines Treffers, ohne Leeres und ohne Doppelte.
+ *
+ * Der erste Eintrag ist der Anzeigetitel; die uebrigen dienen allein
+ * dem Abgleich mit der eigenen Sammlung. Das ist noetig, weil beide
+ * Seiten denselben Film unter verschiedenen Namen fuehren koennen: In
+ * der Sammlung steht "Captain America: The Winter Soldier", TMDB
+ * antwortet auf Deutsch mit "The Return of the First Avenger". Ein
+ * Vergleich ueber nur einen Titel findet das nie.
+ */
+function titelVarianten(...namen) {
+  const raus = [];
+  for (const name of namen) {
+    if (typeof name !== "string") continue;
+    const sauber = name.trim();
+    if (sauber && !raus.includes(sauber)) raus.push(sauber);
+  }
+  return raus;
+}
+
 /** Ein TMDB-Treffer in der Form, in der auch die Titelsuche liefert. */
 function tmdbKandidat(hit, kind, genreNamenNachId) {
   const isTv = kind === "tv";
-  const title = (isTv ? hit.name || hit.original_name : hit.title || hit.original_title) || null;
-  if (!title) return null;
+  const titel = isTv
+    ? titelVarianten(hit.name, hit.original_name)
+    : titelVarianten(hit.title, hit.original_title);
+  if (!titel.length) return null;
   return {
-    title,
+    title: titel[0],
+    titel,
     year: jahrAus(isTv ? hit.first_air_date : hit.release_date),
     poster: hit.poster_path ? TMDB_IMAGE_BASE + hit.poster_path : null,
     genreNamen: (Array.isArray(hit.genre_ids) ? hit.genre_ids : [])
@@ -321,10 +358,10 @@ async function tmdbSammeln(kind, profil) {
 
 const ANIME_MINDESTNOTE = 7;
 
-async function jikanSuche(params) {
+async function jikanSuche(params, seite) {
   const response = await getJson(
     JIKAN_BASIS + "/anime?sfw=true&order_by=score&sort=desc&min_score=" + ANIME_MINDESTNOTE +
-      "&limit=" + PRO_ABFRAGE + "&" + params
+      "&limit=" + PRO_ABFRAGE_JIKAN + "&page=" + seite + "&" + params
   );
   return (response.data && response.data.data) || [];
 }
@@ -332,8 +369,17 @@ async function jikanSuche(params) {
 function jikanKandidat(hit) {
   if (!hit || typeof hit.title !== "string" || !hit.title.trim()) return null;
   const img = hit.images && hit.images.jpg;
+
+  /* Jikan fuehrt denselben Anime unter mehreren Schreibweisen. Wer
+     "Attack on Titan" in der Sammlung stehen hat, soll "Shingeki no
+     Kyojin" nicht noch einmal vorgeschlagen bekommen. */
+  const weitere = [];
+  if (Array.isArray(hit.titles)) for (const t of hit.titles) if (t && t.title) weitere.push(t.title);
+  if (Array.isArray(hit.title_synonyms)) weitere.push(...hit.title_synonyms);
+
   return {
     title: hit.title.trim(),
+    titel: titelVarianten(hit.title, hit.title_english, hit.title_japanese, ...weitere),
     year:
       typeof hit.year === "number" ? hit.year : jahrAus(hit.aired && hit.aired.from),
     poster: (img && (img.large_image_url || img.image_url)) || null,
@@ -369,12 +415,18 @@ async function jikanSammeln(profil) {
 
   const gesammelt = new Map();
   const gefragt = [];
-  for (let i = 0; i < abfragen.length; i++) {
-    if (i) await warte(JIKAN_PAUSE_MS);
-    const hits = await jikanSuche(abfragen[i]);
-    if (!hits.length) continue;
-    gefragt.push("Genre/Jahrzehnt");
-    for (const hit of hits) aufnehmen(gesammelt, jikanKandidat(hit), {});
+  let erste = true;
+  for (const abfrage of abfragen) {
+    for (let seite = 1; seite <= JIKAN_SEITEN; seite++) {
+      if (!erste) await warte(JIKAN_PAUSE_MS);
+      erste = false;
+      const hits = await jikanSuche(abfrage, seite);
+      // Keine Treffer heisst: Diese Genrekombination ist erschoepft —
+      // die naechste Seite waere erst recht leer.
+      if (!hits.length) break;
+      if (seite === 1) gefragt.push("Genre/Jahrzehnt");
+      for (const hit of hits) aufnehmen(gesammelt, jikanKandidat(hit), {});
+    }
   }
   return { kandidaten: [...gesammelt.values()], gefragt };
 }
@@ -405,6 +457,10 @@ function aufnehmen(gesammelt, kandidat, herkunft) {
   if (!vorhanden.genreNamen.length && kandidat.genreNamen.length) {
     vorhanden.genreNamen = kandidat.genreNamen;
   }
+  // Schreibweisen sammeln sich ueber die Abfragen hinweg an: Je mehr
+  // Namen ein Kandidat traegt, desto sicherer erkennt die App ihn in
+  // der eigenen Sammlung wieder.
+  vorhanden.titel = titelVarianten(...vorhanden.titel, ...kandidat.titel);
   if (!vorhanden.herkunft.regie && herkunft.regie) vorhanden.herkunft.regie = herkunft.regie;
   if (!vorhanden.herkunft.studio && herkunft.studio) vorhanden.herkunft.studio = herkunft.studio;
 }
@@ -484,6 +540,9 @@ function bewerten(kandidaten, profil, category) {
 
     return {
       title: k.title,
+      // Alle bekannten Schreibweisen — die App streicht damit, was sie
+      // schon bewertet oder vorgemerkt hat.
+      titel: k.titel,
       year: k.year || null,
       poster: k.poster || null,
       begruendung: begruendung(nomen, besteGenres.map((g) => g.name), regie, studio, jahrzehnt),
