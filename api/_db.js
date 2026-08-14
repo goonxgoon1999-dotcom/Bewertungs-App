@@ -90,6 +90,7 @@ async function init() {
   await ensureWatchCount();
   await ensureSeasons();
   await ensureHeaderImages();
+  await ensureZusatzdaten();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -338,6 +339,66 @@ export function rowToHeaderImage(r) {
   return { id: r.id, url: r.url, position: Number(r.position) };
 }
 
+/* ----------------------------------------------------------------
+   Zusatzdaten zum Werk: Genre, Filmreihe, Studio
+
+   Genre gibt es bei Film, Serie und Anime (TMDB, TVMaze, Jikan).
+   Filmreihe (TMDBs `belongs_to_collection`) und Produktionsstudio
+   kommen nur bei Filmen dazu — die Reihe traegt Faelle wie "Star Wars
+   Collection" oder "Fast & Furious" genau, das Studio ist die grobe
+   Kruecke fuer uebergreifende Franchises ohne eigene Collection
+   (Marvel Studios fuer das MCU). Bei Spielen entfaellt beides:
+   SteamGridDB ist eine Bilddatenbank und kennt keine Genres.
+
+   Wie alle Migrationen hier rein strukturell — es werden nur
+   NULL-bare Spalten ergaenzt, keine bestehende Zeile angefasst.
+   ---------------------------------------------------------------- */
+async function ensureZusatzdaten() {
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS genres TEXT`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS collection TEXT`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS studio TEXT`;
+}
+
+/* Genres stehen als eine Zeichenkette in der Spalte, getrennt durch
+   einen senkrechten Strich. Ein eigener Array-Typ waere sauberer,
+   bringt hier aber nichts: gelesen wird die Liste immer als Ganzes. */
+const GENRE_TRENNER = "|";
+
+/* Defensive Grenzen — sie halten Unsinn aus der Datenbank heraus,
+   ohne je einen echten Genrenamen zu beschneiden. */
+const MAX_GENRES = 12;
+const MAX_GENRE_LAENGE = 60;
+
+/** "Action|Sci-Fi" -> ["Action", "Sci-Fi"] */
+export function genresAus(text) {
+  if (typeof text !== "string" || !text) return [];
+  return text
+    .split(GENRE_TRENNER)
+    .map((g) => g.trim())
+    .filter(Boolean)
+    .slice(0, MAX_GENRES);
+}
+
+/**
+ * ["Action", "Sci-Fi"] -> "Action|Sci-Fi"
+ *
+ * Doppelte fallen weg, der Trenner wird aus den Namen entfernt (sonst
+ * zerfiele ein Genre beim Lesen in zwei). Keine Liste heisst leere
+ * Zeichenkette, nicht NULL — die Unterscheidung "nicht mitgeschickt"
+ * trifft der Aufrufer.
+ */
+export function genresZuText(liste) {
+  if (!Array.isArray(liste)) return "";
+  const sauber = [];
+  for (const g of liste) {
+    if (typeof g !== "string") continue;
+    const name = g.replace(/\|/g, "/").trim().slice(0, MAX_GENRE_LAENGE);
+    if (name && !sauber.includes(name)) sauber.push(name);
+    if (sauber.length >= MAX_GENRES) break;
+  }
+  return sauber.join(GENRE_TRENNER);
+}
+
 /* Gewichtung einer Staffel. Eingegeben wird sie in der App als Prozent
    (0 % bis 200 % in 5-Prozent-Schritten); gespeichert und gerechnet wird
    weiterhin mit Faktoren (Prozent / 100). 100 % entspricht dem Faktor
@@ -440,6 +501,11 @@ export function rowToItem(r) {
     releaseYear: r.release_year === null || r.release_year === undefined ? null : Number(r.release_year),
     director: r.director || null,
     imdbRating: r.imdb_rating === null || r.imdb_rating === undefined ? null : Number(r.imdb_rating),
+    // Zusatzdaten. Leer heisst leere Liste bzw. null — daran erkennt
+    // das Frontend, was noch nachzuladen ist.
+    genre: genresAus(r.genres),
+    collection: r.collection || null,
+    studio: r.studio || null,
     // Vorgemerkt statt bewertet: dann gibt es keine Werte und keine Note.
     watchlist: r.watchlist === true,
     // Wie oft geschaut/gespielt. Aeltere Zeilen ohne Spalte gelten als
@@ -544,6 +610,20 @@ function angabenFehler(body) {
       body.imdbRating > 10)
   ) {
     errors.push("Ungültige IMDb-Note (0–10 erforderlich).");
+  }
+
+  // Zusatzdaten sind wie die Angaben durchweg optional — sie werden
+  // automatisch nachgeladen und duerfen jederzeit fehlen.
+  if (body.genre != null && !Array.isArray(body.genre)) {
+    errors.push("Ungültige Genreliste.");
+  } else if (Array.isArray(body.genre) && body.genre.some((g) => typeof g !== "string")) {
+    errors.push("Ungültige Genreliste.");
+  }
+  if (body.collection != null && typeof body.collection !== "string") {
+    errors.push("Ungültige Filmreihe.");
+  }
+  if (body.studio != null && typeof body.studio !== "string") {
+    errors.push("Ungültiges Studio.");
   }
 
   return errors;

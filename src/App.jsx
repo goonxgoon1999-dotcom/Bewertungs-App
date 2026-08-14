@@ -299,7 +299,109 @@ const SORT_OPTIONS = [
   { key: "recent-asc", label: "Älteste zuerst" },
 ];
 
-const DEFAULT_FILTER = { sort: "score-desc", min: 0, max: 10 };
+/* Der Filterzustand. Sortierung und Notenbereich waren schon da; die
+   vier leeren Zeichenketten sind die zusaetzlichen Filter — leer heisst
+   immer "alle". */
+const DEFAULT_FILTER = {
+  sort: "score-desc",
+  min: 0,
+  max: 10,
+  genre: "",
+  jahrzehnt: "",
+  regie: "",
+  reihe: "",
+};
+
+/* ------------------------------------------------------------
+   Zusaetzliche Filter: Genre, Jahrzehnt, Regie, Filmreihe
+
+   Die Auswahlmoeglichkeiten stehen nirgends fest — sie entstehen aus
+   dem, was in der jeweiligen Kategorie tatsaechlich vorkommt. Was es
+   nicht gibt, steht auch nicht zur Wahl.
+   ------------------------------------------------------------ */
+
+/* Filmreihen kommen aus zwei Quellen und werden deshalb mit einem
+   Praefix unterschieden: "c:" ist eine echte TMDB-Collection
+   ("Star Wars Collection"), "s:" das Produktionsstudio als Naeherung
+   fuer Franchises ohne eigene Collection (Marvel Studios fuer das MCU). */
+const REIHE_COLLECTION = "c:";
+const REIHE_STUDIO = "s:";
+
+function jahrzehntVon(entry) {
+  const jahr = entry && entry.releaseYear;
+  return typeof jahr === "number" && jahr > 0 ? Math.floor(jahr / 10) * 10 : null;
+}
+
+/**
+ * Sammelt die Auswahlmoeglichkeiten aus einer Liste von Eintraegen.
+ * Jede Moeglichkeit traegt mit, wie oft sie vorkommt — danach wird
+ * sortiert, damit oben steht, was die Sammlung praegt.
+ */
+function filterOptionen(liste, category) {
+  const zaehle = (map, wert, label) => {
+    if (!wert) return;
+    const vorhanden = map.get(wert);
+    if (vorhanden) vorhanden.anzahl++;
+    else map.set(wert, { wert, label: label || wert, anzahl: 1 });
+  };
+
+  const genres = new Map();
+  const jahrzehnte = new Map();
+  const regie = new Map();
+  const reihen = new Map();
+
+  for (const eintrag of liste) {
+    for (const g of eintrag.genre || []) zaehle(genres, g);
+    const jz = jahrzehntVon(eintrag);
+    if (jz) zaehle(jahrzehnte, String(jz), jz + "er");
+    if (eintrag.director) zaehle(regie, eintrag.director);
+    // Filmreihen und Studios gibt es nur bei Filmen.
+    if (category === "movie") {
+      if (eintrag.collection) {
+        zaehle(reihen, REIHE_COLLECTION + eintrag.collection, eintrag.collection);
+      }
+      if (eintrag.studio) {
+        zaehle(reihen, REIHE_STUDIO + eintrag.studio, eintrag.studio + " (Studio)");
+      }
+    }
+  }
+
+  const nachAnzahl = (a, b) => b.anzahl - a.anzahl || a.label.localeCompare(b.label, "de");
+  return {
+    genres: [...genres.values()].sort(nachAnzahl),
+    // Jahrzehnte lesen sich chronologisch besser als nach Haeufigkeit.
+    jahrzehnte: [...jahrzehnte.values()].sort((a, b) => Number(b.wert) - Number(a.wert)),
+    regie: [...regie.values()].sort(nachAnzahl),
+    // Eine Reihe aus einem einzigen Film ist keine Reihe. Studios
+    // bleiben aus demselben Grund erst ab zwei Filmen stehen.
+    reihen: [...reihen.values()].filter((r) => r.anzahl >= 2).sort(nachAnzahl),
+  };
+}
+
+/** Passt ein Eintrag zu den gesetzten Zusatzfiltern? */
+function passtZuFiltern(eintrag, filter) {
+  if (filter.genre && !(eintrag.genre || []).includes(filter.genre)) return false;
+  if (filter.jahrzehnt && String(jahrzehntVon(eintrag)) !== filter.jahrzehnt) return false;
+  if (filter.regie && eintrag.director !== filter.regie) return false;
+  if (filter.reihe) {
+    const wert = filter.reihe.slice(2);
+    const feld = filter.reihe.startsWith(REIHE_STUDIO) ? eintrag.studio : eintrag.collection;
+    if (feld !== wert) return false;
+  }
+  return true;
+}
+
+/** Ist ausser der Sortierung irgendetwas eingeschraenkt? */
+function filterAktiv(filter) {
+  return (
+    filter.min !== DEFAULT_FILTER.min ||
+    filter.max !== DEFAULT_FILTER.max ||
+    !!filter.genre ||
+    !!filter.jahrzehnt ||
+    !!filter.regie ||
+    !!filter.reihe
+  );
+}
 
 function emptyValues(category) {
   const v = {};
@@ -363,6 +465,19 @@ function isLikelyUrl(s) {
    feuert eine Sammlung mit hunderten Eintraegen bei jedem Oeffnen
    entsprechend viele Anfragen ab. Der Rest folgt beim naechsten Besuch. */
 const MAX_NACHLADEN_PRO_BESUCH = 20;
+
+/* Eigenes Kontingent fuer das einmalige Nachtragen der Zusatzdaten
+   (Genre, Filmreihe, Studio) an Eintraegen, denen sonst nichts fehlt.
+   Es laeuft neben dem obigen her, damit der Nachtrag nicht das
+   Kontingent fuer fehlende Poster aufbraucht — und ist groesser, weil
+   es sich um einen einmaligen Durchlauf ueber die ganze Sammlung
+   handelt, nicht um laufenden Betrieb. Die Pause dazwischen haelt die
+   freien APIs bei Laune; Jikan etwa erlaubt nur drei Anfragen je
+   Sekunde. */
+const MAX_ZUSATZ_PRO_BESUCH = 40;
+const ZUSATZ_PAUSE_MS = 300;
+
+const warte = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const ERFOLGLOS_SCHLUESSEL = "bewertungsapp.ohneBildtreffer";
 
@@ -429,6 +544,42 @@ function vergissAlleOhneAngaben() {
   } catch (e) {}
 }
 
+/* Und dasselbe noch einmal fuer die Zusatzdaten (Genre, Filmreihe,
+   Studio). Wieder getrennt: Ein Eintrag, der seit Jahren keine
+   IMDb-Note bekommt, soll deshalb nicht dauerhaft ohne Genre bleiben. */
+const OHNE_GENRE_SCHLUESSEL = "bewertungsapp.ohneGenre";
+
+function ladeOhneGenre() {
+  try {
+    const roh = window.localStorage.getItem(OHNE_GENRE_SCHLUESSEL);
+    return new Set(roh ? JSON.parse(roh) : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function merkeOhneGenre(id) {
+  try {
+    const menge = ladeOhneGenre();
+    menge.add(id);
+    window.localStorage.setItem(OHNE_GENRE_SCHLUESSEL, JSON.stringify([...menge]));
+  } catch (e) {}
+}
+
+function vergissOhneGenre(id) {
+  try {
+    const menge = ladeOhneGenre();
+    if (!menge.delete(id)) return;
+    window.localStorage.setItem(OHNE_GENRE_SCHLUESSEL, JSON.stringify([...menge]));
+  } catch (e) {}
+}
+
+function vergissAlleOhneGenre() {
+  try {
+    window.localStorage.removeItem(OHNE_GENRE_SCHLUESSEL);
+  } catch (e) {}
+}
+
 /* Angaben zum Werk gibt es nur bei Film, Serie und Anime. */
 function unterstuetztAngaben(category) {
   return category !== "game";
@@ -437,6 +588,16 @@ function unterstuetztAngaben(category) {
 /** Fehlt an einem Eintrag noch eine der drei Angaben? */
 function angabenUnvollstaendig(entry) {
   return entry.releaseYear == null || !entry.director || entry.imdbRating == null;
+}
+
+/**
+ * Fehlen die Zusatzdaten? Massgeblich ist allein das Genre: Es gibt es
+ * bei jedem Werk. Filmreihe und Studio kommen im selben Abruf mit —
+ * dass ein Film zu keiner Reihe gehoert, ist der Normalfall und kein
+ * Grund, ihn immer wieder abzufragen.
+ */
+function genreFehlt(entry) {
+  return !Array.isArray(entry.genre) || entry.genre.length === 0;
 }
 
 /* ------------------------------------------------------------
@@ -489,7 +650,7 @@ function hinzugefuegtVor(zeit) {
 /* Fassung der Angaben, muss zu ANGABEN_VERSION in api/poster.js passen.
    Sie haengt an jeder Anfrage, damit eine aeltere Antwort aus dem CDN
    nicht faelschlich als "nichts gefunden" durchgeht. */
-const ANGABEN_VERSION = 2;
+const ANGABEN_VERSION = 3;
 
 /** Wechselabstand der Kopfbilder. */
 const BACKDROP_INTERVAL = 8000;
@@ -716,15 +877,16 @@ const api = {
     const data = await res.json();
     return Array.isArray(data.results) ? data.results : [];
   },
-  /* Vorschlaege auf Grundlage der eigenen Bestbewerteten. Die Titel
-     gehen als Seeds mit; geliefert werden Treffer in derselben Form wie
-     bei der Titelsuche, sodass "+ Watchlist" unveraendert damit
-     arbeitet. Fehler bleiben still — Empfehlungen sind Beiwerk. */
-  async loadRecommendations(category, titles) {
-    const res = await fetch(
-      "/api/recommendations?category=" + encodeURIComponent(category) +
-        "&titles=" + encodeURIComponent(titles.join("|"))
-    );
+  /* Vorschlaege auf Grundlage des eigenen Geschmacksprofils. Es geht im
+     Rumpf mit — als Abfrage waere es zu lang. Geliefert werden Treffer
+     in derselben Form wie bei der Titelsuche, ergaenzt um eine kurze
+     Begruendung, sodass "+ Watchlist" unveraendert damit arbeitet. */
+  async loadRecommendations(category, profil) {
+    const res = await fetch("/api/recommendations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category, profil }),
+    });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Empfehlungen fehlgeschlagen");
     const data = await res.json();
     return {
@@ -1016,7 +1178,7 @@ function ConfirmDialog({ title, text, confirmLabel, danger, onConfirm, onCancel 
 }
 
 /* ============================================================
-   FILTER-BOTTOM-SHEET (Sortierung + Bewertungsbereich)
+   FILTER-BOTTOM-SHEET (Sortierung, Bewertungsbereich, Zusatzfilter)
    ============================================================ */
 /* Sortierung hat einen eigenen Knopf und damit ein eigenes Sheet.
    Die Sortierlogik selbst ist unveraendert — gesetzt wird weiterhin
@@ -1045,56 +1207,125 @@ function SortSheet({ initial, onApply, onClose }) {
   );
 }
 
-function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
+/* Beschriftung eines Abschnitts im Filter-Sheet — derselbe Stil wie
+   die bereits vorhandene Ueberschrift "BEWERTUNGSBEREICH". */
+const filterAbschnitt = {
+  fontSize: 12, letterSpacing: 1, color: "#9A968C",
+  fontFamily: "'JetBrains Mono', monospace", marginBottom: 10,
+};
+
+/* Ein Auswahlknopf im Filter-Sheet — dieselbe Form wie die
+   Notenbereich-Knoepfe darueber. */
+function FilterChip({ label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      style={{
+        padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
+        background: active ? "var(--accent, #C9A227)" : "transparent",
+        color: active ? "#17171A" : "#9A968C",
+        border: "1px solid " + (active ? "var(--accent, #C9A227)" : "#33333a"),
+        fontWeight: active ? 700 : 400,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/* Lange Listen (Regie, Filmreihe) waeren als Knopfreihe unuebersichtlich
+   — sie bekommen ein Auswahlfeld im Stil der uebrigen Eingaben. */
+function FilterAuswahl({ label, wert, optionen, alleLabel, onChange }) {
+  if (!optionen.length) return null;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={filterAbschnitt}>{label}</div>
+      <select
+        value={wert}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          width: "100%", boxSizing: "border-box", background: "#141416",
+          border: "1px solid " + (wert ? "var(--accent, #C9A227)" : "#33333a"),
+          borderRadius: 8, padding: "12px", color: "#EDEAE3", fontSize: 14.5,
+          cursor: "pointer",
+        }}
+      >
+        <option value="">{alleLabel}</option>
+        {optionen.map((o) => (
+          <option key={o.wert} value={o.wert}>
+            {o.label} ({o.anzahl})
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function FilterSheet({ initial, totalCount, allInCategory, category, onApply, onClose }) {
   const [min, setMin] = useState(initial.min);
   const [max, setMax] = useState(initial.max);
+  const [genre, setGenre] = useState(initial.genre);
+  const [jahrzehnt, setJahrzehnt] = useState(initial.jahrzehnt);
+  const [regie, setRegie] = useState(initial.regie);
+  const [reihe, setReihe] = useState(initial.reihe);
+
+  const optionen = useMemo(
+    () => filterOptionen(allInCategory, category),
+    [allInCategory, category]
+  );
+
+  const entwurf = { genre, jahrzehnt, regie, reihe };
 
   const previewCount = useMemo(() => {
     const lo = Math.min(min, max);
     const hi = Math.max(min, max);
-    return allInCategory.filter((f) => typeof f.score === "number" && f.score >= lo && f.score <= hi).length;
-  }, [min, max, allInCategory]);
+    return allInCategory.filter(
+      (f) => typeof f.score === "number" && f.score >= lo && f.score <= hi && passtZuFiltern(f, entwurf)
+    ).length;
+  }, [min, max, allInCategory, genre, jahrzehnt, regie, reihe]);
 
   function applyPreset(p) {
     setMin(p.min);
     setMax(p.max);
   }
 
+  /* Ein zweiter Klick auf denselben Knopf hebt die Auswahl wieder auf —
+     das erspart einen eigenen "alle"-Knopf je Abschnitt. */
+  const umschalten = (setzen, aktuell) => (wert) => setzen(aktuell === wert ? "" : wert);
+
   function handleApply() {
     // sort bleibt, wie es ist — dafuer gibt es das Sortier-Sheet.
-    onApply({ sort: initial.sort, min: Math.min(min, max), max: Math.max(min, max) });
+    onApply({
+      sort: initial.sort,
+      min: Math.min(min, max),
+      max: Math.max(min, max),
+      genre, jahrzehnt, regie, reihe,
+    });
   }
 
   function handleReset() {
     setMin(DEFAULT_FILTER.min);
     setMax(DEFAULT_FILTER.max);
-    onApply({ sort: initial.sort, min: DEFAULT_FILTER.min, max: DEFAULT_FILTER.max });
+    setGenre("");
+    setJahrzehnt("");
+    setRegie("");
+    setReihe("");
+    onApply({ ...DEFAULT_FILTER, sort: initial.sort });
   }
 
   return (
     <BottomSheet title="Filter" onClose={onClose}>
-      <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
-        BEWERTUNGSBEREICH
-      </div>
+      <div style={filterAbschnitt}>BEWERTUNGSBEREICH</div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
-        {SCORE_PRESETS.map((p) => {
-          const active = min === p.min && max === p.max;
-          return (
-            <button
-              key={p.key}
-              onClick={() => applyPreset(p)}
-              style={{
-                padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
-                background: active ? "var(--accent, #C9A227)" : "transparent",
-                color: active ? "#17171A" : "#9A968C",
-                border: "1px solid " + (active ? "var(--accent, #C9A227)" : "#33333a"),
-                fontWeight: active ? 700 : 400,
-              }}
-            >
-              {p.label}
-            </button>
-          );
-        })}
+        {SCORE_PRESETS.map((p) => (
+          <FilterChip
+            key={p.key}
+            label={p.label}
+            active={min === p.min && max === p.max}
+            onClick={() => applyPreset(p)}
+          />
+        ))}
       </div>
 
       <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
@@ -1115,6 +1346,63 @@ function FilterSheet({ initial, totalCount, allInCategory, onApply, onClose }) {
           />
         </div>
       </div>
+
+      {optionen.genres.length > 0 && (
+        <>
+          <div style={filterAbschnitt}>GENRE</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+            {optionen.genres.map((g) => (
+              <FilterChip
+                key={g.wert}
+                label={g.label}
+                active={genre === g.wert}
+                onClick={() => umschalten(setGenre, genre)(g.wert)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {optionen.jahrzehnte.length > 0 && (
+        <>
+          <div style={filterAbschnitt}>JAHRZEHNT</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+            {optionen.jahrzehnte.map((j) => (
+              <FilterChip
+                key={j.wert}
+                label={j.label}
+                active={jahrzehnt === j.wert}
+                onClick={() => umschalten(setJahrzehnt, jahrzehnt)(j.wert)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      <FilterAuswahl
+        label="REGIE"
+        wert={regie}
+        optionen={optionen.regie}
+        alleLabel="Alle"
+        onChange={setRegie}
+      />
+
+      <FilterAuswahl
+        label="FILMREIHE / FRANCHISE"
+        wert={reihe}
+        optionen={optionen.reihen}
+        alleLabel="Alle"
+        onChange={setReihe}
+      />
+
+      {category === "movie" && optionen.reihen.length > 0 && (
+        <div style={{ fontSize: 11, color: "#77746c", lineHeight: 1.5, marginTop: -8, marginBottom: 16 }}>
+          Reihen stammen aus der Filmreihe bei TMDB. Übergreifende
+          Franchises ohne eigene Reihe (etwa das MCU) stehen ersatzweise
+          über ihr Studio zur Wahl — das ist eine Näherung, kein exakter
+          Franchise-Filter.
+        </div>
+      )}
 
       <div style={{ fontSize: 13, color: "#9A968C", marginBottom: 18, textAlign: "center" }}>
         <strong style={{ color: "#EDEAE3" }}>{previewCount}</strong> von {totalCount} Einträgen
@@ -1382,32 +1670,196 @@ function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen }) {
 }
 
 /* ============================================================
-   EMPFEHLUNGEN — "ähnliche Titel" der ohnehin genutzten Quellen
+   EMPFEHLUNGEN — Vorschlaege aus dem eigenen Geschmacksprofil
 
-   Kein eigener Algorithmus: gefragt werden die Empfehlungs-Endpunkte
-   von TMDB (Film, Serie) und Jikan (Anime), und zwar zu den eigenen
-   bestbewerteten Titeln. Spiele haben keinen Abschnitt — SteamGridDB
-   kennt keine Aehnlichkeiten.
+   Nicht mehr "aehnliche Titel zu X": Aus den bestbewerteten Eintraegen
+   entsteht ein Profil — welche Genres, welche Regie/Studios und welche
+   Jahrzehnte ueberdurchschnittlich gut abschneiden —, und mit diesem
+   Profil werden die Entdecken-Endpunkte der Quellen abgefragt. Das
+   ergibt einen viel groesseren und passenderen Kandidatenpool; bei
+   Anime lief der alte Weg regelmaessig ganz leer.
+
+   Was das Profil gewichtet und wie die Kandidaten sortiert werden,
+   steht in api/recommendations.js. Hier wird es nur gebaut, angezeigt
+   und zwischengespeichert.
 
    Bei Spielen erscheint dieser Abschnitt gar nicht, deshalb steht hier
    nirgends "Backlog".
    ============================================================ */
 
-/* So viele Bestbewertete gehen als Grundlage an den Server. Er kappt
-   die Zahl noch einmal selbst — jeder Titel kostet dort zwei externe
-   Aufrufe. */
-const EMPFEHLUNGS_SEEDS = 6;
+/* So viele Bestbewertete bilden die Grundlage des Profils — nach
+   Endnote sortiert. */
+const PROFIL_BASIS = { movie: 50, series: 20, anime: 20 };
 
-/* So viele Vorschlaege stehen am Ende in der Liste. */
-const EMPFEHLUNGEN_SICHTBAR = 8;
+/* So viele Vorschlaege stehen am Ende in der Liste. Der Server liefert
+   deutlich mehr (rund 40) — der Rest ist Vorrat und rueckt nach, sobald
+   ein Vorschlag auf der Watchlist landet. */
+const EMPFEHLUNGEN_SICHTBAR = { movie: 15, series: 10, anime: 10 };
 
-/* Vorschlaege ueberdauern den Reiterwechsel: Der Cache liegt neben der
-   Komponente, nicht in ihr. Ohne das liefe bei jedem Wechsel auf den
-   Watchlist-Reiter eine neue Runde externer Aufrufe. Der Schluessel
-   traegt die Grundlage mit — aendert sich die Bestenliste, entsteht von
-   selbst ein neuer Eintrag. */
-const empfehlungsCache = new Map();
-const EMPFEHLUNGS_TTL_MS = 6 * 60 * 60 * 1000; // 6 Stunden
+/* Vorschlaege werden nur etwa einmal im Monat neu berechnet. Der Cache
+   liegt im localStorage und ueberdauert damit auch das Schliessen der
+   Seite — jede Neuberechnung kostet ein gutes Dutzend externer Aufrufe.
+
+   Kam nichts zurueck, wird frueher wieder gefragt: Ein leeres Ergebnis
+   soll sich nicht einen Monat lang festsetzen. */
+const EMPFEHLUNGS_SPEICHER = "bewertungsapp.empfehlungen";
+const EMPFEHLUNGS_TTL_MS = 30 * 24 * 60 * 60 * 1000; // rund ein Monat
+const EMPFEHLUNGS_TTL_LEER_MS = 24 * 60 * 60 * 1000; // ein Tag
+
+function ladeEmpfehlungen(category) {
+  try {
+    const roh = window.localStorage.getItem(EMPFEHLUNGS_SPEICHER);
+    const alles = roh ? JSON.parse(roh) : {};
+    const eintrag = alles && alles[category];
+    if (!eintrag || typeof eintrag.zeit !== "number" || !Array.isArray(eintrag.vorschlaege)) {
+      return null;
+    }
+    return eintrag;
+  } catch (e) {
+    return null;
+  }
+}
+
+function speichereEmpfehlungen(category, eintrag) {
+  try {
+    const roh = window.localStorage.getItem(EMPFEHLUNGS_SPEICHER);
+    const alles = roh ? JSON.parse(roh) : {};
+    window.localStorage.setItem(
+      EMPFEHLUNGS_SPEICHER,
+      JSON.stringify({ ...(alles && typeof alles === "object" ? alles : {}), [category]: eintrag })
+    );
+  } catch (e) {
+    // Ohne localStorage laeuft alles weiter, nur ohne Monatsgedaechtnis.
+  }
+}
+
+/**
+ * Ist der gespeicherte Stand noch gueltig?
+ *
+ * `hatGenres` ist die Ausnahme vom Monat: Genres werden nach und nach
+ * nachgeladen, und ein Stand, der ohne sie zustande kam, beruht auf
+ * einem halben Profil. Sobald Genres da sind, wird er deshalb einmal
+ * verworfen — danach gilt wieder der Monat.
+ */
+function empfehlungenFrisch(eintrag, profilHatGenres) {
+  if (!eintrag) return false;
+  if (profilHatGenres && !eintrag.hatGenres) return false;
+  const frist = eintrag.vorschlaege.length ? EMPFEHLUNGS_TTL_MS : EMPFEHLUNGS_TTL_LEER_MS;
+  return Date.now() - eintrag.zeit < frist;
+}
+
+/* ------------------------------------------------------------
+   Das Geschmacksprofil
+
+   Fuer jede Eigenschaft (ein Genre, ein Regisseur, ein Jahrzehnt) wird
+   aufsummiert, wie weit die Eintraege, die sie tragen, ueber dem
+   Durchschnitt der Kategorie liegen. Ein Genre, das haeufig UND mit
+   hohen Noten vorkommt, sammelt dadurch das meiste Gewicht; eines, das
+   nur mittelmaessig abschneidet, faellt heraus.
+
+   Am Ende wird auf den staerksten Wert normiert — das Gewicht sagt also
+   "wie stark im Vergleich zum Lieblingsgenre", nicht "wie viele Noten
+   ueber dem Schnitt". Das haelt die Zahlen unabhaengig von der Groesse
+   der Sammlung.
+   ------------------------------------------------------------ */
+
+/* Wie oft eine Eigenschaft mindestens vorkommen muss, um zu zaehlen.
+   Ein einzelner Film sagt ueber den Geschmack fuer einen Regisseur
+   nichts aus — Genres wiederholen sich dagegen von selbst. */
+const PROFIL_MINDEST = { genres: 2, regie: 2, studios: 2, jahrzehnte: 3 };
+
+/* So viele Eigenschaften je Art gehen ins Profil. Jede kostet
+   serverseitig eigene Abfragen. */
+const PROFIL_MAX = { genres: 4, regie: 2, studios: 1, jahrzehnte: 2 };
+
+/**
+ * Eine Art von Eigenschaft auswerten.
+ *
+ * `eintraege` ist eine Liste aus { werte: [...], note }. Zurueck kommen
+ * die staerksten Werte mit einem Gewicht zwischen 0 und 1.
+ */
+function profilTeil(eintraege, basis, mindestAnzahl, maxAnzahl) {
+  const tabelle = new Map();
+  for (const { werte, note } of eintraege) {
+    // Ein Eintrag zaehlt je Wert genau einmal, auch wenn dasselbe Genre
+    // doppelt in seiner Liste steht.
+    for (const wert of new Set(werte)) {
+      if (!wert) continue;
+      const e = tabelle.get(wert) || { anzahl: 0, summe: 0 };
+      e.anzahl++;
+      e.summe += note - basis;
+      tabelle.set(wert, e);
+    }
+  }
+
+  const haeufigGenug = [...tabelle.entries()].filter(([, e]) => e.anzahl >= mindestAnzahl);
+
+  let kandidaten = haeufigGenug
+    .filter(([, e]) => e.summe > 0)
+    .map(([name, e]) => ({ name, gewicht: e.summe, anzahl: e.anzahl }));
+
+  /* Gibt der Ueberdurchschnitt nichts her — etwa weil die Sammlung noch
+     klein ist und alle Noten dicht beieinander liegen —, entscheidet
+     ersatzweise die Haeufigkeit. Sonst bliebe das Profil leer und es
+     gaebe gar keine Vorschlaege. */
+  if (!kandidaten.length) {
+    kandidaten = haeufigGenug.map(([name, e]) => ({ name, gewicht: e.anzahl, anzahl: e.anzahl }));
+  }
+
+  kandidaten.sort((a, b) => b.gewicht - a.gewicht || b.anzahl - a.anzahl);
+  const beste = kandidaten.slice(0, maxAnzahl);
+  const staerkstes = beste.length ? beste[0].gewicht : 0;
+
+  return beste.map((k) => ({
+    name: k.name,
+    gewicht: staerkstes > 0 ? Math.max(0.05, Math.round((k.gewicht / staerkstes) * 100) / 100) : 1,
+  }));
+}
+
+/**
+ * Das Profil einer Kategorie.
+ *
+ * `bestbewertet` sind die Grundlage (die Besten nach Endnote),
+ * `basisNote` der Durchschnitt ueber ALLE bewerteten Eintraege der
+ * Kategorie — daran misst sich "ueberdurchschnittlich".
+ */
+function geschmacksProfil(bestbewertet, basisNote, category) {
+  const mit = (auswahl) =>
+    bestbewertet.map((f) => ({ werte: auswahl(f), note: f.score }));
+
+  return {
+    genres: profilTeil(
+      mit((f) => f.genre || []),
+      basisNote, PROFIL_MINDEST.genres, PROFIL_MAX.genres
+    ),
+    regie: profilTeil(
+      mit((f) => (f.director ? [f.director] : [])),
+      basisNote, PROFIL_MINDEST.regie, PROFIL_MAX.regie
+    ),
+    // Studios sind nur bei Filmen hinterlegt.
+    studios:
+      category === "movie"
+        ? profilTeil(
+            mit((f) => (f.studio ? [f.studio] : [])),
+            basisNote, PROFIL_MINDEST.studios, PROFIL_MAX.studios
+          )
+        : [],
+    jahrzehnte: profilTeil(
+      mit((f) => {
+        const jz = jahrzehntVon(f);
+        return jz ? [String(jz)] : [];
+      }),
+      basisNote, PROFIL_MINDEST.jahrzehnte, PROFIL_MAX.jahrzehnte
+    ),
+  };
+}
+
+function profilLeer(profil) {
+  return (
+    !profil ||
+    (!profil.genres.length && !profil.regie.length && !profil.studios.length && !profil.jahrzehnte.length)
+  );
+}
 
 /* Titelvergleich fuers Aussortieren. Bewusst ohne Jahr: Die Quellen
    liefern es nicht immer mit (Jikan etwa nie), und derselbe Titel ist
@@ -1430,9 +1882,14 @@ function EmpfehlungsZeile({ vorschlag, busy, vorgemerkt, onWatchlist }) {
         <div style={{ fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {vorschlag.title}
         </div>
-        {vorschlag.year && (
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2 }}>
-            {vorschlag.year}
+        {/* Jahr und Begruendung stehen in derselben schmalen Zeile wie
+            die uebrigen Meta-Angaben in den Listen. Die Begruendung darf
+            umbrechen — sie ist der Grund, warum der Titel hier steht. */}
+        {(vorschlag.year || vorschlag.begruendung) && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2, lineHeight: 1.45 }}>
+            {vorschlag.year ? String(vorschlag.year) : ""}
+            {vorschlag.year && vorschlag.begruendung ? " · " : ""}
+            {vorschlag.begruendung || ""}
           </div>
         )}
       </div>
@@ -1455,27 +1912,37 @@ function EmpfehlungsZeile({ vorschlag, busy, vorgemerkt, onWatchlist }) {
   );
 }
 
-function Empfehlungen({ category, seeds, bekannt, busy, onWatchlist }) {
+function Empfehlungen({ category, profil, bekannt, busy, onWatchlist }) {
   const [zustand, setZustand] = useState({ laeuft: false, vorschlaege: [], hinweis: "", fehler: "" });
   // Was in diesem Durchgang vorgemerkt wurde — dieselbe Kennung wie in
   // der Titelsuche, damit der Haken am Titel haengt und nicht an der
   // Position in der Liste.
   const [vorgemerkt, setVorgemerkt] = useState(() => new Set());
 
-  // Die Grundlage als Zeichenkette: nur wenn sich die Bestenliste
-  // wirklich aendert, wird neu geladen.
-  const grundlage = seeds.join("|");
+  const hatProfil = !profilLeer(profil);
+  const hatGenres = !!(profil && profil.genres.length);
+  /* Das Profil aendert sich mit jeder neuen Bewertung. Es taugt deshalb
+     nicht als Ausloeser fuer eine Neuberechnung — die entscheidet
+     allein das Alter des gespeicherten Standes. Als Abhaengigkeit
+     dienen nur die beiden groben Fragen: Gibt es ueberhaupt ein Profil,
+     und trägt es inzwischen Genres? */
+  const profilRef = useRef(profil);
+  profilRef.current = profil;
 
   useEffect(() => {
-    if (!grundlage) {
+    if (!hatProfil) {
       setZustand({ laeuft: false, vorschlaege: [], hinweis: "", fehler: "" });
       return;
     }
 
-    const schluessel = category + "::" + grundlage;
-    const zwischen = empfehlungsCache.get(schluessel);
-    if (zwischen && Date.now() - zwischen.zeit < EMPFEHLUNGS_TTL_MS) {
-      setZustand({ laeuft: false, ...zwischen.antwort, fehler: "" });
+    const gespeichert = ladeEmpfehlungen(category);
+    if (empfehlungenFrisch(gespeichert, hatGenres)) {
+      setZustand({
+        laeuft: false,
+        vorschlaege: gespeichert.vorschlaege,
+        hinweis: gespeichert.hinweis || "",
+        fehler: "",
+      });
       return;
     }
 
@@ -1483,12 +1950,11 @@ function Empfehlungen({ category, seeds, bekannt, busy, onWatchlist }) {
     setZustand({ laeuft: true, vorschlaege: [], hinweis: "", fehler: "" });
     (async () => {
       try {
-        const { results, hinweis } = await api.loadRecommendations(category, grundlage.split("|"));
-        const antwort = { vorschlaege: results, hinweis };
-        empfehlungsCache.set(schluessel, { zeit: Date.now(), antwort });
-        if (!abgebrochen) setZustand({ laeuft: false, ...antwort, fehler: "" });
+        const { results, hinweis } = await api.loadRecommendations(category, profilRef.current);
+        speichereEmpfehlungen(category, { zeit: Date.now(), vorschlaege: results, hinweis, hatGenres });
+        if (!abgebrochen) setZustand({ laeuft: false, vorschlaege: results, hinweis, fehler: "" });
       } catch (e) {
-        // Erfolglose Versuche landen nicht im Cache — beim naechsten
+        // Erfolglose Versuche landen nicht im Speicher — beim naechsten
         // Oeffnen darf es noch einmal versucht werden.
         if (!abgebrochen) {
           setZustand({ laeuft: false, vorschlaege: [], hinweis: "", fehler: e.message });
@@ -1496,33 +1962,37 @@ function Empfehlungen({ category, seeds, bekannt, busy, onWatchlist }) {
       }
     })();
     return () => { abgebrochen = true; };
-  }, [category, grundlage]);
+  }, [category, hatProfil, hatGenres]);
 
   /* Was schon bewertet oder vorgemerkt ist, ist kein Vorschlag mehr.
      Der Abgleich laeuft hier und nicht auf dem Server: Nur die App
-     kennt die Sammlung, und so bleibt die Antwort im CDN gueltig, auch
-     wenn sich die Sammlung aendert.
+     kennt die Sammlung — und weil der Vorrat weit mehr Kandidaten
+     enthaelt als angezeigt werden, rueckt dabei sofort der naechste
+     nach, ohne dass ein einziger Aufruf noetig waere.
 
      Ausgenommen ist, was gerade eben in diesem Durchgang vorgemerkt
      wurde: Diese Zeilen bleiben mit dem Haken stehen, genau wie in der
      Titelsuche. Wuerden sie sofort verschwinden, spraenge die Liste bei
-     jedem Klick und man saehe nie eine Bestaetigung. */
+     jedem Klick und man saehe nie eine Bestaetigung. Damit die Liste
+     trotzdem gleich lang bleibt, waechst die Grenze um eben diese
+     Zeilen mit — der Nachruecker steht also sofort darunter. */
   const sichtbar = useMemo(() => {
+    const grenze = (EMPFEHLUNGEN_SICHTBAR[category] || 10) + vorgemerkt.size;
     return zustand.vorschlaege
       .filter((v) => {
         if (!v || !v.title) return false;
         const schluessel = titelSchluessel(v.title);
         return vorgemerkt.has(schluessel) || !bekannt.has(schluessel);
       })
-      .slice(0, EMPFEHLUNGEN_SICHTBAR);
-  }, [zustand.vorschlaege, bekannt, vorgemerkt]);
+      .slice(0, grenze);
+  }, [zustand.vorschlaege, bekannt, vorgemerkt, category]);
 
-  if (!grundlage && !zustand.laeuft) {
+  if (!hatProfil && !zustand.laeuft) {
     return (
       <EmpfehlungsRahmen>
         <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
-          Sobald ein paar Titel bewertet sind, stehen hier Vorschläge, die
-          zu den bestbewerteten passen.
+          Sobald ein paar Titel bewertet sind, entsteht daraus ein
+          Geschmacksprofil — und hier stehen dazu passende Vorschläge.
         </div>
       </EmpfehlungsRahmen>
     );
@@ -1541,8 +2011,8 @@ function Empfehlungen({ category, seeds, bekannt, busy, onWatchlist }) {
       )}
       {!zustand.laeuft && !zustand.fehler && !zustand.hinweis && sichtbar.length === 0 && (
         <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
-          Gerade nichts Neues — die Quellen schlagen nur Titel vor, die du
-          schon bewertet oder vorgemerkt hast.
+          Gerade nichts Neues — was zum Profil passt, hast du schon
+          bewertet oder vorgemerkt.
         </div>
       )}
       {!zustand.laeuft &&
@@ -1570,7 +2040,7 @@ function EmpfehlungsRahmen({ children }) {
         EMPFEHLUNGEN FÜR DICH
       </div>
       <div style={{ fontSize: 11.5, color: "#77746c", lineHeight: 1.5, marginBottom: 12 }}>
-        Ähnliche Titel zu deinen bestbewerteten Einträgen.
+        Aus dem, was du am besten bewertest: Genres, Regie und Jahrzehnte.
       </div>
       {children}
     </div>
@@ -2675,7 +3145,11 @@ export default function App() {
             weight: typeof sn.weight === "number" ? sn.weight : SEASON_WEIGHT_DEFAULT,
           }))
         : [],
-      genre: Array.isArray(e.genre) ? e.genre : [],
+      // Zusatzdaten zum Werk. Wie die Angaben werden sie automatisch
+      // nachgeladen; fehlen sie, bleibt die Liste leer bzw. der Wert null.
+      genre: Array.isArray(e.genre) ? e.genre.filter((g) => typeof g === "string" && g.trim()) : [],
+      collection: typeof e.collection === "string" && e.collection.trim() ? e.collection.trim() : null,
+      studio: typeof e.studio === "string" && e.studio.trim() ? e.studio.trim() : null,
       values: e.values,
       personal: e.personal,
       createdAt: e.createdAt || 0,
@@ -2711,10 +3185,12 @@ export default function App() {
      danach in den State übernommen — dadurch kann nichts mehr
      stillschweigend verloren gehen. */
 
-  // ---- Automatisches Nachladen: Poster sowie Jahr, Regie, IMDb-Note ----
+  // ---- Automatisches Nachladen: Poster, Angaben und Zusatzdaten ----
   const posterAttempted = useRef(new Set());
   const angabenAttempted = useRef(new Set());
+  const genreAttempted = useRef(new Set());
   const nachladeZaehler = useRef(0);
+  const zusatzZaehler = useRef(0);
 
   /* Laeuft gerade ein Durchgang? Jeder gespeicherte Eintrag aendert
      `items` und stoesst diesen Effekt erneut an. Ohne die Sperre
@@ -2741,12 +3217,14 @@ export default function App() {
         // erneut abfragen — sonst laufen dauerhaft hunderte Anfragen.
         const erfolglos = ladeErfolglose();
         const ohneAngaben = ladeOhneAngaben();
+        const ohneGenre = ladeOhneGenre();
 
         const offenJeKategorie = CATEGORY_KEYS.map((catKey) => {
           const liste = [];
           for (const entry of items[catKey] || []) {
-            // Nachgeladen werden fehlende Poster und fehlende Angaben zum
-            // Werk. Die Bilder des Kopfbereichs bleiben handgepflegt.
+            // Nachgeladen werden fehlende Poster, fehlende Angaben zum
+            // Werk und fehlende Zusatzdaten (Genre, Filmreihe, Studio).
+            // Die Bilder des Kopfbereichs bleiben handgepflegt.
             const posterFehlt =
               !entry.poster && !posterAttempted.current.has(entry.id) && !erfolglos.has(entry.id);
             const angabenFehlen =
@@ -2754,8 +3232,13 @@ export default function App() {
               angabenUnvollstaendig(entry) &&
               !angabenAttempted.current.has(entry.id) &&
               !ohneAngaben.has(entry.id);
-            if (!posterFehlt && !angabenFehlen) continue;
-            liste.push({ catKey, entry, posterFehlt, angabenFehlen });
+            const zusatzFehlt =
+              unterstuetztAngaben(catKey) &&
+              genreFehlt(entry) &&
+              !genreAttempted.current.has(entry.id) &&
+              !ohneGenre.has(entry.id);
+            if (!posterFehlt && !angabenFehlen && !zusatzFehlt) continue;
+            liste.push({ catKey, entry, posterFehlt, angabenFehlen, zusatzFehlt });
           }
           return liste;
         });
@@ -2780,13 +3263,37 @@ export default function App() {
 
         for (const job of todo) {
           if (nachladeEnde.current) return;
-          // Pro Seitenaufruf nur eine begrenzte Zahl nachladen. Jede Suche
-          // kostet serverseitig mehrere externe Aufrufe; bei vielen
-          // Einträgen würde das die App sonst lahmlegen.
-          if (nachladeZaehler.current >= MAX_NACHLADEN_PRO_BESUCH) return;
-          nachladeZaehler.current++;
+
+          /* Zwei getrennte Kontingente: Eintraege, denen nur noch die
+             Zusatzdaten fehlen, laufen ueber das eigene Kontingent des
+             Nachtrags. Ist eines erschoepft, kommen die Eintraege der
+             anderen Art trotzdem noch dran — deshalb `continue` statt
+             `return`, und Schluss erst, wenn beide voll sind. */
+          const nurZusatz = !job.posterFehlt && !job.angabenFehlen;
+          if (nurZusatz) {
+            if (zusatzZaehler.current >= MAX_ZUSATZ_PRO_BESUCH) {
+              if (nachladeZaehler.current >= MAX_NACHLADEN_PRO_BESUCH) return;
+              continue;
+            }
+            zusatzZaehler.current++;
+            // Batch-weise mit Pausen: der Nachtrag laeuft ueber die ganze
+            // Sammlung und soll die freien APIs nicht ueberrennen.
+            await warte(ZUSATZ_PAUSE_MS);
+            if (nachladeEnde.current) return;
+          } else {
+            // Pro Seitenaufruf nur eine begrenzte Zahl nachladen. Jede Suche
+            // kostet serverseitig mehrere externe Aufrufe; bei vielen
+            // Einträgen würde das die App sonst lahmlegen.
+            if (nachladeZaehler.current >= MAX_NACHLADEN_PRO_BESUCH) {
+              if (zusatzZaehler.current >= MAX_ZUSATZ_PRO_BESUCH) return;
+              continue;
+            }
+            nachladeZaehler.current++;
+          }
+
           if (job.posterFehlt) posterAttempted.current.add(job.entry.id);
           if (job.angabenFehlen) angabenAttempted.current.add(job.entry.id);
+          if (job.zusatzFehlt) genreAttempted.current.add(job.entry.id);
 
           // Ein Aufruf deckt beides ab — Poster und Angaben stammen aus
           // demselben Treffer und koennen so nicht auseinanderfallen.
@@ -2831,6 +3338,31 @@ export default function App() {
             if (echterVersuch && angabenUnvollstaendig({ ...job.entry, ...aenderung })) {
               merkeOhneAngaben(job.entry.id);
             }
+          }
+
+          if (job.zusatzFehlt) {
+            /* Wie bei den Angaben wird nur ergaenzt, nie ueberschrieben:
+               Was am Eintrag schon steht, bleibt unangetastet. Und
+               geschrieben wird ueberhaupt nur, wenn der Abruf etwas
+               gebracht hat — ein Fehlschlag laesst den Eintrag genau so
+               zurueck, wie er war. */
+            const gefundeneGenres = Array.isArray(gefunden.genres)
+              ? gefunden.genres.filter((g) => typeof g === "string" && g.trim())
+              : [];
+            if (genreFehlt(job.entry) && gefundeneGenres.length) {
+              aenderung.genre = gefundeneGenres;
+            }
+            if (!job.entry.collection && typeof gefunden.collection === "string" && gefunden.collection.trim()) {
+              aenderung.collection = gefunden.collection.trim();
+            }
+            if (!job.entry.studio && typeof gefunden.studio === "string" && gefunden.studio.trim()) {
+              aenderung.studio = gefunden.studio.trim();
+            }
+            // Aussichtslos ist der Eintrag nur, wenn die Antwort auch aus
+            // dieser Fassung stammt — eine aeltere aus dem CDN kennt die
+            // neuen Felder gar nicht und darf ihn nicht blockieren.
+            const echterVersuch = gefunden.angabenVersion === ANGABEN_VERSION;
+            if (echterVersuch && !aenderung.genre) merkeOhneGenre(job.entry.id);
           }
 
           if (!Object.keys(aenderung).length) continue;
@@ -2961,6 +3493,10 @@ export default function App() {
         : bereichOffen
     );
 
+    // Genre, Jahrzehnt, Regie und Filmreihe. Was nicht gesetzt ist,
+    // laesst alles durch.
+    list = list.filter((f) => passtZuFiltern(f, filterState));
+
     const sorted = [...list];
     switch (filterState.sort) {
       case "score-asc":
@@ -2985,7 +3521,7 @@ export default function App() {
     return sorted;
   }, [currentList, search, filterState]);
 
-  const isFilterActive = filterState.min !== DEFAULT_FILTER.min || filterState.max !== DEFAULT_FILTER.max;
+  const isFilterActive = filterAktiv(filterState);
   const isSortActive = filterState.sort !== DEFAULT_FILTER.sort;
 
   const selectedEntry = useMemo(() => {
@@ -2993,18 +3529,23 @@ export default function App() {
     return currentList.find((f) => f.id === selectedId) || null;
   }, [currentList, selectedId]);
 
-  /* ---- Grundlage der Empfehlungen ----
-     Die bestbewerteten Titel der Kategorie. `currentList` ist bereits
-     nach Endnote sortiert; Unbewertetes (Staffelgewichte auf 0) hat
-     keine Note und taugt nicht als Grundlage. */
-  const empfehlungsSeeds = useMemo(
-    () =>
-      currentList
-        .filter((f) => typeof f.score === "number")
-        .slice(0, EMPFEHLUNGS_SEEDS)
-        .map((f) => f.title),
-    [currentList]
-  );
+  /* ---- Grundlage der Empfehlungen: das Geschmacksprofil ----
+     Die bestbewerteten Titel der Kategorie bilden die Grundlage —
+     `currentList` ist bereits nach Endnote sortiert. Unbewertetes
+     (Staffelgewichte auf 0) hat keine Note und faellt heraus.
+
+     Der Massstab fuer "ueberdurchschnittlich" ist der Durchschnitt
+     ueber ALLE bewerteten Eintraege der Kategorie, nicht nur ueber die
+     Besten — sonst waere die Haelfte der eigenen Favoriten
+     definitionsgemaess unterdurchschnittlich. */
+  const empfehlungsProfil = useMemo(() => {
+    const bewertet = currentList.filter((f) => typeof f.score === "number");
+    if (!bewertet.length) return null;
+
+    const basis = bewertet.reduce((s, f) => s + f.score, 0) / bewertet.length;
+    const grundlage = bewertet.slice(0, PROFIL_BASIS[category] || 20);
+    return geschmacksProfil(grundlage, basis, category);
+  }, [currentList, category]);
 
   /* Alles, was in dieser Kategorie schon bekannt ist — bewertet wie
      vorgemerkt. Daran werden die Vorschlaege aussortiert. */
@@ -3155,13 +3696,24 @@ export default function App() {
     if (titelGeaendert) {
       angabenAttempted.current.delete(id);
       vergissOhneAngaben(id);
+      genreAttempted.current.delete(id);
+      vergissOhneGenre(id);
     }
+    /* Fuer die Zusatzdaten gilt dasselbe. Beim Titelwechsel gehen sie
+       ausdruecklich leer mit — ein fehlendes Feld liesse den
+       gespeicherten Wert stehen (siehe angabenColumns im Server). */
     const angaben = titelGeaendert
-      ? { releaseYear: null, director: null, imdbRating: null }
+      ? {
+          releaseYear: null, director: null, imdbRating: null,
+          genre: [], collection: "", studio: "",
+        }
       : {
           releaseYear: current.releaseYear,
           director: current.director,
           imdbRating: current.imdbRating,
+          genre: current.genre || [],
+          collection: current.collection || "",
+          studio: current.studio || "",
         };
 
     setBusy(true);
@@ -3288,9 +3840,12 @@ export default function App() {
       // sonst gaebe es keinen Weg, sie noch einmal zu versuchen.
       posterAttempted.current = new Set();
       angabenAttempted.current = new Set();
+      genreAttempted.current = new Set();
       nachladeZaehler.current = 0;
+      zusatzZaehler.current = 0;
       vergissErfolglose();
       vergissAlleOhneAngaben();
+      vergissAlleOhneGenre();
       const fresh = await api.loadAll();
       setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (fresh[k] || []).map(normalizeEntry)])));
       setSaveError(
@@ -3318,6 +3873,8 @@ export default function App() {
           poster: f.poster || "",
           backdrop: f.backdrop || "",
           genre: (f.genre || []).join("|"),
+          reihe: f.collection || "",
+          studio: f.studio || "",
           endnote: f.score,
           staffeln: hasSeasons(f) ? f.seasons.length : 0,
           staffelnoten: hasSeasons(f)
@@ -3371,7 +3928,7 @@ export default function App() {
       };
       downloadFile(`bewertungen-${scopeName}-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
     } else {
-      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "staffeln", "staffelnoten", "staffelgewichteProzent", "genre", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
+      const headers = ["kategorie", "position", "titel", "poster", "backdrop", "staffeln", "staffelnoten", "staffelgewichteProzent", "genre", "reihe", "studio", "endnote", "kriterienNote", "bauchgefuehl", "erstelltAm", ...ALL_CRITERIA_KEYS];
       const lines = [headers.join(";")];
       rows.forEach((r) => {
         lines.push(headers.map((h) => csvEscape(r[h])).join(";"));
@@ -3422,7 +3979,11 @@ export default function App() {
                 director: typeof entry.director === "string" ? entry.director : null,
                 imdbRating: typeof entry.imdbRating === "number" ? entry.imdbRating : null,
                 seasons: vorgemerkt ? [] : gueltigeStaffeln(entry.seasons, catKey),
-                genre: Array.isArray(entry.genre) ? entry.genre : [],
+                // Zusatzdaten aus dem Backup; fehlen sie, werden sie wie
+                // bei jedem anderen Eintrag nachgeladen.
+                genre: Array.isArray(entry.genre) ? entry.genre.filter((g) => typeof g === "string") : [],
+                collection: typeof entry.collection === "string" ? entry.collection : null,
+                studio: typeof entry.studio === "string" ? entry.studio : null,
                 values: vorgemerkt ? emptyValues(catKey) : entry.values,
                 personal: vorgemerkt ? null : entry.personal,
                 createdAt: entry.createdAt || Date.now(),
@@ -3585,6 +4146,12 @@ export default function App() {
                   setUnterReiter("bewertet");
                   setSelectedId(null);
                   setSearch("");
+                  /* Genre, Jahrzehnt, Regie und Reihe gehoeren zur
+                     Kategorie, aus der sie stammen — ein Filmgenre in
+                     den Serien liesse die Liste ohne ersichtlichen
+                     Grund leer aussehen. Notenbereich und Sortierung
+                     bleiben wie bisher stehen. */
+                  setFilterState((f) => ({ ...f, genre: "", jahrzehnt: "", regie: "", reihe: "" }));
                 }}
                 className="tab-btn"
                 style={{
@@ -3760,13 +4327,13 @@ export default function App() {
                 ))
               )}
 
-              {/* Vorschlaege aus den "aehnliche Titel"-Endpunkten. Bei
-                  Spielen entfaellt der Abschnitt: SteamGridDB kennt
-                  keine Aehnlichkeiten. */}
+              {/* Vorschlaege aus dem eigenen Geschmacksprofil. Bei
+                  Spielen entfaellt der Abschnitt: SteamGridDB ist eine
+                  Bilddatenbank und kennt keine Genres. */}
               {category !== "game" && (
                 <Empfehlungen
                   category={category}
-                  seeds={empfehlungsSeeds}
+                  profil={empfehlungsProfil}
                   bekannt={bekannteTitel}
                   busy={busy}
                   onWatchlist={(v) =>
@@ -3992,6 +4559,7 @@ export default function App() {
           initial={filterState}
           totalCount={currentList.length}
           allInCategory={currentList}
+          category={category}
           onApply={(f) => { setFilterState(f); setShowFilter(false); }}
           onClose={() => setShowFilter(false)}
         />
