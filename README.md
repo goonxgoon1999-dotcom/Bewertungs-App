@@ -396,7 +396,8 @@ vercel dev          # startet Frontend + API zusammen
 | DELETE | `/api/items?id=…` | Eintrag löschen |
 | GET | `/api/poster?title=…&category=…` | Poster-URL suchen, dazu Jahr, Regie, IMDb-Note, Genre, Filmreihe und Studio (`&debug=1` für Diagnose) |
 | GET | `/api/search?title=…&category=…` | Mehrere Titel-Treffer zur Auswahl beim Anlegen |
-| POST | `/api/recommendations` | Vorschläge zum mitgeschickten Geschmacksprofil (`{ category, profil }`) |
+| GET | `/api/recommendations?category=…&profil=…` | Vorschläge zum mitgeschickten Geschmacksprofil (Profil als JSON) |
+| POST | `/api/recommendations` | Dasselbe, Profil im Rumpf (`{ category, profil }`) |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |

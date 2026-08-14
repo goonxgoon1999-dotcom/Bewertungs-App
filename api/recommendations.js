@@ -1,7 +1,12 @@
 /**
- * POST /api/recommendations
- * Body: { category: "movie"|"series"|"anime", profil: {...} }
+ * GET  /api/recommendations?category=movie|series|anime&profil=<JSON>
+ * POST /api/recommendations   Body: { category, profil }
  * -> { results: [{ title, year, poster, begruendung, punkte }], gefragt, hinweis }
+ *
+ * Beide Wege sind gleichwertig; die App nimmt GET, weil der Abschnitt
+ * damit schon vor dieser Erweiterung zuverlaessig lief. Das Profil ist
+ * klein genug fuer den Abfrageteil (vier Genres, zwei Regisseure, ein
+ * Studio, zwei Jahrzehnte).
  *
  * Vorschlaege auf Grundlage eines Geschmacksprofils statt einzelner
  * "aehnliche Titel"-Abfragen.
@@ -506,15 +511,52 @@ function begruendung(nomen, genres, regie, studio, jahrzehnt) {
  * Handler
  * ---------------------------------------------------------------- */
 
+/**
+ * Liest Kategorie und Profil — gleichgueltig, auf welchem Weg sie
+ * ankommen.
+ *
+ * GET traegt das Profil als JSON im Abfrageteil, POST im Rumpf. Beides
+ * geht, und zwar mit Absicht: Der Abschnitt in der App ist Beiwerk, und
+ * ein Vorschlagsdienst, der an der Wahl der Methode scheitert, ist
+ * schlechter als einer, der beide annimmt.
+ */
+function anfrageLesen(req) {
+  const query = req.query || {};
+
+  if (req.method === "POST") {
+    const roh = req.body;
+    let body = {};
+    if (typeof roh === "string") {
+      // Nicht jede Umgebung liest den Rumpf selbst als JSON ein.
+      try { body = JSON.parse(roh); } catch (e) { body = {}; }
+    } else if (roh && typeof roh === "object") {
+      body = roh;
+    }
+    return { category: body.category, profil: body.profil, veraltet: false };
+  }
+
+  let profil = null;
+  if (typeof query.profil === "string" && query.profil) {
+    try { profil = JSON.parse(query.profil); } catch (e) { profil = null; }
+  }
+
+  /* Eine aeltere Fassung der App im Browser-Cache fragt noch nach dem
+     alten Muster: statt eines Profils schickt sie die Titel ihrer
+     Bestbewerteten als `titles`. Damit ist hier nichts anzufangen — aber
+     ein Hinweis ist allemal besser als ein Fehler. */
+  const veraltet = !profil && typeof query.titles === "string" && !!query.titles;
+  return { category: query.category, profil, veraltet };
+}
+
 export default async function handler(req, res) {
   try {
-    if (req.method !== "POST") {
-      res.setHeader("Allow", "POST");
+    if (req.method !== "GET" && req.method !== "POST") {
+      res.setHeader("Allow", "GET, POST");
       return res.status(405).json({ error: "Methode nicht erlaubt." });
     }
 
-    const body = req.body || {};
-    const category = body.category || "movie";
+    const anfrage = anfrageLesen(req);
+    const category = anfrage.category || "movie";
 
     if (category === "game") {
       return res.status(400).json({
@@ -526,12 +568,14 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Ungültige Kategorie." });
     }
 
-    const profil = profilLesen(body.profil);
+    const profil = profilLesen(anfrage.profil);
     if (profilLeer(profil)) {
       return res.status(200).json({
         results: [],
         gefragt: [],
-        hinweis: "Noch zu wenige Bewertungen für ein Geschmacksprofil.",
+        hinweis: anfrage.veraltet
+          ? "Die App läuft noch in einer älteren Fassung — bitte die Seite einmal neu laden."
+          : "Noch zu wenige Bewertungen für ein Geschmacksprofil.",
       });
     }
 

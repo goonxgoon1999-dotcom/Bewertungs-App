@@ -877,16 +877,17 @@ const api = {
     const data = await res.json();
     return Array.isArray(data.results) ? data.results : [];
   },
-  /* Vorschlaege auf Grundlage des eigenen Geschmacksprofils. Es geht im
-     Rumpf mit — als Abfrage waere es zu lang. Geliefert werden Treffer
-     in derselben Form wie bei der Titelsuche, ergaenzt um eine kurze
-     Begruendung, sodass "+ Watchlist" unveraendert damit arbeitet. */
+  /* Vorschlaege auf Grundlage des eigenen Geschmacksprofils. Es geht als
+     JSON im Abfrageteil mit — dafuer ist es klein genug, und ein GET ist
+     genau der Weg, auf dem dieser Abschnitt schon vorher lief. Geliefert
+     werden Treffer in derselben Form wie bei der Titelsuche, ergaenzt um
+     eine kurze Begruendung, sodass "+ Watchlist" unveraendert damit
+     arbeitet. */
   async loadRecommendations(category, profil) {
-    const res = await fetch("/api/recommendations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category, profil }),
-    });
+    const res = await fetch(
+      "/api/recommendations?category=" + encodeURIComponent(category) +
+        "&profil=" + encodeURIComponent(JSON.stringify(profil))
+    );
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Empfehlungen fehlgeschlagen");
     const data = await res.json();
     return {
