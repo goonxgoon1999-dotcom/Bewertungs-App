@@ -1,13 +1,17 @@
 /**
  * GET /api/poster?title=...&category=movie|series|anime|game
- * -> { url, backdrop, year, director, imdbRating, imdbVerfuegbar }
- *    Alle Datenfelder koennen null sein. `url` ist das Hochkant-Poster,
- *    `backdrop` ein breites Szenenbild fuer den Kopfbereich.
+ * -> { url, backdrop, year, director, imdbRating, imdbVerfuegbar,
+ *      genres, collection, studio }
+ *    Alle Datenfelder koennen null (bzw. `genres` leer) sein. `url` ist
+ *    das Hochkant-Poster, `backdrop` ein breites Szenenbild fuer den
+ *    Kopfbereich.
  *
  * Im selben Durchgang kommen bei Film, Serie und Anime die Angaben zum
  * Werk mit: Erscheinungsjahr und Regie aus TMDB, die IMDb-Note als
- * Vergleichswert aus OMDb. Bei Spielen entfaellt das — dort gibt es nur
- * Bilder.
+ * Vergleichswert aus OMDb. Dazu das Genre — bei Anime von Jikan, sonst
+ * von TMDB — und bei Filmen zusaetzlich die Filmreihe
+ * (`belongs_to_collection`) und das Produktionsstudio. Bei Spielen
+ * entfaellt das alles — dort gibt es nur Bilder.
  *
  * Die Suche läuft bewusst SERVERSEITIG:
  * - keine CORS-Probleme (der Browser spricht nur mit deiner eigenen Domain)
@@ -42,7 +46,7 @@ const CACHE = new Map(); // einfacher Cache pro laufender Funktion
  * schickt das Frontend als `v` mit; sie hochzuzaehlen entwertet beide
  * Caches auf einen Schlag.
  */
-export const ANGABEN_VERSION = 2;
+export const ANGABEN_VERSION = 3;
 
 const RESULT_LIMIT = 15; // 10–15 Kandidaten pro Quelle
 const MIN_SIMILARITY = 0.6; // darunter: lieber null
@@ -277,6 +281,21 @@ function buildDebug(source, response, candidates, bestScore, ueberEnthaltung) {
   return block;
 }
 
+/**
+ * Namen aus einer Liste benannter Objekte — [{ name }] -> ["…"].
+ * Genau die Form, in der TMDB und Jikan Genres, Studios und
+ * Produktionsfirmen liefern.
+ */
+function namenAus(liste) {
+  if (!Array.isArray(liste)) return [];
+  const namen = [];
+  for (const e of liste) {
+    const name = e && typeof e.name === "string" ? e.name.trim() : "";
+    if (name && !namen.includes(name)) namen.push(name);
+  }
+  return namen;
+}
+
 /** Englischer Titel aus Jikans `titles`-Liste, falls vorhanden. */
 function englischerTitel(hit) {
   if (!hit || !Array.isArray(hit.titles)) return null;
@@ -318,6 +337,12 @@ async function fromJikan(title) {
       // bei vielen Eintraegen — dann steht der englische Titel noch in
       // der Liste `titles` unter dem Typ "English".
       englishTitle: hit.title_english || englischerTitel(hit) || null,
+      // Jikans Genres sind die treffenderen fuer Anime: TMDB kennt dort
+      // nur "Animation" und "Action & Adventure", Jikan unterscheidet
+      // "Shounen", "Isekai", "Slice of Life". `themes` und
+      // `demographics` bleiben bewusst draussen — sie wuerden die
+      // Genreliste verwaessern.
+      genres: namenAus(hit.genres),
       url: (img && (img.large_image_url || img.image_url)) || null,
       // Jikan liefert keine Breitbilder.
       backdrop: null,
@@ -341,6 +366,7 @@ async function fromJikan(title) {
             year: fuerAngaben.year,
             originalTitle: fuerAngaben.englishTitle,
             imdbId: null,
+            genres: fuerAngaben.genres || [],
           }
         : null,
     debug: buildDebug("Jikan", response, candidates, bestScore, ueberEnthaltung),
@@ -558,6 +584,10 @@ async function fromTvmaze(title) {
       year: jahrAus(show && show.premiered),
       imdbId: externals.imdb || null,
       originalTitle: (show && show.name) || null,
+      // TVMaze fuehrt Genres als schlichte Liste von Zeichenketten.
+      genres: Array.isArray(show && show.genres)
+        ? show.genres.filter((g) => typeof g === "string" && g.trim()).map((g) => g.trim())
+        : [],
       url: (img && (img.original || img.medium)) || null,
       // TVMaze kennt kein eigenes Breitbild — das vorhandene Bild
       // dient als Rueckfall.
@@ -581,6 +611,7 @@ async function fromTvmaze(title) {
             year: fuerAngaben.year,
             originalTitle: fuerAngaben.originalTitle,
             imdbId: fuerAngaben.imdbId,
+            genres: fuerAngaben.genres || [],
           }
         : null,
     debug: buildDebug("TVMaze", response, candidates, bestScore, ueberEnthaltung),
@@ -670,6 +701,9 @@ export function jahrAus(datum) {
  * Serien haben oft keinen einzelnen Regisseur. Steht in den Credits
  * keiner, treten die Schoepfer (`created_by`) an dessen Stelle — das
  * ist die Angabe, die bei einer Serie dieselbe Frage beantwortet.
+ *
+ * Dieselbe Antwort traegt auch die Zusatzdaten: Genre (beide Arten),
+ * sowie bei Filmen die Filmreihe und das Produktionsstudio.
  */
 async function tmdbAngaben(kind, id) {
   const response = await getJson(
@@ -704,8 +738,29 @@ async function tmdbAngaben(kind, id) {
     // ohne dass noch einmal ueber Titel geraten werden muss.
     imdbId: d.imdb_id || (d.external_ids && d.external_ids.imdb_id) || null,
     originalTitle: d.original_title || d.original_name || null,
+    genres: namenAus(d.genres),
+    // Filmreihe und Studio gibt es nur bei Filmen: `belongs_to_collection`
+    // kennt TMDB bei Serien gar nicht, und die Produktionsfirma einer
+    // Serie sagt ueber ein Franchise nichts aus.
+    collection:
+      kind === "movie" && d.belongs_to_collection && typeof d.belongs_to_collection.name === "string"
+        ? d.belongs_to_collection.name.trim() || null
+        : null,
+    studio: kind === "movie" ? erstesStudio(d.production_companies) : null,
     debug: { source: "TMDB (details)", status: response.status, error: response.error },
   };
+}
+
+/**
+ * Das fuehrende Produktionsstudio. TMDB listet die Firmen ungefaehr
+ * nach Bedeutung; die erste ist die, die man mit dem Film verbindet
+ * ("Marvel Studios", "Lucasfilm"). Das ist eine Naeherung und kein
+ * Franchise-Feld — genau dafuer taugt sie aber: Reihen wie das MCU
+ * haben keine eigene TMDB-Collection, wohl aber ein gemeinsames Studio.
+ */
+function erstesStudio(firmen) {
+  const namen = namenAus(firmen);
+  return namen.length ? namen[0] : null;
 }
 
 /**
@@ -870,6 +925,9 @@ export default async function handler(req, res) {
   let year = null;
   let director = null;
   let imdbRating = null;
+  let genres = [];
+  let collection = null;
+  let studio = null;
   const angabenDebug = [];
 
   if (willAngaben) {
@@ -899,6 +957,24 @@ export default async function handler(req, res) {
       director = nachgefragt.director;
     }
 
+    /* Genre: bei Anime hat Jikan Vorrang (siehe fromJikan), sonst TMDB.
+       Die jeweils andere Quelle springt ein, wenn die erste nichts
+       liefert — ein grobes Genre ist besser als gar keines. */
+    const tmdbGenres = (tmdbInfo && tmdbInfo.genres) || [];
+    const eigeneGenres = (eigenTreffer && eigenTreffer.genres) || [];
+    genres =
+      category === "anime"
+        ? eigeneGenres.length
+          ? eigeneGenres
+          : tmdbGenres
+        : tmdbGenres.length
+          ? tmdbGenres
+          : eigeneGenres;
+
+    // Filmreihe und Studio liefert nur TMDB und nur bei Filmen.
+    collection = (tmdbInfo && tmdbInfo.collection) || null;
+    studio = (tmdbInfo && tmdbInfo.studio) || null;
+
     // Die IMDb-Kennung ist der einzige eindeutige Weg zur Note. TMDB
     // und TVMaze liefern sie beide — die erste, die da ist, zaehlt.
     // Sonst bleibt die Titelsuche.
@@ -920,6 +996,11 @@ export default async function handler(req, res) {
     year,
     director,
     imdbRating,
+    // Zusatzdaten fuer Filter und Empfehlungen. Ohne Treffer bleibt die
+    // Liste leer und die beiden Felder null.
+    genres,
+    collection,
+    studio,
     // Sagt dem Frontend, ob eine fehlende Note am fehlenden Schluessel
     // liegt — dann ist es kein erfolgloser Versuch.
     imdbVerfuegbar: willAngaben && hasOmdb,

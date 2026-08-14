@@ -1,7 +1,7 @@
 import {
   sql, ensureReady, rowToItem, rowToSeason, validateItem,
   criteriaKeysFor, CATEGORIES, supportsSeasons, normalizeWeight,
-  normalizeWatchCount, WATCH_COUNT_DEFAULT,
+  normalizeWatchCount, WATCH_COUNT_DEFAULT, genresZuText,
 } from "./_db.js";
 
 /** Die Staffelzeilen eines Eintrags, so wie sie gerade gespeichert sind. */
@@ -138,16 +138,40 @@ function criteriaColumns(category, values, watchlist) {
 
 /**
  * Angaben zum Werk in Spaltenform. Bei Spielen gibt es sie nicht —
- * dort bleiben alle drei leer, egal was geschickt wurde.
+ * dort bleiben alle leer, egal was geschickt wurde.
+ *
+ * Die drei Zusatzdaten (Genre, Filmreihe, Studio) verhalten sich beim
+ * Aktualisieren anders als Jahr, Regie und IMDb-Note: Fehlt das Feld
+ * ganz, bleibt der gespeicherte Wert stehen (null steht hier fuer
+ * "nicht mitgeschickt", siehe COALESCE im UPDATE). Der Grund ist, dass
+ * es fuer sie keine Eingabe gibt, die man absichtlich leeren koennte —
+ * ohne diese Regel wuerde jeder Speichervorgang eines aelteren Clients
+ * die nachgeladenen Genres stillschweigend wieder entfernen. Wer sie
+ * wirklich loeschen will, schickt eine leere Liste bzw. eine leere
+ * Zeichenkette.
  */
 function angabenColumns(category, body) {
-  if (category === "game") return { releaseYear: null, director: null, imdbRating: null };
+  if (category === "game") {
+    return {
+      releaseYear: null, director: null, imdbRating: null,
+      genres: "", collection: "", studio: "",
+    };
+  }
   const regie = typeof body.director === "string" ? body.director.trim() : "";
   return {
     releaseYear: typeof body.releaseYear === "number" ? Math.round(body.releaseYear) : null,
     director: regie || null,
     imdbRating: typeof body.imdbRating === "number" ? body.imdbRating : null,
+    genres: body.genre === undefined ? null : genresZuText(body.genre),
+    collection: textFeld(body.collection),
+    studio: textFeld(body.studio),
   };
+}
+
+/** Fehlendes Feld -> null ("unveraendert lassen"), sonst getrimmter Text. */
+function textFeld(wert) {
+  if (wert === undefined) return null;
+  return typeof wert === "string" ? wert.trim() : "";
 }
 
 export default async function handler(req, res) {
@@ -199,7 +223,8 @@ async function create(req, res) {
       INSERT INTO media_items
         (id, category, title, poster, poster_source, backdrop, story, charaktere, unterhaltung,
          emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
-         personal, release_year, director, imdb_rating, watchlist, watch_count,
+         personal, release_year, director, imdb_rating, genres, collection, studio,
+         watchlist, watch_count,
          created_at, updated_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
@@ -208,7 +233,8 @@ async function create(req, res) {
          ${v.inszenierung}, ${v.schauspiel}, ${v.sound},
          ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert},
          ${merkliste ? null : body.personal},
-         ${a.releaseYear}, ${a.director}, ${a.imdbRating}, ${merkliste},
+         ${a.releaseYear}, ${a.director}, ${a.imdbRating},
+         ${a.genres}, ${a.collection}, ${a.studio}, ${merkliste},
          ${normalizeWatchCount(body.watchCount) ?? WATCH_COUNT_DEFAULT},
          ${body.createdAt || now}, ${now})
       RETURNING *
@@ -265,6 +291,12 @@ async function update(req, res) {
         release_year    = ${a.releaseYear},
         director        = ${a.director},
         imdb_rating     = ${a.imdbRating},
+        -- Fehlen die Zusatzdaten in der Anfrage, bleibt der gespeicherte
+        -- Wert stehen (siehe angabenColumns). Eine leere Zeichenkette ist
+        -- dagegen ein echter Wert und leert das Feld.
+        genres          = COALESCE(${a.genres}::text, genres),
+        collection      = COALESCE(${a.collection}::text, collection),
+        studio          = COALESCE(${a.studio}::text, studio),
         watchlist       = ${merkliste},
         -- Fehlt der Zaehler in der Anfrage, bleibt der gespeicherte Wert
         -- stehen. Nicht jeder Speichervorgang schickt ihn mit (das

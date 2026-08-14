@@ -245,6 +245,36 @@ Bilder.
 Wird der Titel eines Eintrags geändert, gelten die Angaben nicht mehr und
 werden beim nächsten Öffnen neu geholt.
 
+### Genre, Filmreihe und Studio
+
+Im selben Abruf kommen drei weitere Felder mit. Sie werden nirgends
+angezeigt, tragen aber die zusätzlichen Filter in den Ranglisten und das
+Geschmacksprofil der Empfehlungen:
+
+| Feld | Gilt für | Quelle |
+|------|----------|--------|
+| Genre | Film, Serie, Anime | TMDB (`genres`); bei Anime hat Jikan Vorrang, bei Serien springt TVMaze ein |
+| Filmreihe | nur Filme | TMDB `belongs_to_collection` (z. B. „Star Wars Collection") |
+| Studio | nur Filme | TMDB `production_companies`, die erstgenannte Firma |
+
+Bei Anime zählen Jikans Genres mehr als die von TMDB: TMDB kennt dort nur
+„Animation" und „Action & Adventure", Jikan unterscheidet „Shounen",
+„Isekai" oder „Slice of Life".
+
+Die **Filmreihe** trifft Reihen mit eigener TMDB-Collection genau — Star
+Wars, Fast & Furious, Der Herr der Ringe. Übergreifende Franchises haben
+dort keine eigene Collection; für sie dient das **Studio** als Näherung
+(„Marvel Studios" für das MCU). Das ist bewusst keine exakte
+Franchise-Zuordnung, sondern eine grobe Krücke: Unter „Marvel Studios"
+landet, was dieses Studio produziert hat — nicht mehr und nicht weniger.
+
+Bestehende Einträge laden die Felder automatisch nach, wie schon Poster
+und Angaben, mit einem eigenen Kontingent pro Seitenaufruf und einer
+kurzen Pause zwischen den Abrufen. Geschrieben wird nur bei Erfolg — ein
+fehlgeschlagener Abruf lässt den Eintrag unangetastet. Bei **Spielen**
+entfällt das komplett: SteamGridDB ist eine Bilddatenbank und liefert
+keine Genres.
+
 ### Von Hand eintragen und überschreiben
 
 Alle drei Angaben lassen sich in der Detailansicht über das Stift-Symbol
@@ -297,8 +327,9 @@ curl -X POST https://<deine-domain>/api/reset-posters
 Das leert nur automatisch gefundene Poster — von Hand eingetragene
 (`posterSource: "manual"`) bleiben erhalten. Beim nächsten Öffnen der App
 werden die geleerten Einträge neu gesucht. Der Knopf in der App gibt
-dabei auch die Suche nach Jahr, Regie und IMDb-Note wieder frei; das ist
-der Weg, sie nach dem Nachtragen eines Schlüssels erneut zu holen.
+dabei auch die Suche nach Jahr, Regie, IMDb-Note, Genre, Filmreihe und
+Studio wieder frei; das ist der Weg, sie nach dem Nachtragen eines
+Schlüssels erneut zu holen.
 
 ### Wenn ein Poster fehlt
 
@@ -363,8 +394,9 @@ vercel dev          # startet Frontend + API zusammen
 | POST | `/api/items` | Neuen Eintrag anlegen |
 | PUT | `/api/items?id=…` | Eintrag ändern |
 | DELETE | `/api/items?id=…` | Eintrag löschen |
-| GET | `/api/poster?title=…&category=…` | Poster-URL suchen, dazu Jahr, Regie und IMDb-Note (`&debug=1` für Diagnose) |
+| GET | `/api/poster?title=…&category=…` | Poster-URL suchen, dazu Jahr, Regie, IMDb-Note, Genre, Filmreihe und Studio (`&debug=1` für Diagnose) |
 | GET | `/api/search?title=…&category=…` | Mehrere Titel-Treffer zur Auswahl beim Anlegen |
+| POST | `/api/recommendations` | Vorschläge zum mitgeschickten Geschmacksprofil (`{ category, profil }`) |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |
@@ -400,6 +432,85 @@ verliert die Vormerkung und steht in der Rangliste.
 
 **Entfernen:** das kleine × neben dem Eintrag löscht die Vormerkung
 sofort — es gibt dort nichts zu verlieren außer dem Titel selbst.
+
+---
+
+## Empfehlungen für dich
+
+Unterhalb der Watchlist-Einträge steht in jeder Kategorie außer Spielen
+ein Abschnitt mit Vorschlägen. Er beruht nicht auf „ähnliche Titel zu X",
+sondern auf einem **Geschmacksprofil**.
+
+**Das Profil** entsteht aus den bestbewerteten Einträgen der Kategorie —
+50 Filme, je 20 Serien und Anime, nach Endnote sortiert. Für jedes Genre,
+jeden Regisseur, jedes Studio und jedes Jahrzehnt wird aufsummiert, wie
+weit die Einträge, die es tragen, über dem Durchschnitt **aller**
+bewerteten Einträge der Kategorie liegen. Was häufig **und** mit hohen
+Noten vorkommt, sammelt so das meiste Gewicht; was nur mittelmäßig
+abschneidet, fällt heraus. Am Ende wird auf den stärksten Wert normiert.
+Regie, Studio und Jahrzehnt zählen erst ab zwei bzw. drei Einträgen — ein
+einzelner Film sagt über den Geschmack nichts aus.
+
+**Die Abfrage** geht damit an die Entdecken-Endpunkte der Quellen:
+
+| Kategorie | Endpunkt | Kriterien |
+|-----------|----------|-----------|
+| Filme | TMDB `/discover/movie` | Genre-Kombination, Genres einzeln, Jahrzehnt, `with_crew` (Regie), `with_companies` (Studio) |
+| Serien | TMDB `/discover/tv` | Genre-Kombination, Genres einzeln, Jahrzehnt |
+| Anime | Jikan `/anime` | Genres, Jahrzehnt, nach Note sortiert, Mindestnote 7 |
+
+Bei Serien gibt es keine Abfrage nach Regie: TMDBs Entdecken-Endpunkt für
+Serien kennt `with_crew` nicht. Bei Anime ersetzt dieser Weg den früheren
+Ansatz, der dort regelmäßig ganz leer lief — nach dem Aussortieren des
+bereits Bewerteten blieben von den direkt ähnlichen Titeln zu wenige
+übrig.
+
+**Die Sortierung** addiert die Gewichte aller getroffenen Kategorien.
+Wer in mehreren zugleich trifft (Genre **und** Regie), bekommt zusätzlich
+einen Zuschlag — ein Treffer auf breiter Front wiegt mehr als die Summe
+seiner Teile. Unter jedem Vorschlag steht der Grund in einem Satz, im
+selben dezenten Stil wie Jahr und Regie in den Listen: „weil du
+Sci-Fi-Filme von Christopher Nolan hoch bewertest".
+
+**Angezeigt** werden höchstens 15 Vorschläge bei Filmen und 10 bei Serien
+und Anime, jeweils mit Poster, Titel, Begründung und „+ Watchlist". Was
+bereits bewertet oder vorgemerkt ist, fällt vorher heraus.
+
+**Berechnet** wird nur etwa **einmal im Monat** — jede Runde kostet ein
+gutes Dutzend externer Aufrufe. Gespeichert werden dabei rund 40
+Kandidaten, also deutlich mehr als angezeigt. Wandert ein Vorschlag auf
+die Watchlist, rückt der nächste aus diesem Vorrat sofort nach, ohne
+einen einzigen neuen Aufruf. Der Stand liegt im `localStorage` und
+überdauert das Schließen der Seite. Zwei Ausnahmen vom Monat: Kam nichts
+zurück, wird schon nach einem Tag wieder gefragt, und sobald die Genres
+erstmals nachgeladen sind, wird ein noch ohne sie entstandener Stand
+einmalig verworfen.
+
+Bei **Spielen** entfällt der Abschnitt vollständig.
+
+---
+
+## Filter in den Ranglisten
+
+Neben Notenbereich und Sortierung filtert das Filter-Sheet (⚙) in Filmen,
+Serien und Anime zusätzlich nach:
+
+- **Genre** — als Knopfreihe, aus den tatsächlich vorkommenden Genres
+- **Jahrzehnt** — abgeleitet aus dem Erscheinungsjahr
+- **Regie** — Auswahlfeld, häufigste zuerst, mit Anzahl
+- **Filmreihe / Franchise** — nur bei Filmen
+
+Die Auswahlmöglichkeiten stehen nirgends fest: Sie entstehen aus dem, was
+in der jeweiligen Kategorie vorhanden ist. Was es nicht gibt, steht auch
+nicht zur Wahl. Ein zweiter Klick auf denselben Knopf hebt die Auswahl
+wieder auf. Beim Wechsel der Kategorie werden die vier zurückgesetzt —
+ein Filmgenre in den Serien ließe die Liste sonst ohne ersichtlichen
+Grund leer aussehen; Notenbereich und Sortierung bleiben stehen.
+
+Beim Filter **Filmreihe** stehen echte TMDB-Collections und Studios
+gemeinsam zur Wahl; Studios sind mit „(Studio)" gekennzeichnet und die
+Näherung für Franchises ohne eigene Collection. Reihen mit nur einem
+Eintrag werden ausgelassen — eine Reihe aus einem Film ist keine Reihe.
 
 ---
 
