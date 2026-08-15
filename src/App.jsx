@@ -690,6 +690,19 @@ function stundenKurz(minuten) {
   return Math.round(minuten / 60) + " Std.";
 }
 
+/**
+ * Die Laufzeit eines einzelnen Werks: "45 Min.", "2 Std. 28 Min.",
+ * "10 Std.". Bei allem ab einem Tag — ganze Serien also — fallen die
+ * Minuten weg; neben 48 Stunden sind sie ohne Aussage.
+ */
+function laufzeitKurz(minuten) {
+  if (minuten < 60) return minuten + " Min.";
+  const stunden = Math.floor(minuten / 60);
+  const rest = minuten % 60;
+  if (!rest || stunden >= 24) return stunden + " Std.";
+  return stunden + " Std. " + rest + " Min.";
+}
+
 /* ------------------------------------------------------------
    Watchlist
 
@@ -1721,6 +1734,9 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
    WATCHLIST — vorgemerkt, noch ohne Note
    ============================================================ */
 function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen }) {
+  /* Die eigene Laufzeit des Eintrags. Ist sie nicht bekannt — oder
+     handelt es sich um ein Spiel —, bleibt sie einfach weg. */
+  const laufzeit = eintragLaufzeit(eintrag);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326" }}>
       <Poster url={eintrag.poster} title={eintrag.title} size={34} />
@@ -1732,6 +1748,14 @@ function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen }) {
           {typeof eintrag.releaseYear === "number" ? eintrag.releaseYear + " · " : ""}
           {hinzugefuegtVor(eintrag.createdAt)}
         </div>
+        {/* Eigene Zeile statt angehaengt: die Zeile darueber ist auf
+            dem Telefon schon voll und schneidet ab, was nicht mehr
+            hineinpasst — die Laufzeit waere unsichtbar geblieben. */}
+        {laufzeit && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2 }}>
+            {laufzeitKurz(laufzeit)}
+          </div>
+        )}
       </div>
       <button
         onClick={onBewerten}
@@ -3083,35 +3107,87 @@ function TopTen({ ranked }) {
    Eintraege, deren Laufzeit (noch) nicht bekannt ist, zaehlen nicht
    mit. Ihre Anzahl steht als Hinweis darunter, damit die Summe nicht
    vollstaendiger wirkt, als sie ist.
+
+   Ueber die Auswahl darueber laesst sich der Abschnitt auf eine
+   einzelne Kategorie einschraenken — dieselben Bereiche und dieselbe
+   Bedienung wie in der Detailauswertung weiter unten, nur eben mit der
+   Watchlist statt den Noten. Spiele stehen mit in der Auswahl und
+   erklaeren beim Anklicken, warum es fuer sie keine Zahl gibt.
    ------------------------------------------------------------ */
 const ZEITAUFWAND_KATEGORIEN = CATEGORIES.filter((c) => unterstuetztLaufzeit(c.key));
 
-function ZeitaufwandWatchlist({ watchlist }) {
-  const daten = useMemo(() => {
-    let minuten = 0;
-    let gezaehlt = 0;
-    let offen = 0;
-    const jeKategorie = [];
+/* Knopf der Bereichsauswahl. Baugleich zu den Knoepfen der
+   Detailauswertung — dort steht das Markup weiterhin an Ort und
+   Stelle, damit dieser Abschnitt nichts Bestehendes anfasst. */
+function ZeitaufwandBereich({ label, aktiv, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={aktiv}
+      style={{
+        padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+        background: aktiv ? "#C9A227" : "transparent",
+        color: aktiv ? "#17171A" : "#9A968C",
+        border: "1px solid " + (aktiv ? "#C9A227" : "#33333a"),
+        fontWeight: aktiv ? 700 : 400,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
 
-    for (const cat of ZEITAUFWAND_KATEGORIEN) {
-      let summe = 0;
+function ZeitaufwandWatchlist({ watchlist }) {
+  const [scope, setScope] = useState("all");
+
+  const daten = useMemo(() => {
+    const jeKategorie = ZEITAUFWAND_KATEGORIEN.map((cat) => {
+      let minuten = 0;
+      let gezaehlt = 0;
+      let offen = 0;
       for (const eintrag of watchlist[cat.key] || []) {
         const dauer = eintragLaufzeit(eintrag);
         if (dauer === null) {
           offen++;
           continue;
         }
-        summe += dauer;
+        minuten += dauer;
         gezaehlt++;
       }
-      minuten += summe;
-      jeKategorie.push({ key: cat.key, label: cat.label, minuten: summe });
-    }
+      return { key: cat.key, label: cat.label, minuten, gezaehlt, offen };
+    });
 
-    return { minuten, gezaehlt, offen, jeKategorie, inTagen: tageText(minuten) };
+    const gesamt = jeKategorie.reduce(
+      (s, k) => ({
+        minuten: s.minuten + k.minuten,
+        gezaehlt: s.gezaehlt + k.gezaehlt,
+        offen: s.offen + k.offen,
+      }),
+      { minuten: 0, gezaehlt: 0, offen: 0 }
+    );
+
+    return { jeKategorie, gesamt };
   }, [watchlist]);
 
-  const leer = daten.gezaehlt === 0 && daten.offen === 0;
+  /* Spiele haben keine Laufzeit und deshalb auch keine Zahlen — die
+     Auswahl fuehrt sie trotzdem, damit die Frage "und meine Spiele?"
+     eine Antwort bekommt statt einfach zu fehlen. */
+  const gewaehlt =
+    scope === "all" ? daten.gesamt : daten.jeKategorie.find((k) => k.key === scope) || null;
+
+  const inTagen = gewaehlt ? tageText(gewaehlt.minuten) : null;
+
+  /* Eine Zeile fuer beides: die Tagesangabe (ab einem Tag sagt die
+     Stundenzahl allein wenig) und — nur bei "Alle" — die
+     Aufschluesselung nach Kategorie. Bei einer einzelnen Kategorie
+     waere sie bloss die Wiederholung der Zahl darueber. */
+  const nebenzeile = [];
+  if (gewaehlt && gewaehlt.gezaehlt > 0) {
+    if (inTagen) nebenzeile.push("das sind " + inTagen);
+    if (scope === "all") {
+      for (const k of daten.jeKategorie) nebenzeile.push(k.label + ": " + stundenKurz(k.minuten));
+    }
+  }
 
   return (
     <div style={{ marginBottom: 28 }}>
@@ -3119,31 +3195,45 @@ function ZeitaufwandWatchlist({ watchlist }) {
         Zeitaufwand Watchlist
       </h2>
 
-      {leer ? (
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {STATS_SCOPES.map((s) => (
+          <ZeitaufwandBereich
+            key={s.key}
+            label={s.label}
+            aktiv={scope === s.key}
+            onClick={() => setScope(s.key)}
+          />
+        ))}
+      </div>
+
+      {!gewaehlt ? (
         <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
-          Keine Filme, Serien oder Anime vorgemerkt.
+          Keine Laufzeit-Daten für Spiele.
+        </div>
+      ) : gewaehlt.gezaehlt === 0 && gewaehlt.offen === 0 ? (
+        <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
+          {scope === "all"
+            ? "Keine Filme, Serien oder Anime vorgemerkt."
+            : "Keine " + gewaehlt.label + " vorgemerkt."}
         </div>
       ) : (
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-            <StatCard label="GESAMT" value={stundenText(daten.minuten)} />
-            <StatCard label="MIT LAUFZEIT" value={daten.gezaehlt} />
+            <StatCard label="GESAMT" value={stundenText(gewaehlt.minuten)} />
+            <StatCard label="MIT LAUFZEIT" value={gewaehlt.gezaehlt} />
           </div>
 
-          {daten.gezaehlt > 0 && (
+          {nebenzeile.length > 0 && (
             <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
-              {/* Ab einem Tag sagt die Stundenzahl allein wenig — die
-                  Tagesangabe steht deshalb daneben. */}
-              {daten.inTagen ? "das sind " + daten.inTagen + " · " : ""}
-              {daten.jeKategorie.map((k) => k.label + ": " + stundenKurz(k.minuten)).join(" · ")}
+              {nebenzeile.join(" · ")}
             </div>
           )}
 
-          {daten.offen > 0 && (
+          {gewaehlt.offen > 0 && (
             <div style={{ fontSize: 12, color: "#55524c", marginTop: 6, lineHeight: 1.5 }}>
-              {daten.offen}{" "}
-              {daten.offen === 1 ? "Eintrag ohne bekannte Laufzeit" : "Einträge ohne bekannte Laufzeit"}, noch
-              nicht mitgerechnet
+              {gewaehlt.offen}{" "}
+              {gewaehlt.offen === 1 ? "Eintrag ohne bekannte Laufzeit" : "Einträge ohne bekannte Laufzeit"},
+              noch nicht mitgerechnet
             </div>
           )}
         </>
