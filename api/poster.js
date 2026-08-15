@@ -25,6 +25,8 @@
  *
  * Quellen: Filme -> TMDB, dann iTunes. Serien -> TVMaze, dann TMDB,
  * dann iTunes. Anime -> Jikan, dann TMDB. Spiele -> SteamGridDB.
+ * Kinderserien und Adult Animation laufen ueber dieselbe Kette wie
+ * Serien — fuer die Quellen sind es Serien.
  *
  * TMDB braucht TMDB_API_KEY; fehlt der, wird TMDB übersprungen und
  * alles läuft über die freien Quellen wie zuvor. Spiele brauchen
@@ -56,6 +58,19 @@ export const ANGABEN_VERSION = 4;
 
 const RESULT_LIMIT = 15; // 10–15 Kandidaten pro Quelle
 const MIN_SIMILARITY = 0.6; // darunter: lieber null
+
+/**
+ * Kategorien, die bei den Quellen wie eine Serie behandelt werden:
+ * TVMaze zuerst, TMDB als `tv`, iTunes als `tvShow`.
+ *
+ * Kinderserien und Adult Animation sind fuer die App eigene
+ * Kategorien mit eigenen Kriterien — fuer TVMaze und TMDB sind sie
+ * schlicht Serien. Anime steht bewusst NICHT in dieser Liste: dort
+ * fuehrt Jikan, und es gibt auch Anime-Filme.
+ */
+export function istSerienArt(category) {
+  return category === "series" || category === "kids" || category === "adultanim";
+}
 
 /**
  * Holt JSON und meldet dabei IMMER, was passiert ist:
@@ -965,8 +980,9 @@ function omdbKey() {
 }
 
 /* Welcher OMDb-Typ zu welcher Kategorie passt. Anime laeuft bewusst
-   ohne Vorgabe: es gibt Anime-Filme und Anime-Serien. */
-const OMDB_TYP = { movie: "movie", series: "series" };
+   ohne Vorgabe: es gibt Anime-Filme und Anime-Serien. Kinderserien und
+   Adult Animation sind dagegen immer Serien. */
+const OMDB_TYP = { movie: "movie", series: "series", kids: "series", adultanim: "series" };
 
 /**
  * IMDb-Note ueber OMDb.
@@ -1057,8 +1073,10 @@ export default async function handler(req, res) {
     // iTunes — außer der Schlüssel fehlt, dann bleibt es bei iTunes.
     chain = [() => fromJikan(title)];
     chain.push(hasTmdb ? () => fromTmdb(title, "tv") : () => fromItunes(title, "tv"));
-  } else if (category === "series") {
+  } else if (istSerienArt(category)) {
     // TVMaze zuerst, dann TMDB als zusätzlicher Fallback, iTunes zuletzt.
+    // Kinderserien und Adult Animation laufen hier mit: es sind Serien,
+    // nur mit eigener Kennzeichnung in der App.
     chain = [() => fromTvmaze(title)];
     if (hasTmdb) chain.push(() => fromTmdb(title, "tv"));
     chain.push(() => fromItunes(title, "tv"));

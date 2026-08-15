@@ -13,6 +13,29 @@ async function currentSeasonRows(itemId) {
 }
 
 /**
+ * Die sieben Wertspalten einer Staffel in fester Reihenfolge.
+ *
+ * Was die Kategorie nicht kennt, wird bewusst NULL — eine Kinderserie
+ * hat kein "Schauspiel", und eine 0 waere dort eine erfundene
+ * Bewertung. Bei Serien, Anime und Adult Animation gelten alle sieben,
+ * dort aendert sich dadurch nichts.
+ */
+function seasonWerte(category, values) {
+  const erlaubt = new Set(criteriaKeysFor(category));
+  const v = values || {};
+  const pick = (key) => (erlaubt.has(key) ? v[key] : null);
+  return {
+    story: pick("story"),
+    charaktere: pick("charaktere"),
+    unterhaltung: pick("unterhaltung"),
+    emotion: pick("emotion"),
+    inszenierung: pick("inszenierung"),
+    schauspiel: pick("schauspiel"),
+    sound: pick("sound"),
+  };
+}
+
+/**
  * Baut die Schreibbefehle fuer die Staffeln eines Eintrags — ausgefuehrt
  * werden sie vom Aufrufer gemeinsam mit dem Eintrag selbst in einer
  * Transaktion.
@@ -37,7 +60,7 @@ function seasonQueries(itemId, category, seasons, vorhandene) {
 
   liste.forEach((s, i) => {
     const nummer = i + 1;
-    const v = s.values || {};
+    const v = seasonWerte(category, s.values);
     const gewicht = normalizeWeight(s.weight);
 
     // Zuerst ueber die mitgeschickte ID zuordnen. Kommt keine mit
@@ -88,18 +111,24 @@ function seasonQueries(itemId, category, seasons, vorhandene) {
 }
 
 /** Die gespeicherten Staffeln eines Eintrags fuer die Antwort. */
-async function seasonsOf(itemId) {
+async function seasonsOf(itemId, category) {
   const rows = await sql`SELECT * FROM seasons WHERE item_id = ${itemId} ORDER BY season_number`;
-  return rows.map(rowToSeason);
+  return rows.map((r) => rowToSeason(r, category));
 }
 
-/** Laedt die Staffeln zu mehreren Eintraegen, gruppiert nach item_id. */
-async function loadSeasons() {
+/**
+ * Laedt die Staffeln zu mehreren Eintraegen, gruppiert nach item_id.
+ *
+ * Welche Werte eine Staffel traegt, haengt an der Kategorie ihres
+ * Eintrags — die steht in `media_items` und wird deshalb als Zuordnung
+ * item_id -> category hereingereicht.
+ */
+async function loadSeasons(kategorieJeEintrag) {
   const rows = await sql`SELECT * FROM seasons ORDER BY item_id, season_number`;
   const nach = new Map();
   for (const r of rows) {
     if (!nach.has(r.item_id)) nach.set(r.item_id, []);
-    nach.get(r.item_id).push(rowToSeason(r));
+    nach.get(r.item_id).push(rowToSeason(r, kategorieJeEintrag.get(r.item_id)));
   }
   return nach;
 }
@@ -223,10 +252,10 @@ export default async function handler(req, res) {
   }
 }
 
-/** GET /api/items -> { movie: [...], series: [...], anime: [...] } */
+/** GET /api/items -> { movie: [...], series: [...], anime: [...], ... } */
 async function list(req, res) {
   const rows = await sql`SELECT * FROM media_items`;
-  const staffeln = await loadSeasons();
+  const staffeln = await loadSeasons(new Map(rows.map((r) => [r.id, r.category])));
   const grouped = Object.fromEntries(CATEGORIES.map((c) => [c, []]));
   for (const r of rows) {
     const item = rowToItem(r);
@@ -282,7 +311,7 @@ async function create(req, res) {
   ]);
 
   const angelegt = rowToItem(ergebnis[0][0]);
-  angelegt.seasons = await seasonsOf(id);
+  angelegt.seasons = await seasonsOf(id, body.category);
   return res.status(201).json(angelegt);
 }
 
@@ -362,7 +391,7 @@ async function update(req, res) {
   if (!rows.length) return res.status(404).json({ error: "Eintrag nicht gefunden." });
 
   const gespeichert = rowToItem(rows[0]);
-  gespeichert.seasons = await seasonsOf(id);
+  gespeichert.seasons = await seasonsOf(id, body.category);
   return res.status(200).json(gespeichert);
 }
 

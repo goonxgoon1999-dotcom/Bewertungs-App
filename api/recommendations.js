@@ -1,5 +1,5 @@
 /**
- * GET  /api/recommendations?category=movie|series|anime&profil=<JSON>
+ * GET  /api/recommendations?category=movie|series|anime|kids|adultanim&profil=<JSON>
  * POST /api/recommendations   Body: { category, profil }
  * -> { results: [{ title, year, poster, begruendung, punkte }], gefragt, hinweis }
  *
@@ -21,6 +21,10 @@
  *   Serien -> TMDB  /discover/tv     (Genre, Jahrzehnt)
  *   Anime  -> Jikan /anime           (Genre, Jahrzehnt, nach Note sortiert)
  *
+ * Kinderserien und Adult Animation laufen ueber denselben Weg wie
+ * Serien: fuer TMDBs Entdecken-Endpunkt sind es Serien, das
+ * Geschmacksprofil kommt aber jeweils aus der eigenen Kategorie.
+ *
  * Der Weg ueber "Entdecken" ist der eigentliche Unterschied zum
  * frueheren Ansatz: Er liefert einen viel groesseren Kandidatenpool.
  * "Aehnliche Titel zu X" lief besonders bei Anime regelmaessig leer,
@@ -36,7 +40,7 @@
  */
 
 import {
-  getJson, tmdbKey, similarity, normalizeTitle, TMDB_IMAGE_BASE, jahrAus,
+  getJson, tmdbKey, similarity, normalizeTitle, TMDB_IMAGE_BASE, jahrAus, istSerienArt,
 } from "./poster.js";
 
 const TMDB_BASIS = "https://api.themoviedb.org/3";
@@ -88,7 +92,13 @@ const warte = (ms) => new Promise((r) => setTimeout(r, ms));
 const schluessel = (name) => normalizeTitle(name);
 
 /* Wie das Werk in der Begruendung heisst. */
-const NOMEN = { movie: "Filme", series: "Serien", anime: "Anime" };
+const NOMEN = {
+  movie: "Filme",
+  series: "Serien",
+  anime: "Anime",
+  kids: "Kinderserien",
+  adultanim: "Adult Animation",
+};
 
 /* ---------------------------------------------------------------- *
  * Profil einlesen
@@ -623,7 +633,7 @@ export default async function handler(req, res) {
         hinweis: "SteamGridDB ist eine Bilddatenbank und kennt keine Genres.",
       });
     }
-    if (!["movie", "series", "anime"].includes(category)) {
+    if (!["movie", "series", "anime", "kids", "adultanim"].includes(category)) {
       return res.status(400).json({ error: "Ungültige Kategorie." });
     }
 
@@ -659,7 +669,7 @@ export default async function handler(req, res) {
 
     const { kandidaten, gefragt } = istAnime
       ? await jikanSammeln(profil)
-      : await tmdbSammeln(category === "series" ? "tv" : "movie", profil);
+      : await tmdbSammeln(istSerienArt(category) ? "tv" : "movie", profil);
 
     const bewertet = bewerten(kandidaten, profil, category);
     bewertet.sort((a, b) => b.punkte - a.punkte);

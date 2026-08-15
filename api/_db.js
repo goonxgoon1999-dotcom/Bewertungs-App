@@ -38,12 +38,38 @@ const GAME_KEYS = [
   "wiederspielwert",
 ];
 
-export const CATEGORIES = ["movie", "series", "anime", "game"];
+/* Kinderserien haben eigene Kriterien: Nostalgie, Charaktere, Humor,
+   Story, Optik und Intro/Musik. Sechs statt sieben — und keines davon
+   braucht eine neue Spalte. Wie bei Anime wechselt nur die
+   Beschriftung (die Zuordnung steht in src/App.jsx):
+
+     emotion      -> "Nostalgie / Wiedersehenswert"
+     unterhaltung -> "Unterhaltung & Humor"
+     inszenierung -> "Animation & Optik"
+     sound        -> "Intro & Musik"
+
+   `schauspiel` bleibt bei Kinderserien leer — dort gibt es niemanden
+   zu bewerten. */
+const KIDS_KEYS = [
+  "story",
+  "charaktere",
+  "unterhaltung",
+  "emotion",
+  "inszenierung",
+  "sound",
+];
+
+/* Kinderserien und Adult Animation kamen nach den vier urspruenglichen
+   Kategorien dazu. Adult Animation ist technisch eine Serie mit den
+   Kriterien und Beschriftungen von Anime. */
+export const CATEGORIES = ["movie", "series", "anime", "kids", "adultanim", "game"];
 
 export const CRITERIA_KEYS_BY_CATEGORY = {
   movie: AV_KEYS,
   series: AV_KEYS,
   anime: AV_KEYS,
+  kids: KIDS_KEYS,
+  adultanim: AV_KEYS,
   game: GAME_KEYS,
 };
 
@@ -92,6 +118,7 @@ async function init() {
   await ensureHeaderImages();
   await ensureZusatzdaten();
   await ensureLaufzeit();
+  await ensureNeueKategorien();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -249,8 +276,64 @@ export function normalizeWatchCount(wert) {
   return Math.min(WATCH_COUNT_MAX, Math.max(WATCH_COUNT_MIN, ganz));
 }
 
-/* Kategorien, die optional in Staffeln unterteilt werden koennen. */
-export const SEASON_CATEGORIES = ["series", "anime"];
+/* ----------------------------------------------------------------
+   Kinderserien und Adult Animation
+
+   Zwei zusaetzliche Kategorien. Sie brauchen keine einzige neue
+   Spalte — beide sind technisch Serien und teilen sich die
+   vorhandenen Kriterien-Spalten (siehe KIDS_KEYS oben). Zu tun ist
+   deshalb nur zweierlei:
+
+   1. Der CHECK auf `category` kennt sie noch nicht. Wie schon bei den
+      Spielen werden alle CHECKs auf die Spalte gesucht und durch einen
+      ersetzt, der alle sechs Kategorien erlaubt. Der Block laeuft
+      genau einmal: danach steht 'kids' in der Bedingung. Der Name
+      bleibt bewusst derselbe wie beim Spiele-Schritt — sonst wuerden
+      sich die beiden Migrationen bei jedem Start gegenseitig
+      ueberschreiben.
+
+   2. Bei Kinderserien gibt es kein Schauspiel. In `media_items` darf
+      die Spalte laengst leer bleiben, in `seasons` noch nicht — dort
+      ist sie aus der Zeit vor den Spielen als NOT NULL angelegt.
+
+   Beides ist rein strukturell: es wird KEINE bestehende Zeile
+   angefasst, alle Bewertungen bleiben Bit fuer Bit erhalten.
+   ---------------------------------------------------------------- */
+async function ensureNeueKategorien() {
+  await sql`
+    DO $$
+    DECLARE con_name text;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class r ON r.oid = c.conrelid
+        WHERE r.relname = 'media_items'
+          AND c.conname = 'media_items_category_allowed'
+          AND pg_get_constraintdef(c.oid) ILIKE '%kids%'
+      ) THEN
+        FOR con_name IN
+          SELECT c.conname FROM pg_constraint c
+          JOIN pg_class r ON r.oid = c.conrelid
+          WHERE r.relname = 'media_items'
+            AND c.contype = 'c'
+            AND pg_get_constraintdef(c.oid) ILIKE '%category%'
+        LOOP
+          EXECUTE 'ALTER TABLE media_items DROP CONSTRAINT ' || quote_ident(con_name);
+        END LOOP;
+
+        ALTER TABLE media_items
+          ADD CONSTRAINT media_items_category_allowed
+          CHECK (category IN ('movie','series','anime','kids','adultanim','game'));
+      END IF;
+    END $$
+  `;
+
+  await sql`ALTER TABLE seasons ALTER COLUMN schauspiel DROP NOT NULL`;
+}
+
+/* Kategorien, die optional in Staffeln unterteilt werden koennen.
+   Kinderserien und Adult Animation gehoeren dazu — es sind Serien. */
+export const SEASON_CATEGORIES = ["series", "anime", "kids", "adultanim"];
 
 export function supportsSeasons(category) {
   return SEASON_CATEGORIES.includes(category);
@@ -488,10 +571,19 @@ export function normalizeWeight(wert) {
   return Math.round(begrenzt * 20) / 20;
 }
 
-/** Staffelzeile -> Format, das das Frontend erwartet. */
-export function rowToSeason(r) {
+/**
+ * Staffelzeile -> Format, das das Frontend erwartet.
+ *
+ * Welche Werte eine Staffel traegt, haengt an der Kategorie des
+ * Eintrags: Kinderserien haben kein Schauspiel. Ohne Angabe gelten die
+ * sieben Felder von Film, Serie und Anime — so verhalten sich alle
+ * Aufrufer wie zuvor, die die Kategorie nicht kennen.
+ */
+export function rowToSeason(r, category) {
   const values = {};
-  for (const key of AV_KEYS) values[key] = Number(r[key]);
+  for (const key of criteriaKeysFor(category)) {
+    values[key] = r[key] === null || r[key] === undefined ? null : Number(r[key]);
+  }
   return {
     // Die ID vergibt Postgres (Identity). Als Zeichenkette, damit grosse
     // Zahlen unterwegs nicht an Genauigkeit verlieren.
@@ -506,8 +598,9 @@ export function rowToSeason(r) {
 }
 
 /**
- * Prueft eine Staffelliste. Staffeln gibt es nur bei Serien und Anime;
- * jede traegt dieselben sieben Kriterien wie der Eintrag selbst.
+ * Prueft eine Staffelliste. Staffeln gibt es bei allen Serienarten;
+ * jede traegt dieselben Kriterien wie der Eintrag selbst — bei
+ * Kinderserien sind das sechs statt sieben.
  */
 export function validateSeasons(seasons, category) {
   const errors = [];
@@ -516,7 +609,7 @@ export function validateSeasons(seasons, category) {
   if (!seasons.length) return errors;
 
   if (!supportsSeasons(category)) {
-    errors.push("Staffeln gibt es nur bei Serien und Anime.");
+    errors.push("Staffeln gibt es nur bei Serien, Anime, Kinderserien und Adult Animation.");
     return errors;
   }
 
@@ -527,7 +620,7 @@ export function validateSeasons(seasons, category) {
       return;
     }
     const values = season.values || {};
-    for (const key of AV_KEYS) {
+    for (const key of criteriaKeysFor(category)) {
       const v = values[key];
       if (typeof v !== "number" || Number.isNaN(v) || v < 0 || v > 10) {
         errors.push("Staffel " + nr + ": ungültiger Wert für " + key + " (0–10 erforderlich).");

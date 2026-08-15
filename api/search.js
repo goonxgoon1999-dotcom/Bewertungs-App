@@ -8,13 +8,14 @@
  * Wer sucht, sieht die Liste und entscheidet selbst.
  *
  * Quellen wie ueberall in der App: Filme -> TMDB (ohne Schluessel
- * iTunes), Serien -> TVMaze, Anime -> Jikan, Spiele -> SteamGridDB.
+ * iTunes), Serien (auch Kinderserien und Adult Animation) -> TVMaze,
+ * Anime -> Jikan, Spiele -> SteamGridDB.
  * Findet die erste Quelle nichts, springt bei Serien und Anime TMDB
  * ein. Die Suche laeuft serverseitig, damit die Schluessel auf dem
  * Server bleiben und es keine CORS-Probleme gibt.
  */
 
-import { getJson, tmdbKey, steamGridKey, TMDB_IMAGE_BASE, jahrAus } from "./poster.js";
+import { getJson, tmdbKey, steamGridKey, TMDB_IMAGE_BASE, jahrAus, istSerienArt } from "./poster.js";
 
 /* So viele Treffer zeigt die Auswahl. Mehr wird auf einem Telefon
    ohnehin nicht ueberblickt. */
@@ -137,7 +138,9 @@ export default async function handler(req, res) {
 
     if (category === "game") {
       results = steamGridKey() ? await steamGridSuche(title) : [];
-    } else if (category === "series") {
+    } else if (istSerienArt(category)) {
+      // Serien, Kinderserien und Adult Animation teilen sich dieselbe
+      // Quelle — fuer TVMaze und TMDB sind alle drei schlicht Serien.
       results = await tvmazeSuche(title);
       if (!results.length && hasTmdb) results = await tmdbSuche(title, "tv");
     } else if (category === "anime") {
