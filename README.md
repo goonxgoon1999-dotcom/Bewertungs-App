@@ -82,10 +82,12 @@ Der Import ergänzt nur und überschreibt nichts.
 Jede Kategorie hat eigene Kriterien. Die Endnote entsteht überall gleich:
 75 % Kriterien-Note + 25 % Bauchgefühl.
 
-Die Tab-Leiste oben führt alle Kategorien plus die Statistik. Sie passen
-nicht mehr nebeneinander auf ein Telefon — die Leiste ist deshalb
-seitlich wischbar, die Tabs behalten ihre Größe. Der aktive Tab wird
-immer ins Bild geholt.
+Die Tab-Leiste oben führt alle Kategorien. Sie passen nicht mehr
+nebeneinander auf ein Telefon — die Leiste ist deshalb seitlich
+wischbar, die Tabs behalten ihre Größe. Der aktive Tab wird immer ins
+Bild geholt. Die Statistik ist keine Kategorie und steht deshalb nicht
+in der Leiste: Sie öffnet sich über das Balkendiagramm-Symbol oben
+rechts im Kopfbereich.
 
 **Filme, Serien, Anime und Adult Animation** (identische Felder und Gewichte):
 
@@ -167,7 +169,8 @@ Oben zeigt die App einen festen 16:9-Ausschnitt über die volle Breite.
 Die Bilder dafür werden **von Hand** gepflegt — dafür gibt es keine
 automatische Suche.
 
-Im Daten-Panel (⤓) unter „Bilder im Kopfbereich" lassen sich beliebig
+Im Daten-Panel (Zahnrad oben rechts im Kopfbereich) unter
+„Bilder im Kopfbereich" lassen sich beliebig
 viele Adressen eintragen und einzeln wieder entfernen. Sie liegen in
 einer eigenen Tabelle und bleiben dauerhaft erhalten.
 
@@ -540,8 +543,9 @@ Bei **Spielen** entfällt der Abschnitt vollständig.
 
 ## Filter in den Ranglisten
 
-Neben Notenbereich und Sortierung filtert das Filter-Sheet (⚙) in allen
-Kategorien außer Spielen zusätzlich nach:
+Das Filter-Sheet öffnet sich über das Filter-Symbol neben der Suche und
+enthält ganz oben die Sortierung. Neben Notenbereich und Sortierung
+filtert es in allen Kategorien außer Spielen zusätzlich nach:
 
 - **Genre** — als Knopfreihe, aus den tatsächlich vorkommenden Genres
 - **Jahrzehnt** — abgeleitet aus dem Erscheinungsjahr

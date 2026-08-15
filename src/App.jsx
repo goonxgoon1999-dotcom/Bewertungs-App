@@ -1237,6 +1237,52 @@ function HeaderBildFormular({ onAdd, busy }) {
 /* Linkstil im Quellenhinweis des Daten-Panels. */
 const quellenLink = { color: "var(--accent, #C9A227)", textDecoration: "none" };
 
+/* Symbole als reine Strichzeichnung. Sie erben mit currentColor die
+   Farbe ihres Knopfes und bringen weder eigene Flaeche noch eigene
+   Farben mit. */
+const symbolBasis = {
+  width: 18,
+  height: 18,
+  display: "block",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+};
+
+/* Balkendiagramm: drei senkrechte Striche unterschiedlicher Hoehe. */
+function IconStatistik() {
+  return (
+    <svg viewBox="0 0 24 24" style={symbolBasis} aria-hidden="true" focusable="false">
+      <line x1="6" y1="20" x2="6" y2="13" />
+      <line x1="12" y1="20" x2="12" y2="4" />
+      <line x1="18" y1="20" x2="18" y2="9" />
+    </svg>
+  );
+}
+
+/* Zahnrad fuer das Daten-Panel. */
+function IconZahnrad() {
+  return (
+    <svg viewBox="0 0 24 24" style={symbolBasis} aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M19.1 14.6a1.5 1.5 0 0 0 .3 1.7l.1.1a1.8 1.8 0 1 1-2.6 2.6l-.1-.1a1.5 1.5 0 0 0-1.7-.3 1.5 1.5 0 0 0-.9 1.4v.2a1.8 1.8 0 1 1-3.6 0v-.1a1.5 1.5 0 0 0-1-1.4 1.5 1.5 0 0 0-1.7.3l-.1.1a1.8 1.8 0 1 1-2.6-2.6l.1-.1a1.5 1.5 0 0 0 .3-1.7 1.5 1.5 0 0 0-1.4-.9h-.2a1.8 1.8 0 1 1 0-3.6h.1a1.5 1.5 0 0 0 1.4-1 1.5 1.5 0 0 0-.3-1.7l-.1-.1a1.8 1.8 0 1 1 2.6-2.6l.1.1a1.5 1.5 0 0 0 1.7.3h.1a1.5 1.5 0 0 0 .9-1.4v-.2a1.8 1.8 0 1 1 3.6 0v.1a1.5 1.5 0 0 0 .9 1.4 1.5 1.5 0 0 0 1.7-.3l.1-.1a1.8 1.8 0 1 1 2.6 2.6l-.1.1a1.5 1.5 0 0 0-.3 1.7v.1a1.5 1.5 0 0 0 1.4.9h.2a1.8 1.8 0 1 1 0 3.6h-.1a1.5 1.5 0 0 0-1.4.9z" />
+    </svg>
+  );
+}
+
+/* Filter: drei waagerechte Balken, von oben nach unten kuerzer. */
+function IconFilter() {
+  return (
+    <svg viewBox="0 0 24 24" style={symbolBasis} aria-hidden="true" focusable="false">
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="6" y1="12" x2="18" y2="12" />
+      <line x1="9" y1="18" x2="15" y2="18" />
+    </svg>
+  );
+}
+
 /* Symbolknopf der Suchzeile: feste Breite, damit die Zeile nie
    umbricht oder ueber den Bildschirmrand laeuft. */
 function IconButton({ title, label, active, onClick }) {
@@ -1249,6 +1295,9 @@ function IconButton({ title, label, active, onClick }) {
         flex: "0 0 auto",
         width: 46,
         padding: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
         background: active ? "var(--accent, #C9A227)" : "#1D1D21",
         border: "1px solid " + (active ? "var(--accent, #C9A227)" : "#2A2A2E"),
         borderRadius: 8,
@@ -1260,6 +1309,38 @@ function IconButton({ title, label, active, onClick }) {
       }}
     >
       {label}
+    </button>
+  );
+}
+
+/* Symbolknopf, der auf dem Bild des Kopfbereichs sitzt: halbdurch-
+   sichtig dunkel, damit er sich vom Bild abhebt, ohne den Titel
+   daneben zu ueberstrahlen. */
+function KopfIconButton({ title, active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      aria-pressed={active}
+      style={{
+        pointerEvents: "auto",
+        flex: "0 0 auto",
+        width: 38,
+        height: 38,
+        padding: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(23,23,26,0.62)",
+        border: "1px solid " + (active ? "var(--accent, #C9A227)" : "rgba(237,234,227,0.16)"),
+        borderRadius: 8,
+        color: active ? "var(--accent, #C9A227)" : "#9A968C",
+        cursor: "pointer",
+        lineHeight: 1,
+      }}
+    >
+      {children}
     </button>
   );
 }
@@ -1314,33 +1395,6 @@ function ConfirmDialog({ title, text, confirmLabel, danger, onConfirm, onCancel 
 /* ============================================================
    FILTER-BOTTOM-SHEET (Sortierung, Bewertungsbereich, Zusatzfilter)
    ============================================================ */
-/* Sortierung hat einen eigenen Knopf und damit ein eigenes Sheet.
-   Die Sortierlogik selbst ist unveraendert — gesetzt wird weiterhin
-   nur filterState.sort. */
-function SortSheet({ initial, onApply, onClose }) {
-  return (
-    <BottomSheet title="Sortieren" onClose={onClose}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
-        {SORT_OPTIONS.map((o) => (
-          <button
-            key={o.key}
-            onClick={() => { onApply({ ...initial, sort: o.key }); onClose(); }}
-            style={{
-              textAlign: "left", padding: "13px 14px", borderRadius: 8, fontSize: 14, cursor: "pointer",
-              background: initial.sort === o.key ? "var(--accent, #C9A227)" : "#141416",
-              color: initial.sort === o.key ? "#17171A" : "#EDEAE3",
-              border: "1px solid " + (initial.sort === o.key ? "var(--accent, #C9A227)" : "#2A2A2E"),
-              fontWeight: initial.sort === o.key ? 700 : 400,
-            }}
-          >
-            {o.label}
-          </button>
-        ))}
-      </div>
-    </BottomSheet>
-  );
-}
-
 /* Beschriftung eines Abschnitts im Filter-Sheet — derselbe Stil wie
    die bereits vorhandene Ueberschrift "BEWERTUNGSBEREICH". */
 const filterAbschnitt = {
@@ -1397,6 +1451,7 @@ function FilterAuswahl({ label, wert, optionen, alleLabel, onChange }) {
 }
 
 function FilterSheet({ initial, totalCount, allInCategory, category, onApply, onClose }) {
+  const [sort, setSort] = useState(initial.sort);
   const [min, setMin] = useState(initial.min);
   const [max, setMax] = useState(initial.max);
   const [genre, setGenre] = useState(initial.genre);
@@ -1429,15 +1484,16 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
   const umschalten = (setzen, aktuell) => (wert) => setzen(aktuell === wert ? "" : wert);
 
   function handleApply() {
-    // sort bleibt, wie es ist — dafuer gibt es das Sortier-Sheet.
     onApply({
-      sort: initial.sort,
+      sort,
       min: Math.min(min, max),
       max: Math.max(min, max),
       genre, jahrzehnt, regie, reihe,
     });
   }
 
+  /* Zurueckgesetzt werden die Filter — die gewaehlte Sortierung ist
+     keine Einschraenkung der Liste und bleibt deshalb stehen. */
   function handleReset() {
     setMin(DEFAULT_FILTER.min);
     setMax(DEFAULT_FILTER.max);
@@ -1445,11 +1501,33 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
     setJahrzehnt("");
     setRegie("");
     setReihe("");
-    onApply({ ...DEFAULT_FILTER, sort: initial.sort });
+    onApply({ ...DEFAULT_FILTER, sort });
   }
 
   return (
     <BottomSheet title="Filter" onClose={onClose}>
+      {/* Die Sortierung steht vor den Filtern — sie bestimmt die
+          Reihenfolge der Liste, die die Filter danach kuerzen. */}
+      <div style={filterAbschnitt}>SORTIEREN</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
+        {SORT_OPTIONS.map((o) => (
+          <button
+            key={o.key}
+            onClick={() => setSort(o.key)}
+            aria-pressed={sort === o.key}
+            style={{
+              textAlign: "left", padding: "13px 14px", borderRadius: 8, fontSize: 14, cursor: "pointer",
+              background: sort === o.key ? "var(--accent, #C9A227)" : "#141416",
+              color: sort === o.key ? "#17171A" : "#EDEAE3",
+              border: "1px solid " + (sort === o.key ? "var(--accent, #C9A227)" : "#2A2A2E"),
+              fontWeight: sort === o.key ? 700 : 400,
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+
       <div style={filterAbschnitt}>BEWERTUNGSBEREICH</div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
         {SCORE_PRESETS.map((p) => (
@@ -3472,7 +3550,6 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [showExport, setShowExport] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
-  const [showSort, setShowSort] = useState(false);
   const [exportFormat, setExportFormat] = useState("json");
   const [importPreview, setImportPreview] = useState(null);
   const [importError, setImportError] = useState("");
@@ -4574,6 +4651,32 @@ export default function App() {
       >
         <HeaderSlideshow urls={headerImages.map((b) => b.url)} />
 
+        {/* Statistik und Daten-Panel sitzen als Symbole oben rechts auf
+            dem Bild — beide gehoeren zu keiner einzelnen Kategorie. */}
+        <div
+          style={{
+            position: "absolute", top: 0, left: 0, right: 0, zIndex: 2,
+            padding: "12px 20px 0", pointerEvents: "none",
+          }}
+        >
+          <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <KopfIconButton
+              title="Statistik"
+              active={activeTab === "stats"}
+              onClick={() => setActiveTab(activeTab === "stats" ? category : "stats")}
+            >
+              <IconStatistik />
+            </KopfIconButton>
+            <KopfIconButton
+              title="Daten (Export & Import)"
+              active={showExport}
+              onClick={() => setShowExport((v) => !v)}
+            >
+              <IconZahnrad />
+            </KopfIconButton>
+          </div>
+        </div>
+
         <div style={{ position: "relative", zIndex: 1, padding: "32px 20px 0" }}>
           <div style={{ maxWidth: 720, margin: "0 auto" }}>
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 34, margin: 0, lineHeight: 1.08 }}>
@@ -4618,26 +4721,148 @@ export default function App() {
                 {c.label}
               </button>
             ))}
-            {/* Die Statistik ist keine Kategorie und behaelt deshalb das
-                neutrale Gold — sie spannt alle Kategorien. */}
-            <button
-              onClick={() => setActiveTab("stats")}
-              data-tab="stats"
-              className="tab-btn"
-              style={{
-                background: activeTab === "stats" ? "#C9A227" : "transparent",
-                color: activeTab === "stats" ? "#17171A" : "#9A968C",
-                border: activeTab === "stats" ? "none" : "1px solid #2A2A2E",
-                borderBottom: activeTab === "stats" ? "none" : "1px solid #2A2A2E",
-                borderRadius: "8px 8px 0 0", fontWeight: 700, cursor: "pointer",
-              }}
-            >
-              <span className="tab-emoji">📊 </span>Statistik
-            </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Daten-Panel — ueber das Zahnrad im Kopfbereich erreichbar und
+          deshalb nicht mehr an eine Kategorie gebunden. */}
+      {showExport && (
+        <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 0" }}>
+          <div style={{ background: "#141416", border: "1px solid var(--accent, #C9A227)", borderRadius: 8, padding: 16, marginBottom: 18 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
+              EXPORT & BACKUP
+            </div>
+
+            <div style={{ borderBottom: "1px solid #2A2A2E", paddingBottom: 14, marginBottom: 14 }}>
+              <button
+                onClick={resetPosters}
+                disabled={busy}
+                style={{
+                  width: "100%", padding: "12px", borderRadius: 8, fontSize: 14,
+                  background: "transparent", color: "var(--accent, #C9A227)",
+                  border: "1px solid var(--accent, #C9A227)", cursor: "pointer", fontWeight: 600,
+                  opacity: busy ? 0.5 : 1,
+                }}
+              >
+                Poster neu suchen
+              </button>
+              <div style={{ fontSize: 11, color: "#77746c", marginTop: 8, lineHeight: 1.5 }}>
+                Verwirft automatisch gefundene Poster und sucht sie neu.
+                Selbst eingetragene Poster und alle Bewertungen bleiben erhalten.
+              </div>
+
+              {/* Bilder des Kopfbereichs — von Hand gepflegt. */}
+              <div style={{ borderTop: "1px solid #2A2A2E", marginTop: 14, paddingTop: 14 }}>
+                <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 8 }}>
+                  BILDER IM KOPFBEREICH
+                </div>
+                <div style={{ fontSize: 11, color: "#77746c", marginBottom: 10, lineHeight: 1.5 }}>
+                  Adressen von Bildern, die oben im Kopf angezeigt werden.
+                  Mehrere wechseln alle 8 Sekunden. Für diesen Bereich
+                  gibt es keine automatische Suche.
+                </div>
+
+                <HeaderBildFormular onAdd={headerBildHinzufuegen} busy={busy} />
+                {headerFehler && (
+                  <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{headerFehler}</div>
+                )}
+
+                {headerImages.length === 0 ? (
+                  <div style={{ fontSize: 11.5, color: "#55524c", marginTop: 10 }}>
+                    Noch keine Bilder hinterlegt — der Kopfbereich bleibt dunkel.
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 10 }}>
+                    {headerImages.map((bild) => (
+                      <div
+                        key={bild.id}
+                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #232326" }}
+                      >
+                        <div
+                          style={{
+                            width: 48, height: 27, flexShrink: 0, borderRadius: 4,
+                            background: "#141416 center/cover no-repeat",
+                            backgroundImage: `url("${bild.url}")`,
+                          }}
+                        />
+                        <span
+                          title={bild.url}
+                          style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "#9A968C", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                        >
+                          {bild.url}
+                        </span>
+                        <button
+                          onClick={() => headerBildLoeschen(bild.id)}
+                          title="Bild entfernen"
+                          aria-label="Bild entfernen"
+                          style={{ background: "transparent", border: "none", color: "#d9736a", fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Woher die Daten stammen. */}
+              <div style={{ fontSize: 11, color: "#77746c", marginTop: 14, lineHeight: 1.7 }}>
+                Poster- und Bilddaten von{" "}
+                <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer" style={quellenLink}>TMDB</a>
+                {", "}
+                <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer" style={quellenLink}>TVMaze</a>
+                {", "}
+                <a href="https://jikan.moe" target="_blank" rel="noreferrer" style={quellenLink}>Jikan</a>
+                {" und "}
+                <a href="https://www.steamgriddb.com" target="_blank" rel="noreferrer" style={quellenLink}>SteamGridDB</a>
+                {". Notendaten zum Vergleich von "}
+                <a href="https://www.omdbapi.com" target="_blank" rel="noreferrer" style={quellenLink}>OMDb</a>
+                {" ("}
+                <a href="https://www.imdb.com" target="_blank" rel="noreferrer" style={quellenLink}>IMDb</a>
+                {")."}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <button
+                onClick={() => setExportFormat("json")}
+                style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "json" ? "var(--accent, #C9A227)" : "transparent", color: exportFormat === "json" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "json" ? "var(--accent, #C9A227)" : "#33333a"), fontWeight: 700 }}
+              >
+                JSON (Backup)
+              </button>
+              <button
+                onClick={() => setExportFormat("csv")}
+                style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "csv" ? "var(--accent, #C9A227)" : "transparent", color: exportFormat === "csv" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "csv" ? "var(--accent, #C9A227)" : "#33333a"), fontWeight: 700 }}
+              >
+                CSV (Tabelle)
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              <button onClick={() => doExport(false)} style={{ flex: 1, padding: "12px", background: "#2A2A2E", color: "#EDEAE3", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}>
+                Nur {catInfo.label} exportieren
+              </button>
+              <button onClick={() => doExport(true)} style={{ flex: 1, padding: "12px", background: "#2A2A2E", color: "#EDEAE3", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}>
+                Alles exportieren
+              </button>
+            </div>
+            <div style={{ borderTop: "1px solid #2A2A2E", paddingTop: 14 }}>
+              <div style={{ fontSize: 12, color: "#9A968C", marginBottom: 8 }}>
+                JSON-Backup wieder einspielen (bestehende Einträge bleiben erhalten, es werden nur neue hinzugefügt):
+              </div>
+              <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleImportFile} style={{ display: "none" }} />
+              <button
+                onClick={() => fileInputRef.current && fileInputRef.current.click()}
+                style={{ width: "100%", padding: "12px", background: "transparent", color: "var(--accent, #C9A227)", border: "1px dashed var(--accent, #C9A227)", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}
+              >
+                JSON-Datei importieren
+              </button>
+              {importError && <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{importError}</div>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {activeTab === "stats" ? (
         <StatsPage ranked={rankedByCategory} watchlist={watchlistByCategory} />
@@ -4800,9 +5025,10 @@ export default function App() {
 
           {mode === "list" && unterReiter === "bewertet" && (
             <>
-              {/* Suchzeile: Feld schrumpft mit (minWidth 0), die drei
-                  Knoepfe bleiben als Symbole in fester Breite — so passt
-                  die Zeile auch auf schmale Displays ohne Querscrollen. */}
+              {/* Suchzeile: Feld schrumpft mit (minWidth 0), der Knopf
+                  bleibt als Symbol in fester Breite — so passt die Zeile
+                  auch auf schmale Displays ohne Querscrollen. Sortieren
+                  steckt im selben Menue wie die Filter. */}
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <input
                   type="text"
@@ -4811,148 +5037,17 @@ export default function App() {
                   onChange={(e) => setSearch(e.target.value)}
                   style={{ flex: "1 1 auto", minWidth: 0, background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 8, padding: "13px 12px", color: "#EDEAE3", fontSize: 15, boxSizing: "border-box" }}
                 />
-                <IconButton title="Filter" label="⚙" active={isFilterActive} onClick={() => setShowFilter(true)} />
-                <IconButton title="Sortieren" label="↓↑" active={isSortActive} onClick={() => setShowSort(true)} />
-                <IconButton title="Daten (Export & Import)" label="⤓" active={showExport} onClick={() => setShowExport((v) => !v)} />
+                <IconButton
+                  title="Filter & Sortieren"
+                  label={<IconFilter />}
+                  active={isFilterActive || isSortActive}
+                  onClick={() => setShowFilter(true)}
+                />
               </div>
 
               <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
                 {filtered.length} von {currentList.length} {catInfo.label}
               </div>
-
-              {showExport && (
-                <div style={{ background: "#141416", border: "1px solid var(--accent, #C9A227)", borderRadius: 8, padding: 16, marginBottom: 18 }}>
-                  <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
-                    EXPORT & BACKUP
-                  </div>
-
-                  <div style={{ borderBottom: "1px solid #2A2A2E", paddingBottom: 14, marginBottom: 14 }}>
-                    <button
-                      onClick={resetPosters}
-                      disabled={busy}
-                      style={{
-                        width: "100%", padding: "12px", borderRadius: 8, fontSize: 14,
-                        background: "transparent", color: "var(--accent, #C9A227)",
-                        border: "1px solid var(--accent, #C9A227)", cursor: "pointer", fontWeight: 600,
-                        opacity: busy ? 0.5 : 1,
-                      }}
-                    >
-                      Poster neu suchen
-                    </button>
-                    <div style={{ fontSize: 11, color: "#77746c", marginTop: 8, lineHeight: 1.5 }}>
-                      Verwirft automatisch gefundene Poster und sucht sie neu.
-                      Selbst eingetragene Poster und alle Bewertungen bleiben erhalten.
-                    </div>
-
-                    {/* Bilder des Kopfbereichs — von Hand gepflegt. */}
-                    <div style={{ borderTop: "1px solid #2A2A2E", marginTop: 14, paddingTop: 14 }}>
-                      <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 8 }}>
-                        BILDER IM KOPFBEREICH
-                      </div>
-                      <div style={{ fontSize: 11, color: "#77746c", marginBottom: 10, lineHeight: 1.5 }}>
-                        Adressen von Bildern, die oben im Kopf angezeigt werden.
-                        Mehrere wechseln alle 8 Sekunden. Für diesen Bereich
-                        gibt es keine automatische Suche.
-                      </div>
-
-                      <HeaderBildFormular onAdd={headerBildHinzufuegen} busy={busy} />
-                      {headerFehler && (
-                        <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{headerFehler}</div>
-                      )}
-
-                      {headerImages.length === 0 ? (
-                        <div style={{ fontSize: 11.5, color: "#55524c", marginTop: 10 }}>
-                          Noch keine Bilder hinterlegt — der Kopfbereich bleibt dunkel.
-                        </div>
-                      ) : (
-                        <div style={{ marginTop: 10 }}>
-                          {headerImages.map((bild) => (
-                            <div
-                              key={bild.id}
-                              style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #232326" }}
-                            >
-                              <div
-                                style={{
-                                  width: 48, height: 27, flexShrink: 0, borderRadius: 4,
-                                  background: "#141416 center/cover no-repeat",
-                                  backgroundImage: `url("${bild.url}")`,
-                                }}
-                              />
-                              <span
-                                title={bild.url}
-                                style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "#9A968C", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
-                              >
-                                {bild.url}
-                              </span>
-                              <button
-                                onClick={() => headerBildLoeschen(bild.id)}
-                                title="Bild entfernen"
-                                aria-label="Bild entfernen"
-                                style={{ background: "transparent", border: "none", color: "#d9736a", fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Woher die Daten stammen. */}
-                    <div style={{ fontSize: 11, color: "#77746c", marginTop: 14, lineHeight: 1.7 }}>
-                      Poster- und Bilddaten von{" "}
-                      <a href="https://www.themoviedb.org" target="_blank" rel="noreferrer" style={quellenLink}>TMDB</a>
-                      {", "}
-                      <a href="https://www.tvmaze.com" target="_blank" rel="noreferrer" style={quellenLink}>TVMaze</a>
-                      {", "}
-                      <a href="https://jikan.moe" target="_blank" rel="noreferrer" style={quellenLink}>Jikan</a>
-                      {" und "}
-                      <a href="https://www.steamgriddb.com" target="_blank" rel="noreferrer" style={quellenLink}>SteamGridDB</a>
-                      {". Notendaten zum Vergleich von "}
-                      <a href="https://www.omdbapi.com" target="_blank" rel="noreferrer" style={quellenLink}>OMDb</a>
-                      {" ("}
-                      <a href="https://www.imdb.com" target="_blank" rel="noreferrer" style={quellenLink}>IMDb</a>
-                      {")."}
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-                    <button
-                      onClick={() => setExportFormat("json")}
-                      style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "json" ? "var(--accent, #C9A227)" : "transparent", color: exportFormat === "json" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "json" ? "var(--accent, #C9A227)" : "#33333a"), fontWeight: 700 }}
-                    >
-                      JSON (Backup)
-                    </button>
-                    <button
-                      onClick={() => setExportFormat("csv")}
-                      style={{ flex: 1, padding: "10px", borderRadius: 6, fontSize: 13, cursor: "pointer", background: exportFormat === "csv" ? "var(--accent, #C9A227)" : "transparent", color: exportFormat === "csv" ? "#17171A" : "#9A968C", border: "1px solid " + (exportFormat === "csv" ? "var(--accent, #C9A227)" : "#33333a"), fontWeight: 700 }}
-                    >
-                      CSV (Tabelle)
-                    </button>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                    <button onClick={() => doExport(false)} style={{ flex: 1, padding: "12px", background: "#2A2A2E", color: "#EDEAE3", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}>
-                      Nur {catInfo.label} exportieren
-                    </button>
-                    <button onClick={() => doExport(true)} style={{ flex: 1, padding: "12px", background: "#2A2A2E", color: "#EDEAE3", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}>
-                      Alles exportieren
-                    </button>
-                  </div>
-                  <div style={{ borderTop: "1px solid #2A2A2E", paddingTop: 14 }}>
-                    <div style={{ fontSize: 12, color: "#9A968C", marginBottom: 8 }}>
-                      JSON-Backup wieder einspielen (bestehende Einträge bleiben erhalten, es werden nur neue hinzugefügt):
-                    </div>
-                    <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleImportFile} style={{ display: "none" }} />
-                    <button
-                      onClick={() => fileInputRef.current && fileInputRef.current.click()}
-                      style={{ width: "100%", padding: "12px", background: "transparent", color: "var(--accent, #C9A227)", border: "1px dashed var(--accent, #C9A227)", borderRadius: 6, cursor: "pointer", fontSize: 13.5 }}
-                    >
-                      JSON-Datei importieren
-                    </button>
-                    {importError && <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{importError}</div>}
-                  </div>
-                </div>
-              )}
 
               {/* Liste */}
               <div>
@@ -4997,14 +5092,6 @@ export default function App() {
           onDelete={() => setConfirmDelete(selectedEntry.id)}
           onSaveAngaben={(werte) => angabenSpeichern(selectedEntry.id, werte)}
           onSaveWatchCount={(n) => zaehlerSpeichern(selectedEntry.id, n)}
-        />
-      )}
-
-      {showSort && (
-        <SortSheet
-          initial={filterState}
-          onApply={(f) => setFilterState(f)}
-          onClose={() => setShowSort(false)}
         />
       )}
 
