@@ -467,7 +467,8 @@ function isLikelyUrl(s) {
 const MAX_NACHLADEN_PRO_BESUCH = 20;
 
 /* Eigenes Kontingent fuer das einmalige Nachtragen der Zusatzdaten
-   (Genre, Filmreihe, Studio) an Eintraegen, denen sonst nichts fehlt.
+   (Genre, Filmreihe, Studio) und der Laufzeit an Eintraegen, denen
+   sonst nichts fehlt.
    Es laeuft neben dem obigen her, damit der Nachtrag nicht das
    Kontingent fuer fehlende Poster aufbraucht — und ist groesser, weil
    es sich um einen einmaligen Durchlauf ueber die ganze Sammlung
@@ -580,6 +581,42 @@ function vergissAlleOhneGenre() {
   } catch (e) {}
 }
 
+/* Und ein drittes Mal fuer die Laufzeit. Wieder eigenes Gedaechtnis:
+   ein Eintrag ohne Genre kann sehr wohl eine Laufzeit haben — und
+   umgekehrt. */
+const OHNE_LAUFZEIT_SCHLUESSEL = "bewertungsapp.ohneLaufzeit";
+
+function ladeOhneLaufzeit() {
+  try {
+    const roh = window.localStorage.getItem(OHNE_LAUFZEIT_SCHLUESSEL);
+    return new Set(roh ? JSON.parse(roh) : []);
+  } catch (e) {
+    return new Set();
+  }
+}
+
+function merkeOhneLaufzeit(id) {
+  try {
+    const menge = ladeOhneLaufzeit();
+    menge.add(id);
+    window.localStorage.setItem(OHNE_LAUFZEIT_SCHLUESSEL, JSON.stringify([...menge]));
+  } catch (e) {}
+}
+
+function vergissOhneLaufzeit(id) {
+  try {
+    const menge = ladeOhneLaufzeit();
+    if (!menge.delete(id)) return;
+    window.localStorage.setItem(OHNE_LAUFZEIT_SCHLUESSEL, JSON.stringify([...menge]));
+  } catch (e) {}
+}
+
+function vergissAlleOhneLaufzeit() {
+  try {
+    window.localStorage.removeItem(OHNE_LAUFZEIT_SCHLUESSEL);
+  } catch (e) {}
+}
+
 /* Angaben zum Werk gibt es nur bei Film, Serie und Anime. */
 function unterstuetztAngaben(category) {
   return category !== "game";
@@ -598,6 +635,59 @@ function angabenUnvollstaendig(entry) {
  */
 function genreFehlt(entry) {
   return !Array.isArray(entry.genre) || entry.genre.length === 0;
+}
+
+/* ------------------------------------------------------------
+   Laufzeit
+
+   Bei Filmen die Laufzeit selbst, bei Serien und Anime die Summe ueber
+   alle Folgen. Spiele bleiben aussen vor: eine Spieldauer laesst sich
+   nicht abrufen.
+   ------------------------------------------------------------ */
+function unterstuetztLaufzeit(category) {
+  return category !== "game";
+}
+
+/** Laufzeit eines Eintrags in Minuten — oder null, wenn unbekannt. */
+function eintragLaufzeit(entry) {
+  const n = entry ? entry.runtimeMinutes : null;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
+function laufzeitFehlt(entry) {
+  return eintragLaufzeit(entry) === null;
+}
+
+/**
+ * Minuten als Stundenangabe: "42 Stunden". Gerechnet wird auf volle
+ * Stunden gerundet — Minuten sind bei Summen dieser Groesse ohne
+ * Aussage.
+ */
+function stundenText(minuten) {
+  const stunden = Math.round(minuten / 60);
+  if (stunden <= 0) return minuten > 0 ? "unter 1 Stunde" : "0 Stunden";
+  return stunden + (stunden === 1 ? " Stunde" : " Stunden");
+}
+
+/**
+ * Dieselbe Dauer noch einmal in Tagen: "1 Tag 18 Stunden". Unter einem
+ * Tag gibt es nichts zu uebersetzen — dann bleibt es bei der
+ * Stundenangabe und diese Funktion liefert null.
+ */
+function tageText(minuten) {
+  const stunden = Math.round(minuten / 60);
+  if (stunden < 24) return null;
+
+  const tage = Math.floor(stunden / 24);
+  const rest = stunden % 24;
+  const text = tage + (tage === 1 ? " Tag" : " Tage");
+  if (!rest) return text;
+  return text + " " + rest + (rest === 1 ? " Stunde" : " Stunden");
+}
+
+/** Kurzform fuer die Aufschluesselung: "8 Std." */
+function stundenKurz(minuten) {
+  return Math.round(minuten / 60) + " Std.";
 }
 
 /* ------------------------------------------------------------
@@ -650,7 +740,7 @@ function hinzugefuegtVor(zeit) {
 /* Fassung der Angaben, muss zu ANGABEN_VERSION in api/poster.js passen.
    Sie haengt an jeder Anfrage, damit eine aeltere Antwort aus dem CDN
    nicht faelschlich als "nichts gefunden" durchgeht. */
-const ANGABEN_VERSION = 3;
+const ANGABEN_VERSION = 4;
 
 /** Wechselabstand der Kopfbilder. */
 const BACKDROP_INTERVAL = 8000;
@@ -2983,7 +3073,86 @@ function TopTen({ ranked }) {
   );
 }
 
-function StatsPage({ ranked }) {
+/* ------------------------------------------------------------
+   Zeitaufwand Watchlist
+
+   Wie lange braucht es, alles Vorgemerkte zu schauen? Gezaehlt werden
+   Filme, Serien und Anime — Spiele haben keine abrufbare Laufzeit und
+   bleiben aussen vor.
+
+   Eintraege, deren Laufzeit (noch) nicht bekannt ist, zaehlen nicht
+   mit. Ihre Anzahl steht als Hinweis darunter, damit die Summe nicht
+   vollstaendiger wirkt, als sie ist.
+   ------------------------------------------------------------ */
+const ZEITAUFWAND_KATEGORIEN = CATEGORIES.filter((c) => unterstuetztLaufzeit(c.key));
+
+function ZeitaufwandWatchlist({ watchlist }) {
+  const daten = useMemo(() => {
+    let minuten = 0;
+    let gezaehlt = 0;
+    let offen = 0;
+    const jeKategorie = [];
+
+    for (const cat of ZEITAUFWAND_KATEGORIEN) {
+      let summe = 0;
+      for (const eintrag of watchlist[cat.key] || []) {
+        const dauer = eintragLaufzeit(eintrag);
+        if (dauer === null) {
+          offen++;
+          continue;
+        }
+        summe += dauer;
+        gezaehlt++;
+      }
+      minuten += summe;
+      jeKategorie.push({ key: cat.key, label: cat.label, minuten: summe });
+    }
+
+    return { minuten, gezaehlt, offen, jeKategorie, inTagen: tageText(minuten) };
+  }, [watchlist]);
+
+  const leer = daten.gezaehlt === 0 && daten.offen === 0;
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>
+        Zeitaufwand Watchlist
+      </h2>
+
+      {leer ? (
+        <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
+          Keine Filme, Serien oder Anime vorgemerkt.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+            <StatCard label="GESAMT" value={stundenText(daten.minuten)} />
+            <StatCard label="MIT LAUFZEIT" value={daten.gezaehlt} />
+          </div>
+
+          {daten.gezaehlt > 0 && (
+            <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
+              {/* Ab einem Tag sagt die Stundenzahl allein wenig — die
+                  Tagesangabe steht deshalb daneben. */}
+              {daten.inTagen ? "das sind " + daten.inTagen + " · " : ""}
+              {daten.jeKategorie.map((k) => k.label + ": " + stundenKurz(k.minuten)).join(" · ")}
+            </div>
+          )}
+
+          {daten.offen > 0 && (
+            <div style={{ fontSize: 12, color: "#55524c", marginTop: 6, lineHeight: 1.5 }}>
+              {daten.offen}{" "}
+              {daten.offen === 1 ? "Eintrag ohne bekannte Laufzeit" : "Einträge ohne bekannte Laufzeit"}, noch
+              nicht mitgerechnet
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatsPage({ ranked, watchlist }) {
   const [scope, setScope] = useState("all");
 
   const overall = useMemo(() => {
@@ -3051,6 +3220,11 @@ function StatsPage({ ranked }) {
         <StatCard label="HÖCHSTE" value={overall.max.toFixed(2)} color={scoreToColor(overall.max)} />
         <StatCard label="NIEDRIGSTE" value={overall.min.toFixed(2)} color={scoreToColor(overall.min)} />
       </div>
+
+      {/* Was noch vor einem liegt — die Watchlist in Stunden. Sie hat
+          mit den Noten darueber nichts zu tun und steht deshalb als
+          eigener Abschnitt dazwischen. */}
+      <ZeitaufwandWatchlist watchlist={watchlist} />
 
       <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>Detailauswertung</h2>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
@@ -3219,6 +3393,16 @@ export default function App() {
       genre: Array.isArray(e.genre) ? e.genre.filter((g) => typeof g === "string" && g.trim()) : [],
       collection: typeof e.collection === "string" && e.collection.trim() ? e.collection.trim() : null,
       studio: typeof e.studio === "string" && e.studio.trim() ? e.studio.trim() : null,
+      /* Laufzeit. Wie die Angaben wird sie automatisch nachgeladen;
+         unbekannt heisst null bzw. leere Liste. Die vier Felder gehen
+         beim Speichern immer gemeinsam mit — der Server schreibt sie
+         nur dann. */
+      runtimeMinutes: typeof e.runtimeMinutes === "number" ? e.runtimeMinutes : null,
+      episodeRuntime: typeof e.episodeRuntime === "number" ? e.episodeRuntime : null,
+      episodeCount: typeof e.episodeCount === "number" ? e.episodeCount : null,
+      episodesPerSeason: Array.isArray(e.episodesPerSeason)
+        ? e.episodesPerSeason.filter((n) => typeof n === "number" && n > 0)
+        : [],
       values: e.values,
       personal: e.personal,
       createdAt: e.createdAt || 0,
@@ -3258,6 +3442,7 @@ export default function App() {
   const posterAttempted = useRef(new Set());
   const angabenAttempted = useRef(new Set());
   const genreAttempted = useRef(new Set());
+  const laufzeitAttempted = useRef(new Set());
   const nachladeZaehler = useRef(0);
   const zusatzZaehler = useRef(0);
 
@@ -3287,6 +3472,7 @@ export default function App() {
         const erfolglos = ladeErfolglose();
         const ohneAngaben = ladeOhneAngaben();
         const ohneGenre = ladeOhneGenre();
+        const ohneLaufzeit = ladeOhneLaufzeit();
 
         const offenJeKategorie = CATEGORY_KEYS.map((catKey) => {
           const liste = [];
@@ -3306,8 +3492,15 @@ export default function App() {
               genreFehlt(entry) &&
               !genreAttempted.current.has(entry.id) &&
               !ohneGenre.has(entry.id);
-            if (!posterFehlt && !angabenFehlen && !zusatzFehlt) continue;
-            liste.push({ catKey, entry, posterFehlt, angabenFehlen, zusatzFehlt });
+            // Die Laufzeit haengt am selben Abruf und wird genauso
+            // nachgetragen: einmal je Eintrag, batch-weise mit Pausen.
+            const laufzeitOffen =
+              unterstuetztLaufzeit(catKey) &&
+              laufzeitFehlt(entry) &&
+              !laufzeitAttempted.current.has(entry.id) &&
+              !ohneLaufzeit.has(entry.id);
+            if (!posterFehlt && !angabenFehlen && !zusatzFehlt && !laufzeitOffen) continue;
+            liste.push({ catKey, entry, posterFehlt, angabenFehlen, zusatzFehlt, laufzeitOffen });
           }
           return liste;
         });
@@ -3363,6 +3556,7 @@ export default function App() {
           if (job.posterFehlt) posterAttempted.current.add(job.entry.id);
           if (job.angabenFehlen) angabenAttempted.current.add(job.entry.id);
           if (job.zusatzFehlt) genreAttempted.current.add(job.entry.id);
+          if (job.laufzeitOffen) laufzeitAttempted.current.add(job.entry.id);
 
           // Ein Aufruf deckt beides ab — Poster und Angaben stammen aus
           // demselben Treffer und koennen so nicht auseinanderfallen.
@@ -3432,6 +3626,36 @@ export default function App() {
             // neuen Felder gar nicht und darf ihn nicht blockieren.
             const echterVersuch = gefunden.angabenVersion === ANGABEN_VERSION;
             if (echterVersuch && !aenderung.genre) merkeOhneGenre(job.entry.id);
+          }
+
+          if (job.laufzeitOffen) {
+            /* Auch hier gilt: geschrieben wird nur bei erfolgreichem
+               Abruf. Ohne Gesamtlaufzeit bleibt der Eintrag genau so
+               zurueck, wie er war — Episodenlaenge und -anzahl allein
+               ergeben keine Zahl, die die Statistik verwenden koennte. */
+            const minuten =
+              typeof gefunden.runtimeMinutes === "number" && gefunden.runtimeMinutes > 0
+                ? Math.round(gefunden.runtimeMinutes)
+                : null;
+            if (minuten) {
+              aenderung.runtimeMinutes = minuten;
+              if (typeof gefunden.episodeRuntime === "number" && gefunden.episodeRuntime > 0) {
+                aenderung.episodeRuntime = Math.round(gefunden.episodeRuntime);
+              }
+              if (typeof gefunden.episodeCount === "number" && gefunden.episodeCount > 0) {
+                aenderung.episodeCount = Math.round(gefunden.episodeCount);
+              }
+              if (Array.isArray(gefunden.episodesPerSeason) && gefunden.episodesPerSeason.length) {
+                aenderung.episodesPerSeason = gefunden.episodesPerSeason.filter(
+                  (n) => typeof n === "number" && n > 0
+                );
+              }
+            }
+            // Wie bei den Zusatzdaten zaehlt nur ein Versuch aus dieser
+            // Fassung; eine aeltere Antwort aus dem CDN kennt die
+            // Laufzeit gar nicht und darf den Eintrag nicht blockieren.
+            const echterVersuch = gefunden.angabenVersion === ANGABEN_VERSION;
+            if (echterVersuch && !minuten) merkeOhneLaufzeit(job.entry.id);
           }
 
           if (!Object.keys(aenderung).length) continue;
@@ -3767,14 +3991,18 @@ export default function App() {
       vergissOhneAngaben(id);
       genreAttempted.current.delete(id);
       vergissOhneGenre(id);
+      laufzeitAttempted.current.delete(id);
+      vergissOhneLaufzeit(id);
     }
-    /* Fuer die Zusatzdaten gilt dasselbe. Beim Titelwechsel gehen sie
-       ausdruecklich leer mit — ein fehlendes Feld liesse den
-       gespeicherten Wert stehen (siehe angabenColumns im Server). */
+    /* Fuer die Zusatzdaten und die Laufzeit gilt dasselbe. Beim
+       Titelwechsel gehen sie ausdruecklich leer mit — ein fehlendes
+       Feld liesse den gespeicherten Wert stehen (siehe angabenColumns
+       und laufzeitColumns im Server). */
     const angaben = titelGeaendert
       ? {
           releaseYear: null, director: null, imdbRating: null,
           genre: [], collection: "", studio: "",
+          runtimeMinutes: null, episodeRuntime: null, episodeCount: null, episodesPerSeason: [],
         }
       : {
           releaseYear: current.releaseYear,
@@ -3783,6 +4011,10 @@ export default function App() {
           genre: current.genre || [],
           collection: current.collection || "",
           studio: current.studio || "",
+          runtimeMinutes: current.runtimeMinutes,
+          episodeRuntime: current.episodeRuntime,
+          episodeCount: current.episodeCount,
+          episodesPerSeason: current.episodesPerSeason || [],
         };
 
     setBusy(true);
@@ -3910,11 +4142,13 @@ export default function App() {
       posterAttempted.current = new Set();
       angabenAttempted.current = new Set();
       genreAttempted.current = new Set();
+      laufzeitAttempted.current = new Set();
       nachladeZaehler.current = 0;
       zusatzZaehler.current = 0;
       vergissErfolglose();
       vergissAlleOhneAngaben();
       vergissAlleOhneGenre();
+      vergissAlleOhneLaufzeit();
       const fresh = await api.loadAll();
       setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (fresh[k] || []).map(normalizeEntry)])));
       setSaveError(
@@ -4255,7 +4489,7 @@ export default function App() {
       </div>
 
       {activeTab === "stats" ? (
-        <StatsPage ranked={rankedByCategory} />
+        <StatsPage ranked={rankedByCategory} watchlist={watchlistByCategory} />
       ) : (
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px" }}>
           {saveError && (

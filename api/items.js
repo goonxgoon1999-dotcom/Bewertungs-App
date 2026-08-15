@@ -2,6 +2,7 @@ import {
   sql, ensureReady, rowToItem, rowToSeason, validateItem,
   criteriaKeysFor, CATEGORIES, supportsSeasons, normalizeWeight,
   normalizeWatchCount, WATCH_COUNT_DEFAULT, genresZuText,
+  episodenZuText, positiveZahl,
 } from "./_db.js";
 
 /** Die Staffelzeilen eines Eintrags, so wie sie gerade gespeichert sind. */
@@ -174,6 +175,37 @@ function textFeld(wert) {
   return typeof wert === "string" ? wert.trim() : "";
 }
 
+/* Die vier Laufzeit-Felder. */
+const LAUFZEIT_FELDER = ["runtimeMinutes", "episodeRuntime", "episodeCount", "episodesPerSeason"];
+
+/**
+ * Laufzeit in Spaltenform.
+ *
+ * Sie verhaelt sich beim Aktualisieren wie die uebrigen Zusatzdaten:
+ * Fehlt sie in der Anfrage ganz, bleibt der gespeicherte Wert stehen —
+ * es gibt keine Eingabe dafuer, und ohne diese Regel wuerde jeder
+ * Speichervorgang eines aelteren Clients die nachgeladene Laufzeit
+ * stillschweigend entfernen. Bei Zahlen taugt NULL dafuer nicht als
+ * Kennzeichen: `null` ist hier ein echter Wert ("Laufzeit gilt nicht
+ * mehr", etwa nach einer Titelaenderung). Deshalb entscheidet das
+ * eigene Kennzeichen `mitgeschickt`, ob ueberhaupt geschrieben wird.
+ *
+ * Die vier Felder gehoeren zusammen und reisen immer gemeinsam — das
+ * Frontend schickt entweder alle oder keines.
+ */
+function laufzeitColumns(category, body) {
+  // Spiele bleiben bei der Laufzeit aussen vor: es gibt keine Quelle
+  // dafuer, also wird bei ihnen auch nie etwas geschrieben.
+  const mitgeschickt = category !== "game" && LAUFZEIT_FELDER.some((feld) => body[feld] !== undefined);
+  return {
+    mitgeschickt,
+    runtimeMinutes: positiveZahl(body.runtimeMinutes),
+    episodeRuntime: positiveZahl(body.episodeRuntime),
+    episodeCount: positiveZahl(body.episodeCount),
+    episodesPerSeason: episodenZuText(body.episodesPerSeason),
+  };
+}
+
 export default async function handler(req, res) {
   try {
     await ensureReady();
@@ -215,6 +247,7 @@ async function create(req, res) {
   const merkliste = body.watchlist === true;
   const v = criteriaColumns(body.category, body.values, merkliste);
   const a = angabenColumns(body.category, body);
+  const l = laufzeitColumns(body.category, body);
 
   // Eintrag und Staffeln gehen gemeinsam in einer Transaktion in die
   // Datenbank — entweder alles oder nichts.
@@ -224,6 +257,7 @@ async function create(req, res) {
         (id, category, title, poster, poster_source, backdrop, story, charaktere, unterhaltung,
          emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
          personal, release_year, director, imdb_rating, genres, collection, studio,
+         runtime_minutes, episode_runtime, episode_count, episodes_per_season,
          watchlist, watch_count,
          created_at, updated_at)
       VALUES
@@ -234,7 +268,12 @@ async function create(req, res) {
          ${v.gameplay}, ${v.welt}, ${v.grafik}, ${v.wiederspielwert},
          ${merkliste ? null : body.personal},
          ${a.releaseYear}, ${a.director}, ${a.imdbRating},
-         ${a.genres}, ${a.collection}, ${a.studio}, ${merkliste},
+         ${a.genres}, ${a.collection}, ${a.studio},
+         ${l.mitgeschickt ? l.runtimeMinutes : null},
+         ${l.mitgeschickt ? l.episodeRuntime : null},
+         ${l.mitgeschickt ? l.episodeCount : null},
+         ${l.mitgeschickt ? l.episodesPerSeason : null},
+         ${merkliste},
          ${normalizeWatchCount(body.watchCount) ?? WATCH_COUNT_DEFAULT},
          ${body.createdAt || now}, ${now})
       RETURNING *
@@ -268,6 +307,7 @@ async function update(req, res) {
   const merkliste = body.watchlist === true;
   const v = criteriaColumns(body.category, body.values, merkliste);
   const a = angabenColumns(body.category, body);
+  const l = laufzeitColumns(body.category, body);
   const ergebnis = await sql.transaction([
     sql`
       UPDATE media_items SET
@@ -297,6 +337,14 @@ async function update(req, res) {
         genres          = COALESCE(${a.genres}::text, genres),
         collection      = COALESCE(${a.collection}::text, collection),
         studio          = COALESCE(${a.studio}::text, studio),
+        -- Laufzeit: geschrieben wird nur, wenn sie in der Anfrage
+        -- ueberhaupt vorkam (siehe laufzeitColumns). COALESCE taugt
+        -- dafuer nicht — bei Zahlen ist NULL ein echter Wert, mit dem
+        -- die Laufzeit nach einer Titelaenderung geleert wird.
+        runtime_minutes     = CASE WHEN ${l.mitgeschickt}::boolean THEN ${l.runtimeMinutes}::integer ELSE runtime_minutes END,
+        episode_runtime     = CASE WHEN ${l.mitgeschickt}::boolean THEN ${l.episodeRuntime}::integer ELSE episode_runtime END,
+        episode_count       = CASE WHEN ${l.mitgeschickt}::boolean THEN ${l.episodeCount}::integer ELSE episode_count END,
+        episodes_per_season = CASE WHEN ${l.mitgeschickt}::boolean THEN ${l.episodesPerSeason}::text ELSE episodes_per_season END,
         watchlist       = ${merkliste},
         -- Fehlt der Zaehler in der Anfrage, bleibt der gespeicherte Wert
         -- stehen. Nicht jeder Speichervorgang schickt ihn mit (das

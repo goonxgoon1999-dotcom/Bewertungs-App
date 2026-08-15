@@ -91,6 +91,7 @@ async function init() {
   await ensureSeasons();
   await ensureHeaderImages();
   await ensureZusatzdaten();
+  await ensureLaufzeit();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -399,6 +400,77 @@ export function genresZuText(liste) {
   return sauber.join(GENRE_TRENNER);
 }
 
+/* ----------------------------------------------------------------
+   Laufzeit des Werks
+
+   Bei Filmen ist das die Laufzeit selbst (TMDB `runtime`). Bei Serien
+   und Anime entsteht sie aus Episodenlaenge und Episodenanzahl; beides
+   wird zusaetzlich einzeln festgehalten, dazu die Episodenanzahl je
+   Staffel. Bei Spielen bleibt alles leer — eine Spieldauer laesst sich
+   nicht abrufen.
+
+   Wie alle Migrationen hier rein strukturell: es werden nur NULL-bare
+   Spalten ergaenzt, keine bestehende Zeile angefasst.
+   ---------------------------------------------------------------- */
+async function ensureLaufzeit() {
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS runtime_minutes INTEGER`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS episode_runtime INTEGER`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS episode_count INTEGER`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS episodes_per_season TEXT`;
+}
+
+/* Die Episodenanzahl je Staffel steht — wie die Genres — als eine
+   Zeichenkette in der Spalte: "12|12|24" heisst drei Staffeln mit 12,
+   12 und 24 Folgen. Eine eigene Tabelle waere sauberer, brachte hier
+   aber nichts: gelesen wird die Liste immer als Ganzes. Die Tabelle
+   `seasons` scheidet dafuer aus — dort stehen nur die selbst bewerteten
+   Staffeln, und gerade vorgemerkte Werke haben davon keine. */
+const STAFFEL_TRENNER = "|";
+
+/* Defensive Grenzen gegen Unsinn aus der Datenbank. Kein Werk hat 500
+   Staffeln, und keine Staffel 10000 Folgen. */
+const MAX_STAFFELN = 500;
+const MAX_FOLGEN_JE_STAFFEL = 10000;
+
+/** "12|12|24" -> [12, 12, 24] */
+export function episodenAus(text) {
+  if (typeof text !== "string" || !text) return [];
+  return text
+    .split(STAFFEL_TRENNER)
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .map((n) => Math.min(MAX_FOLGEN_JE_STAFFEL, Math.round(n)))
+    .slice(0, MAX_STAFFELN);
+}
+
+/**
+ * [12, 12, 24] -> "12|12|24"
+ *
+ * Keine Liste heisst leere Zeichenkette, nicht NULL — die
+ * Unterscheidung "nicht mitgeschickt" trifft der Aufrufer.
+ */
+export function episodenZuText(liste) {
+  if (!Array.isArray(liste)) return "";
+  return liste
+    .map((n) => (typeof n === "number" ? n : Number(n)))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .map((n) => String(Math.min(MAX_FOLGEN_JE_STAFFEL, Math.round(n))))
+    .slice(0, MAX_STAFFELN)
+    .join(STAFFEL_TRENNER);
+}
+
+/**
+ * Minuten- und Stueckzahlen aus einer Anfrage: eine positive ganze
+ * Zahl oder null. Alles andere (0, negativ, Text) gilt als "nicht
+ * bekannt" — eine Laufzeit von 0 Minuten waere keine Angabe, sondern
+ * ein Fehler.
+ */
+export function positiveZahl(wert) {
+  if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
+  const ganz = Math.round(wert);
+  return ganz > 0 ? ganz : null;
+}
+
 /* Gewichtung einer Staffel. Eingegeben wird sie in der App als Prozent
    (0 % bis 200 % in 5-Prozent-Schritten); gespeichert und gerechnet wird
    weiterhin mit Faktoren (Prozent / 100). 100 % entspricht dem Faktor
@@ -506,6 +578,13 @@ export function rowToItem(r) {
     genre: genresAus(r.genres),
     collection: r.collection || null,
     studio: r.studio || null,
+    // Laufzeit. Nicht bekannt heisst null bzw. leere Liste — daran
+    // erkennt das Frontend, was noch nachzuladen ist, und die Summe im
+    // Statistik-Tab laesst diese Eintraege aus.
+    runtimeMinutes: positiveZahl(r.runtime_minutes === null || r.runtime_minutes === undefined ? null : Number(r.runtime_minutes)),
+    episodeRuntime: positiveZahl(r.episode_runtime === null || r.episode_runtime === undefined ? null : Number(r.episode_runtime)),
+    episodeCount: positiveZahl(r.episode_count === null || r.episode_count === undefined ? null : Number(r.episode_count)),
+    episodesPerSeason: episodenAus(r.episodes_per_season),
     // Vorgemerkt statt bewertet: dann gibt es keine Werte und keine Note.
     watchlist: r.watchlist === true,
     // Wie oft geschaut/gespielt. Aeltere Zeilen ohne Spalte gelten als
@@ -624,6 +703,42 @@ function angabenFehler(body) {
   }
   if (body.studio != null && typeof body.studio !== "string") {
     errors.push("Ungültiges Studio.");
+  }
+
+  errors.push(...laufzeitFehler(body));
+
+  return errors;
+}
+
+/**
+ * Laufzeit-Angaben. Wie die uebrigen Zusatzdaten sind sie durchweg
+ * optional: sie werden automatisch nachgeladen und duerfen jederzeit
+ * fehlen. `null` ist ausdruecklich erlaubt — so wird die Laufzeit nach
+ * einer Titelaenderung wieder geleert.
+ */
+function laufzeitFehler(body) {
+  const errors = [];
+  const zahlen = [
+    ["runtimeMinutes", "Laufzeit"],
+    ["episodeRuntime", "Episodenlänge"],
+    ["episodeCount", "Episodenanzahl"],
+  ];
+  for (const [feld, name] of zahlen) {
+    const wert = body[feld];
+    if (wert == null) continue;
+    if (typeof wert !== "number" || !Number.isFinite(wert) || wert < 0) {
+      errors.push("Ungültige " + name + ".");
+    }
+  }
+
+  if (body.episodesPerSeason != null) {
+    if (!Array.isArray(body.episodesPerSeason)) {
+      errors.push("Ungültige Episodenliste.");
+    } else if (
+      body.episodesPerSeason.some((n) => typeof n !== "number" || !Number.isFinite(n) || n < 0)
+    ) {
+      errors.push("Ungültige Episodenliste.");
+    }
   }
 
   return errors;
