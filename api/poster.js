@@ -1,7 +1,8 @@
 /**
  * GET /api/poster?title=...&category=movie|series|anime|game
  * -> { url, backdrop, year, director, imdbRating, imdbVerfuegbar,
- *      genres, collection, studio }
+ *      genres, collection, studio,
+ *      runtimeMinutes, episodeRuntime, episodeCount, episodesPerSeason }
  *    Alle Datenfelder koennen null (bzw. `genres` leer) sein. `url` ist
  *    das Hochkant-Poster, `backdrop` ein breites Szenenbild fuer den
  *    Kopfbereich.
@@ -12,6 +13,11 @@
  * von TMDB — und bei Filmen zusaetzlich die Filmreihe
  * (`belongs_to_collection`) und das Produktionsstudio. Bei Spielen
  * entfaellt das alles — dort gibt es nur Bilder.
+ *
+ * Ebenfalls im selben Durchgang: die Laufzeit. Bei Filmen ist das
+ * TMDBs `runtime`, bei Serien und Anime die Episodenlaenge mal der
+ * Episodenanzahl (Jikan bei Anime, sonst TMDB bzw. TVMaze). Spiele
+ * bleiben auch hier aussen vor.
  *
  * Die Suche läuft bewusst SERVERSEITIG:
  * - keine CORS-Probleme (der Browser spricht nur mit deiner eigenen Domain)
@@ -46,7 +52,7 @@ const CACHE = new Map(); // einfacher Cache pro laufender Funktion
  * schickt das Frontend als `v` mit; sie hochzuzaehlen entwertet beide
  * Caches auf einen Schlag.
  */
-export const ANGABEN_VERSION = 3;
+export const ANGABEN_VERSION = 4;
 
 const RESULT_LIMIT = 15; // 10–15 Kandidaten pro Quelle
 const MIN_SIMILARITY = 0.6; // darunter: lieber null
@@ -296,6 +302,38 @@ function namenAus(liste) {
   return namen;
 }
 
+/* ---------------------------------------------------------------- *
+ * Laufzeit
+ * ---------------------------------------------------------------- */
+
+/**
+ * Minuten- und Stueckzahlen aus den Quellen: eine positive ganze Zahl
+ * oder null. 0 und Unsinn gelten als "nicht bekannt" — eine Laufzeit
+ * von 0 Minuten ist keine Angabe.
+ */
+function positiveZahl(wert) {
+  const n = typeof wert === "number" ? wert : Number(wert);
+  if (!Number.isFinite(n)) return null;
+  const ganz = Math.round(n);
+  return ganz > 0 ? ganz : null;
+}
+
+/**
+ * Jikan nennt die Episodenlaenge als Text: "24 min per ep",
+ * "1 hr 58 min", "Unknown". Daraus werden Minuten. Angaben in Sekunden
+ * ("15 sec per ep", es gibt solche Kurzformate) ergeben gerundet 0 und
+ * damit keine Laufzeit — genauer waere hier scheingenau.
+ */
+export function dauerInMinuten(text) {
+  if (typeof text !== "string") return null;
+  const stunden = /(\d+)\s*hr/i.exec(text);
+  const minuten = /(\d+)\s*min/i.exec(text);
+  let summe = 0;
+  if (stunden) summe += Number(stunden[1]) * 60;
+  if (minuten) summe += Number(minuten[1]);
+  return positiveZahl(summe);
+}
+
 /** Englischer Titel aus Jikans `titles`-Liste, falls vorhanden. */
 function englischerTitel(hit) {
   if (!hit || !Array.isArray(hit.titles)) return null;
@@ -343,6 +381,11 @@ async function fromJikan(title) {
       // `demographics` bleiben bewusst draussen — sie wuerden die
       // Genreliste verwaessern.
       genres: namenAus(hit.genres),
+      // Laufzeit: Jikan nennt Episodenanzahl und Episodenlaenge direkt.
+      // Anime-Filme fuehrt es als eine Folge in voller Laenge — die
+      // Rechnung Anzahl mal Laenge trifft damit auch diesen Fall.
+      episodeCount: positiveZahl(hit.episodes),
+      episodeRuntime: dauerInMinuten(hit.duration),
       url: (img && (img.large_image_url || img.image_url)) || null,
       // Jikan liefert keine Breitbilder.
       backdrop: null,
@@ -367,6 +410,8 @@ async function fromJikan(title) {
             originalTitle: fuerAngaben.englishTitle,
             imdbId: null,
             genres: fuerAngaben.genres || [],
+            episodeCount: fuerAngaben.episodeCount,
+            episodeRuntime: fuerAngaben.episodeRuntime,
           }
         : null,
     debug: buildDebug("Jikan", response, candidates, bestScore, ueberEnthaltung),
@@ -588,6 +633,10 @@ async function fromTvmaze(title) {
       genres: Array.isArray(show && show.genres)
         ? show.genres.filter((g) => typeof g === "string" && g.trim()).map((g) => g.trim())
         : [],
+      // Die Episodenlaenge steht schon in der Suche; die Episodenzahl
+      // haengt an einer eigenen Abfrage (siehe tvmazeFolgen).
+      episodeRuntime: positiveZahl(show && (show.averageRuntime || show.runtime)),
+      episodeCount: null,
       url: (img && (img.original || img.medium)) || null,
       // TVMaze kennt kein eigenes Breitbild — das vorhandene Bild
       // dient als Rueckfall.
@@ -612,6 +661,8 @@ async function fromTvmaze(title) {
             originalTitle: fuerAngaben.originalTitle,
             imdbId: fuerAngaben.imdbId,
             genres: fuerAngaben.genres || [],
+            episodeCount: fuerAngaben.episodeCount,
+            episodeRuntime: fuerAngaben.episodeRuntime,
           }
         : null,
     debug: buildDebug("TVMaze", response, candidates, bestScore, ueberEnthaltung),
@@ -638,6 +689,61 @@ async function tvmazeErsteller(showId) {
   return {
     director: regie.length ? regie.join(", ") : null,
     debug: { source: "TVMaze (crew)", status: response.status, error: response.error },
+  };
+}
+
+/**
+ * Die Folgen einer Serie bei TVMaze. Ein Aufruf liefert sie alle mit
+ * Staffelnummer und einzelner Laufzeit — daraus entstehen die
+ * Episodenanzahl je Staffel und die genaueste Summe, die es gibt:
+ * Folge fuer Folge addiert statt geschaetzt.
+ *
+ * Specials liefert TVMaze nur auf Nachfrage; die Antwort enthaelt sie
+ * also nicht. Sollte doch eine Folge in Staffel 0 stehen, bleibt sie
+ * draussen — Specials gehoeren nicht zum Durchschauen der Serie.
+ *
+ * Der Aufruf kostet eine Anfrage und laeuft deshalb nur, wenn TMDB die
+ * Angaben nicht schon mitgebracht hat.
+ */
+async function tvmazeFolgen(showId) {
+  const response = await getJson(
+    "https://api.tvmaze.com/shows/" + encodeURIComponent(showId) + "/episodes"
+  );
+  const liste = Array.isArray(response.data) ? response.data : [];
+
+  const jeStaffel = new Map();
+  let bekannteMinuten = 0;
+  let mitLaufzeit = 0;
+
+  for (const folge of liste) {
+    const staffel = folge && Number(folge.season);
+    if (!Number.isFinite(staffel) || staffel < 1) continue;
+    jeStaffel.set(staffel, (jeStaffel.get(staffel) || 0) + 1);
+    const dauer = positiveZahl(folge.runtime);
+    if (dauer) {
+      bekannteMinuten += dauer;
+      mitLaufzeit++;
+    }
+  }
+
+  const nummern = [...jeStaffel.keys()].sort((a, b) => a - b);
+  const episodesPerSeason = nummern.map((n) => jeStaffel.get(n));
+  const episodeCount = episodesPerSeason.reduce((s, n) => s + n, 0);
+  const schnitt = mitLaufzeit ? bekannteMinuten / mitLaufzeit : 0;
+
+  return {
+    episodesPerSeason,
+    episodeCount: positiveZahl(episodeCount),
+    episodeRuntime: positiveZahl(schnitt),
+    // Fehlt bei einzelnen Folgen die Laufzeit, wird ihr Anteil mit dem
+    // Durchschnitt der uebrigen ergaenzt.
+    minutes: positiveZahl(bekannteMinuten + (episodeCount - mitLaufzeit) * schnitt),
+    debug: {
+      source: "TVMaze (episodes)",
+      status: response.status,
+      error: response.error,
+      folgen: episodeCount,
+    },
   };
 }
 
@@ -703,7 +809,9 @@ export function jahrAus(datum) {
  * ist die Angabe, die bei einer Serie dieselbe Frage beantwortet.
  *
  * Dieselbe Antwort traegt auch die Zusatzdaten: Genre (beide Arten),
- * sowie bei Filmen die Filmreihe und das Produktionsstudio.
+ * sowie bei Filmen die Filmreihe und das Produktionsstudio. Und die
+ * Laufzeit — bei Filmen `runtime`, bei Serien Episodenlaenge und
+ * Episodenanzahl je Staffel.
  */
 async function tmdbAngaben(kind, id) {
   const response = await getJson(
@@ -731,9 +839,29 @@ async function tmdbAngaben(kind, id) {
     if (namen.length) regie = namen.join(", ");
   }
 
+  /* Laufzeit. Bei Filmen steht sie direkt in den Details; bei Serien
+     liefert dieselbe Antwort die uebliche Episodenlaenge und die
+     Episodenanzahl je Staffel. Staffel 0 sind die Specials und zaehlt
+     nicht mit. Beides kostet keine zusaetzliche Anfrage. */
+  const istTv = kind === "tv";
+  const episodesPerSeason = istTv && Array.isArray(d.seasons)
+    ? d.seasons
+        .filter((s) => s && Number(s.season_number) >= 1)
+        .map((s) => positiveZahl(s.episode_count))
+        .filter(Boolean)
+    : [];
+  const ausStaffeln = episodesPerSeason.reduce((s, n) => s + n, 0);
+  const episodeRuntime = istTv && Array.isArray(d.episode_run_time)
+    ? d.episode_run_time.map(positiveZahl).find(Boolean) || null
+    : null;
+
   return {
     year: jahrAus(d.release_date || d.first_air_date),
     director: regie,
+    runtime: istTv ? null : positiveZahl(d.runtime),
+    episodeRuntime,
+    episodeCount: positiveZahl(ausStaffeln) || positiveZahl(d.number_of_episodes),
+    episodesPerSeason,
     // Ueber die IMDb-Kennung wird die Note spaeter eindeutig geholt,
     // ohne dass noch einmal ueber Titel geraten werden muss.
     imdbId: d.imdb_id || (d.external_ids && d.external_ids.imdb_id) || null,
@@ -761,6 +889,69 @@ async function tmdbAngaben(kind, id) {
 function erstesStudio(firmen) {
   const namen = namenAus(firmen);
   return namen.length ? namen[0] : null;
+}
+
+/* Ohne jede Angabe. Eine gemeinsame Form fuer alle Wege, damit die
+   Antwort die vier Felder immer traegt. */
+const KEINE_LAUFZEIT = {
+  runtimeMinutes: null,
+  episodeRuntime: null,
+  episodeCount: null,
+  episodesPerSeason: [],
+};
+
+/** Erster gesetzter Wert eines Feldes ueber mehrere Quellen hinweg. */
+function ersterWert(quellen, feld) {
+  for (const q of quellen) {
+    if (q && q[feld] != null) return q[feld];
+  }
+  return null;
+}
+
+/**
+ * Laufzeit aus dem, was die Quellen hergeben.
+ *
+ * Filme: die Laufzeit von TMDB, mehr braucht es nicht.
+ *
+ * Serien und Anime: Episodenlaenge mal Episodenanzahl. Bei Anime hat
+ * Jikan Vorrang (dort stehen `episodes` und `duration` direkt am
+ * Treffer), sonst TMDB. Fehlt danach eine der beiden Angaben und ist
+ * TVMaze die Quelle, wird dort die Folgenliste geholt: sie ergibt die
+ * Episodenanzahl je Staffel und eine Summe, die die Laufzeit jeder
+ * einzelnen Folge beruecksichtigt — genauer als jede Schaetzung.
+ *
+ * Bekannt ist die Laufzeit nur, wenn sie sich wirklich errechnen
+ * laesst. Alles andere bleibt null; der Eintrag zaehlt dann in der
+ * Statistik nicht mit, statt mit einer erfundenen Zahl einzugehen.
+ */
+async function ermittleLaufzeit(category, tmdbInfo, eigenTreffer, debugListe) {
+  if (category === "movie") {
+    return { ...KEINE_LAUFZEIT, runtimeMinutes: (tmdbInfo && tmdbInfo.runtime) || null };
+  }
+
+  const quellen = category === "anime" ? [eigenTreffer, tmdbInfo] : [tmdbInfo, eigenTreffer];
+  let episodeRuntime = ersterWert(quellen, "episodeRuntime");
+  let episodeCount = ersterWert(quellen, "episodeCount");
+  let episodesPerSeason = (tmdbInfo && tmdbInfo.episodesPerSeason) || [];
+  let summe = null;
+
+  if ((!episodeRuntime || !episodeCount) && eigenTreffer && eigenTreffer.quelle === "tvmaze") {
+    const folgen = await tvmazeFolgen(eigenTreffer.id);
+    debugListe.push(folgen.debug);
+    if (!episodeRuntime) episodeRuntime = folgen.episodeRuntime;
+    if (!episodeCount) episodeCount = folgen.episodeCount;
+    if (!episodesPerSeason.length) episodesPerSeason = folgen.episodesPerSeason;
+    summe = folgen.minutes;
+  }
+
+  const geschaetzt = episodeRuntime && episodeCount ? episodeRuntime * episodeCount : null;
+  return {
+    // Die Folge-fuer-Folge-Summe zuerst: sie ist die genauere Zahl.
+    runtimeMinutes: summe || geschaetzt || null,
+    episodeRuntime,
+    episodeCount,
+    episodesPerSeason,
+  };
 }
 
 /**
@@ -928,6 +1119,7 @@ export default async function handler(req, res) {
   let genres = [];
   let collection = null;
   let studio = null;
+  let laufzeit = KEINE_LAUFZEIT;
   const angabenDebug = [];
 
   if (willAngaben) {
@@ -975,6 +1167,8 @@ export default async function handler(req, res) {
     collection = (tmdbInfo && tmdbInfo.collection) || null;
     studio = (tmdbInfo && tmdbInfo.studio) || null;
 
+    laufzeit = await ermittleLaufzeit(category, tmdbInfo, eigenTreffer, angabenDebug);
+
     // Die IMDb-Kennung ist der einzige eindeutige Weg zur Note. TMDB
     // und TVMaze liefern sie beide — die erste, die da ist, zaehlt.
     // Sonst bleibt die Titelsuche.
@@ -1001,6 +1195,14 @@ export default async function handler(req, res) {
     genres,
     collection,
     studio,
+    /* Laufzeit fuer den Zeitaufwand der Watchlist. Bei Filmen steht
+       alles in `runtimeMinutes`; bei Serien und Anime kommen
+       Episodenlaenge, Episodenanzahl und die Anzahl je Staffel dazu.
+       Nicht ermittelbar heisst null bzw. leere Liste. */
+    runtimeMinutes: laufzeit.runtimeMinutes,
+    episodeRuntime: laufzeit.episodeRuntime,
+    episodeCount: laufzeit.episodeCount,
+    episodesPerSeason: laufzeit.episodesPerSeason,
     // Sagt dem Frontend, ob eine fehlende Note am fehlenden Schluessel
     // liegt — dann ist es kein erfolgloser Versuch.
     imdbVerfuegbar: willAngaben && hasOmdb,
