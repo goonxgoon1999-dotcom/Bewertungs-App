@@ -1,13 +1,14 @@
-# Bewertungs-App — Filme, Serien, Anime, Spiele
+# Bewertungs-App — Filme, Serien, Anime, Kinderserien, Adult Animation, Spiele
 
-Persönliche Bewertungs-App mit 7 gewichteten Kriterien je Kategorie
-+ Bauchgefühl,
+Persönliche Bewertungs-App mit gewichteten Kriterien je Kategorie
+(sechs oder sieben, je nach Kategorie) + Bauchgefühl,
 getrennten Rankings, Filtern, Statistik, Postern und echter Datenbank.
 
 - **Frontend:** React + Vite
 - **Backend:** Vercel Serverless Functions (Ordner `api/`)
 - **Datenbank:** Neon Postgres (kostenloser Plan)
-- **Kategorien:** Filme, Serien, Anime und Spiele — je mit eigenen Kriterien
+- **Kategorien:** Filme, Serien, Anime, Kinderserien, Adult Animation und
+  Spiele — je mit eigenen Kriterien
 - **Poster:** automatisch über TMDB / Jikan / TVMaze / iTunes, Spiele über SteamGridDB
 - **Angaben zum Werk:** Erscheinungsjahr und Regie über TMDB, IMDb-Note als
   Vergleichswert über OMDb — bei Filmen, Serien und Anime
@@ -81,7 +82,12 @@ Der Import ergänzt nur und überschreibt nichts.
 Jede Kategorie hat eigene Kriterien. Die Endnote entsteht überall gleich:
 75 % Kriterien-Note + 25 % Bauchgefühl.
 
-**Filme, Serien und Anime** (identische Felder und Gewichte):
+Die Tab-Leiste oben führt alle Kategorien plus die Statistik. Sie passen
+nicht mehr nebeneinander auf ein Telefon — die Leiste ist deshalb
+seitlich wischbar, die Tabs behalten ihre Größe. Der aktive Tab wird
+immer ins Bild geholt.
+
+**Filme, Serien, Anime und Adult Animation** (identische Felder und Gewichte):
 
 | Kriterium | Gewicht |
 |-----------|---------|
@@ -93,10 +99,26 @@ Jede Kategorie hat eigene Kriterien. Die Endnote entsteht überall gleich:
 | Schauspiel | 10 % |
 | Soundtrack / Sounddesign | 5 % |
 
-Bei **Anime** heißen zwei davon anders: „Inszenierung" wird als
-**Animation** angezeigt, „Schauspiel" als **Synchronstimme**. Das ist
-reine Beschriftung — dieselben Datenfelder, dieselben Gewichte,
-dieselben gespeicherten Werte.
+Bei **Anime** und **Adult Animation** heißen zwei davon anders:
+„Inszenierung" wird als **Animation** angezeigt, „Schauspiel" als
+**Synchronstimme**. Das ist reine Beschriftung — dieselben Datenfelder,
+dieselben Gewichte, dieselben gespeicherten Werte.
+
+**Kinderserien** (eigene Kriterien, sechs statt sieben):
+
+| Kriterium | Gewicht |
+|-----------|---------|
+| Nostalgie / Wiedersehenswert | 20 % |
+| Charaktere | 20 % |
+| Unterhaltung & Humor | 20 % |
+| Story | 15 % |
+| Animation & Optik | 15 % |
+| Intro & Musik | 10 % |
+
+Auch hier wechselt nur die Beschriftung, nicht die Datenspalte:
+Nostalgie liegt in `emotion`, Humor in `unterhaltung`, Optik in
+`inszenierung`, Intro in `sound`. Ein „Schauspiel" gibt es bei
+Kinderserien nicht — die Spalte bleibt dort leer.
 
 **Spiele:**
 
@@ -110,10 +132,10 @@ dieselben gespeicherten Werte.
 | Sound | 5 % |
 | Wiederspielwert | 5 % |
 
-### Staffeln (Serien und Anime)
+### Staffeln (Serien, Anime, Kinderserien, Adult Animation)
 
-Serien und Anime lassen sich optional in Staffeln unterteilen. Jede
-Staffel hat dieselben sieben Kriterien, ein eigenes Bauchgefühl und
+Alle Serienarten lassen sich optional in Staffeln unterteilen. Jede
+Staffel hat dieselben Kriterien wie der Eintrag selbst, ein eigenes Bauchgefühl und
 eine **Gewichtung in Prozent** zwischen 0 % und 200 % (Voreinstellung
 100 %, in 5-Prozent-Schritten). Gerechnet wird intern mit Faktoren
 (Prozent ÷ 100); die Endnote ist der gewichtete Durchschnitt:
@@ -175,7 +197,13 @@ Quellen, jeweils in dieser Reihenfolge:
 | Filme | TMDB → iTunes |
 | Serien | TVMaze → TMDB → iTunes |
 | Anime | Jikan → TMDB |
+| Kinderserien | TVMaze → TMDB → iTunes |
+| Adult Animation | TVMaze → TMDB → iTunes |
 | Spiele | SteamGridDB |
+
+Kinderserien und Adult Animation laufen über dieselbe Kette wie Serien:
+Für TVMaze und TMDB sind es schlicht Serien, eigene Kategorien sind sie
+nur in dieser App.
 
 TVMaze taucht bei Filmen nicht auf, weil es ausschließlich Serien kennt.
 Für Spiele gibt es nur SteamGridDB — die übrigen Quellen kennen keine
@@ -253,7 +281,7 @@ Geschmacksprofil der Empfehlungen:
 
 | Feld | Gilt für | Quelle |
 |------|----------|--------|
-| Genre | Film, Serie, Anime | TMDB (`genres`); bei Anime hat Jikan Vorrang, bei Serien springt TVMaze ein |
+| Genre | alle außer Spielen | TMDB (`genres`); bei Anime hat Jikan Vorrang, bei den Serienarten springt TVMaze ein |
 | Filmreihe | nur Filme | TMDB `belongs_to_collection` (z. B. „Star Wars Collection") |
 | Studio | nur Filme | TMDB `production_companies`, die erstgenannte Firma |
 
@@ -443,7 +471,7 @@ ein Abschnitt mit Vorschlägen. Er beruht nicht auf „ähnliche Titel zu X",
 sondern auf einem **Geschmacksprofil**.
 
 **Das Profil** entsteht aus den bestbewerteten Einträgen der Kategorie —
-50 Filme, je 20 Serien und Anime, nach Endnote sortiert. Für jedes Genre,
+50 Filme, je 20 aus den übrigen Kategorien, nach Endnote sortiert. Für jedes Genre,
 jeden Regisseur, jedes Studio und jedes Jahrzehnt wird aufsummiert, wie
 weit die Einträge, die es tragen, über dem Durchschnitt **aller**
 bewerteten Einträge der Kategorie liegen. Was häufig **und** mit hohen
@@ -458,6 +486,8 @@ einzelner Film sagt über den Geschmack nichts aus.
 |-----------|----------|-----------|
 | Filme | TMDB `/discover/movie` | Genre-Kombination, Genres einzeln, Jahrzehnt, `with_crew` (Regie), `with_companies` (Studio) |
 | Serien | TMDB `/discover/tv` | Genre-Kombination, Genres einzeln, Jahrzehnt |
+| Kinderserien | TMDB `/discover/tv` | wie Serien, Profil aus der eigenen Kategorie |
+| Adult Animation | TMDB `/discover/tv` | wie Serien, Profil aus der eigenen Kategorie |
 | Anime | Jikan `/anime` | Genres, Jahrzehnt, nach Note sortiert, Mindestnote 7, zwei Seiten je Abfrage |
 
 Bei Serien gibt es keine Abfrage nach Regie: TMDBs Entdecken-Endpunkt für
@@ -510,8 +540,8 @@ Bei **Spielen** entfällt der Abschnitt vollständig.
 
 ## Filter in den Ranglisten
 
-Neben Notenbereich und Sortierung filtert das Filter-Sheet (⚙) in Filmen,
-Serien und Anime zusätzlich nach:
+Neben Notenbereich und Sortierung filtert das Filter-Sheet (⚙) in allen
+Kategorien außer Spielen zusätzlich nach:
 
 - **Genre** — als Knopfreihe, aus den tatsächlich vorkommenden Genres
 - **Jahrzehnt** — abgeleitet aus dem Erscheinungsjahr
@@ -534,12 +564,19 @@ Eintrag werden ausgelassen — eine Reihe aus einem Film ist keine Reihe.
 
 ## Berechnung
 
-Filme, Serien und Anime (unverändert):
+Filme, Serien, Anime und Adult Animation:
 
 ```
 Kriteriennote = Story×0.25 + Charaktere×0.20 + Unterhaltung×0.15
               + Emotion×0.15 + Inszenierung×0.10 + Schauspiel×0.10
               + Sound×0.05
+```
+
+Kinderserien:
+
+```
+Kriteriennote = Nostalgie×0.20 + Charaktere×0.20 + Humor×0.20
+              + Story×0.15 + Optik×0.15 + Intro×0.10
 ```
 
 Spiele:

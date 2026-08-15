@@ -32,6 +32,25 @@ const ANIME_CRITERIA = AV_CRITERIA.map((c) =>
   ANIME_LABELS[c.key] ? { ...c, ...ANIME_LABELS[c.key] } : c
 );
 
+/* Kinderserien haben eigene Kriterien und eigene Gewichte: Was eine
+   Kindheitsserie ausmacht, ist nicht dieselbe Frage wie bei einer
+   Serie fuer Erwachsene. Sechs statt sieben — ein Schauspiel gibt es
+   dort nicht.
+
+   Wie bei Anime wechselt nur die Beschriftung, nicht die Datenspalte:
+   gespeichert wird weiterhin in emotion, unterhaltung, inszenierung
+   und sound (siehe KIDS_KEYS in api/_db.js). Damit braucht die neue
+   Kategorie keine einzige neue Spalte, und die Staffel-Logik gilt
+   unveraendert weiter. */
+const KIDS_CRITERIA = [
+  { key: "emotion", label: "Nostalgie / Wiedersehenswert", weight: 0.20, hint: "Wie gern schaut man es wieder? Was bleibt von damals?" },
+  { key: "charaktere", label: "Charaktere", weight: 0.20, hint: "Figuren, die man behalten hat: Eigenheiten, Wiedererkennung" },
+  { key: "unterhaltung", label: "Unterhaltung & Humor", weight: 0.20, hint: "Witz, Tempo, Spielfreude — funktioniert es noch?" },
+  { key: "story", label: "Story", weight: 0.15, hint: "Handlung und Aufbau der Folgen" },
+  { key: "inszenierung", label: "Animation & Optik", weight: 0.15, hint: "Zeichenstil, Figurendesign, Bildgestaltung" },
+  { key: "sound", label: "Intro & Musik", weight: 0.10, hint: "Titellied, Themen, Geräuschkulisse" },
+];
+
 const GAME_CRITERIA = [
   { key: "gameplay", label: "Gameplay", weight: 0.25, hint: "Steuerung, Spielmechanik, Spielgefühl" },
   { key: "story", label: "Story", weight: 0.25, hint: "Handlung, Aufbau, Erzählung" },
@@ -46,6 +65,10 @@ const CRITERIA_BY_CATEGORY = {
   movie: AV_CRITERIA,
   series: AV_CRITERIA,
   anime: ANIME_CRITERIA,
+  kids: KIDS_CRITERIA,
+  // Adult Animation wird wie Anime bewertet — es ist Animation, die
+  // Fragen nach Animationsqualitaet und Synchronstimme sind dieselben.
+  adultanim: ANIME_CRITERIA,
   game: GAME_CRITERIA,
 };
 
@@ -54,10 +77,15 @@ function criteriaFor(category) {
   return CRITERIA_BY_CATEGORY[category] || AV_CRITERIA;
 }
 
+/* Die Reihenfolge hier bestimmt die Reihenfolge ueberall: Tab-Leiste,
+   Statistik, Export. Kinderserien und Adult Animation stehen bei den
+   uebrigen Serienarten, Spiele bleiben am Ende. */
 const CATEGORIES = [
   { key: "movie", label: "Filme", singular: "Film" },
   { key: "series", label: "Serien", singular: "Serie" },
   { key: "anime", label: "Anime", singular: "Anime" },
+  { key: "kids", label: "Kinderserien", singular: "Kinderserie" },
+  { key: "adultanim", label: "Adult Animation", singular: "Adult Animation" },
   { key: "game", label: "Spiele", singular: "Spiel" },
 ];
 
@@ -70,6 +98,8 @@ const CATEGORY_COLORS = {
   movie: "#C9A227",
   series: "#3E9C8F",
   anime: "#8B6BC9",
+  kids: "#C4568C",
+  adultanim: "#4A7FC1",
   game: "#C4633E",
 };
 
@@ -102,13 +132,13 @@ function computeFinalScore(values, personal, category) {
 }
 
 /* ---------------------------------------------------------------
-   Staffeln (optional, nur Serien und Anime)
+   Staffeln (optional, nur bei den Serienarten)
 
    Ein Eintrag mit Staffeln wird nicht mehr selbst bewertet: seine
    Endnote ist der ungewichtete Durchschnitt der Staffelnoten. Jede
    Staffelnote entsteht nach genau derselben Formel wie bisher.
    --------------------------------------------------------------- */
-const SEASON_CATEGORIES = ["series", "anime"];
+const SEASON_CATEGORIES = ["series", "anime", "kids", "adultanim"];
 
 function supportsSeasons(category) {
   return SEASON_CATEGORIES.includes(category);
@@ -640,9 +670,9 @@ function genreFehlt(entry) {
 /* ------------------------------------------------------------
    Laufzeit
 
-   Bei Filmen die Laufzeit selbst, bei Serien und Anime die Summe ueber
-   alle Folgen. Spiele bleiben aussen vor: eine Spieldauer laesst sich
-   nicht abrufen.
+   Bei Filmen die Laufzeit selbst, bei allen Serienarten die Summe
+   ueber alle Folgen. Spiele bleiben aussen vor: eine Spieldauer laesst
+   sich nicht abrufen.
    ------------------------------------------------------------ */
 function unterstuetztLaufzeit(category) {
   return category !== "game";
@@ -1804,12 +1834,12 @@ function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen }) {
 
 /* So viele Bestbewertete bilden die Grundlage des Profils — nach
    Endnote sortiert. */
-const PROFIL_BASIS = { movie: 50, series: 20, anime: 20 };
+const PROFIL_BASIS = { movie: 50, series: 20, anime: 20, kids: 20, adultanim: 20 };
 
 /* So viele Vorschlaege stehen am Ende in der Liste. Der Server liefert
    deutlich mehr (rund 40) — der Rest ist Vorrat und rueckt nach, sobald
    ein Vorschlag auf der Watchlist landet. */
-const EMPFEHLUNGEN_SICHTBAR = { movie: 15, series: 10, anime: 10 };
+const EMPFEHLUNGEN_SICHTBAR = { movie: 15, series: 10, anime: 10, kids: 10, adultanim: 10 };
 
 /* Vorschlaege werden nur etwa einmal im Monat neu berechnet. Der Cache
    liegt im localStorage und ueberdauert damit auch das Schliessen der
@@ -3100,8 +3130,8 @@ function TopTen({ ranked }) {
 /* ------------------------------------------------------------
    Zeitaufwand Watchlist
 
-   Wie lange braucht es, alles Vorgemerkte zu schauen? Gezaehlt werden
-   Filme, Serien und Anime — Spiele haben keine abrufbare Laufzeit und
+   Wie lange braucht es, alles Vorgemerkte zu schauen? Gezaehlt wird
+   jede Kategorie mit Laufzeit — Spiele haben keine abrufbare und
    bleiben aussen vor.
 
    Eintraege, deren Laufzeit (noch) nicht bekannt ist, zaehlen nicht
@@ -3213,7 +3243,7 @@ function ZeitaufwandWatchlist({ watchlist }) {
       ) : gewaehlt.gezaehlt === 0 && gewaehlt.offen === 0 ? (
         <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
           {scope === "all"
-            ? "Keine Filme, Serien oder Anime vorgemerkt."
+            ? "Nichts vorgemerkt — Spiele zählen hier nicht mit."
             : "Keine " + gewaehlt.label + " vorgemerkt."}
         </div>
       ) : (
@@ -3427,7 +3457,8 @@ export default function App() {
   const [saveError, setSaveError] = useState("");
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("movie");
-  const [activeTab, setActiveTab] = useState("movie"); // movie | series | anime | stats
+  // eine der Kategorien (movie, series, anime, kids, adultanim, game) oder stats
+  const [activeTab, setActiveTab] = useState("movie");
   const [search, setSearch] = useState("");
   // list | suche | form | edit | watchlist-form
   const [mode, setMode] = useState("list");
@@ -3447,6 +3478,22 @@ export default function App() {
   const [importError, setImportError] = useState("");
   const [filterState, setFilterState] = useState({ ...DEFAULT_FILTER });
   const fileInputRef = useRef(null);
+
+  /* Die Tab-Leiste ist seitlich wischbar und breiter als das Display.
+     Damit der aktive Tab nie ausserhalb des Sichtbaren steht, wird er
+     bei jedem Wechsel hereingeholt — beim ersten Aufbau ebenso wie
+     nach einem Klick auf einen nur halb sichtbaren Tab. "nearest"
+     heisst: steht er schon vollstaendig im Bild, passiert nichts, und
+     die Seite springt vertikal nicht. */
+  const tabLeisteRef = useRef(null);
+  useEffect(() => {
+    const leiste = tabLeisteRef.current;
+    if (!leiste) return;
+    const aktiv = leiste.querySelector('[data-tab="' + activeTab + '"]');
+    if (aktiv && typeof aktiv.scrollIntoView === "function") {
+      aktiv.scrollIntoView({ inline: "nearest", block: "nearest" });
+    }
+  }, [activeTab]);
 
   function normalizeEntry(e) {
     return {
@@ -4472,21 +4519,33 @@ export default function App() {
           outline-offset: 1px;
         }
 
-        /* Fuenf Tabs muessen auch auf schmalen Displays hineinpassen.
-           Ohne min-width: 0 koennen Flex-Elemente nicht unter ihre
-           Textbreite schrumpfen und die Leiste laeuft ueber. */
+        /* Sieben Tabs passen auf kein Telefon mehr nebeneinander.
+           Statt sie zu schrumpfen, behalten sie ihre Groesse und die
+           Leiste wird seitlich wischbar. Die Rollbalkenleiste bleibt
+           ausgeblendet — gewischt wird ohnehin mit dem Finger, und ein
+           Balken unter den Tabs saehe aus wie ein Trennstrich.
+
+           Das Wischen soll nicht mitten in einem Tab stehenbleiben:
+           scroll-snap laesst die Leiste an einem Tabanfang einrasten.
+           Der letzte Tab braucht Luft nach rechts, sonst klebt er am
+           Rand. */
+        .tab-leiste {
+          display: flex;
+          gap: 6px;
+          overflow-x: auto;
+          scroll-snap-type: x proximity;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+          padding-right: 12px;
+        }
+        .tab-leiste::-webkit-scrollbar { display: none; }
+
         .tab-btn {
-          flex: 1 1 0;
-          min-width: 0;
-          padding: 13px 6px;
+          flex: 0 0 auto;
+          scroll-snap-align: start;
+          padding: 13px 12px;
           font-size: 13.5px;
           white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        @media (max-width: 400px) {
-          .tab-btn { font-size: 11.5px; padding: 13px 3px; }
-          .tab-emoji { display: none; }
         }
 
         /* Fester 16:9-Ausschnitt ueber die volle Breite. Der Inhalt sitzt
@@ -4527,11 +4586,12 @@ export default function App() {
                 : `${currentList.length} ${catInfo.label}`}
             </p>
 
-          {/* Tabs */}
-          <div style={{ display: "flex", gap: 6, marginBottom: 0 }}>
+          {/* Tabs — seitlich wischbar, siehe .tab-leiste */}
+          <div className="tab-leiste" ref={tabLeisteRef} style={{ marginBottom: 0 }}>
             {CATEGORIES.map((c) => (
               <button
                 key={c.key}
+                data-tab={c.key}
                 onClick={() => {
                   setCategory(c.key);
                   setActiveTab(c.key);
@@ -4562,6 +4622,7 @@ export default function App() {
                 neutrale Gold — sie spannt alle Kategorien. */}
             <button
               onClick={() => setActiveTab("stats")}
+              data-tab="stats"
               className="tab-btn"
               style={{
                 background: activeTab === "stats" ? "#C9A227" : "transparent",
