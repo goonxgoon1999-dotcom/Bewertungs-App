@@ -107,6 +107,54 @@ function accentFor(category) {
   return CATEGORY_COLORS[category] || "#C9A227";
 }
 
+/* "#RRGGBB" mit Deckkraft — fuer Verlaeufe, die dieselbe Farbe einmal
+   sichtbar und einmal unsichtbar brauchen. Bewusst rgba(...,0) statt
+   "transparent": manche Browser blenden "transparent" ueber Schwarz
+   aus, was den Verlauf grau werden liesse. */
+function mitDeckkraft(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${Math.round(alpha * 1000) / 1000})`;
+}
+
+/* Die klassischen Medaillenfarben der ersten drei Plaetze. Sie stehen
+   ueber der Kategoriefarbe: Gold ist Gold, in jeder Kategorie. */
+const MEDAILLEN = { 1: "#E8C158", 2: "#D3D7DC", 3: "#D4915A" };
+
+/* ------------------------------------------------------------
+   Auszeichnung der Plaetze 1-10 in einer Rangliste.
+
+   Platz 1-3 tragen ihre Medaillenfarbe, Platz 4-10 die Farbe ihrer
+   Kategorie — und zwar von Platz 4 zu Platz 10 gleichmaessig
+   schwaecher werdend. Ab Platz 11 bleibt alles wie bisher: die
+   Rueckgabe ist dann leer und die Zeile ruehrt sich nicht.
+
+   Der Verlauf hinter der Zeile ist absichtlich sehr blass und endet
+   weit vor dem Notenschild — er soll den Rang begleiten, nicht den
+   Titel einfaerben.
+   ------------------------------------------------------------ */
+const RANG_VERLAUF_ENDE = "68%";
+
+function rangSchmuck(platz, akzent) {
+  if (platz <= 3) {
+    const farbe = MEDAILLEN[platz];
+    return {
+      zahl: { fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 21, color: farbe, lineHeight: 1 },
+      verlauf: `linear-gradient(90deg, ${mitDeckkraft(farbe, 0.13)} 0%, ${mitDeckkraft(farbe, 0)} ${RANG_VERLAUF_ENDE})`,
+    };
+  }
+  if (platz <= 10) {
+    // 0 bei Platz 4, 1 bei Platz 10 — dazwischen linear.
+    const anteil = (platz - 4) / 6;
+    return {
+      zahl: { fontSize: 16, color: mitDeckkraft(akzent, 0.92 - 0.44 * anteil), lineHeight: 1 },
+      verlauf: `linear-gradient(90deg, ${mitDeckkraft(akzent, 0.09 - 0.05 * anteil)} 0%, ${mitDeckkraft(akzent, 0)} ${RANG_VERLAUF_ENDE})`,
+    };
+  }
+  return { zahl: null, verlauf: undefined };
+}
+
 /* Alle vorkommenden Kriterien-Felder, in stabiler Reihenfolge —
    für den CSV-Export über mehrere Kategorien hinweg. */
 const ALL_CRITERIA_KEYS = Array.from(
@@ -5049,16 +5097,19 @@ export default function App() {
                 {filtered.length} von {currentList.length} {catInfo.label}
               </div>
 
-              {/* Liste */}
+              {/* Liste — die vorderen Plaetze tragen ihre Auszeichnung,
+                  siehe rangSchmuck. */}
               <div>
-                {filtered.map((f, i) => (
+                {filtered.map((f, i) => {
+                  const rang = rangSchmuck(i + 1, accent);
+                  return (
                   <div
                     key={f.id}
                     onClick={() => { setSelectedId(f.id); setMode("list"); }}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: "pointer" }}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: "pointer", background: rang.verlauf }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1 }}>
-                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 22, textAlign: "right", flexShrink: 0 }}>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 22, textAlign: "right", flexShrink: 0, ...rang.zahl }}>
                         {i + 1}
                       </span>
                       <Poster url={f.poster} title={f.title} size={34} />
@@ -5069,7 +5120,8 @@ export default function App() {
                     </div>
                     <ScoreBadge score={f.score} />
                   </div>
-                ))}
+                  );
+                })}
                 {filtered.length === 0 && (
                   <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
                     {search.trim() || isFilterActive ? "Nichts gefunden." : `Noch keine ${catInfo.label} bewertet.`}
