@@ -130,26 +130,39 @@ const MEDAILLEN = { 1: "#E8C158", 2: "#D3D7DC", 3: "#D4915A" };
    schwaecher werdend. Ab Platz 11 bleibt alles wie bisher: die
    Rueckgabe ist dann leer und die Zeile ruehrt sich nicht.
 
-   Der Verlauf hinter der Zeile ist absichtlich sehr blass und endet
-   weit vor dem Notenschild — er soll den Rang begleiten, nicht den
-   Titel einfaerben.
+   Der Verlauf hinter der Zeile ist absichtlich blass und endet weit vor
+   dem Notenschild — er soll den Rang begleiten, nicht den Titel
+   einfaerben. Er blendet an beiden Enden aus: links traegt er erst kurz
+   hinter dem Rand seine volle Deckkraft, sonst stuende dort eine harte
+   Farbkante.
    ------------------------------------------------------------ */
+const RANG_VERLAUF_ANFANG = "6%";
 const RANG_VERLAUF_ENDE = "68%";
+
+/* Verlauf einer Rang-Zeile: unsichtbar, kurz sichtbar, wieder
+   unsichtbar — alles in derselben Farbe. */
+function rangVerlauf(farbe, deckkraft) {
+  const unsichtbar = mitDeckkraft(farbe, 0);
+  return (
+    `linear-gradient(90deg, ${unsichtbar} 0%, ${mitDeckkraft(farbe, deckkraft)} ${RANG_VERLAUF_ANFANG}, ` +
+    `${unsichtbar} ${RANG_VERLAUF_ENDE})`
+  );
+}
 
 function rangSchmuck(platz, akzent) {
   if (platz <= 3) {
     const farbe = MEDAILLEN[platz];
     return {
       zahl: { fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 21, color: farbe, lineHeight: 1 },
-      verlauf: `linear-gradient(90deg, ${mitDeckkraft(farbe, 0.13)} 0%, ${mitDeckkraft(farbe, 0)} ${RANG_VERLAUF_ENDE})`,
+      verlauf: rangVerlauf(farbe, 0.13),
     };
   }
   if (platz <= 10) {
     // 0 bei Platz 4, 1 bei Platz 10 — dazwischen linear.
     const anteil = (platz - 4) / 6;
     return {
-      zahl: { fontSize: 16, color: mitDeckkraft(akzent, 0.92 - 0.44 * anteil), lineHeight: 1 },
-      verlauf: `linear-gradient(90deg, ${mitDeckkraft(akzent, 0.09 - 0.05 * anteil)} 0%, ${mitDeckkraft(akzent, 0)} ${RANG_VERLAUF_ENDE})`,
+      zahl: { fontSize: 14, color: mitDeckkraft(akzent, 1 - 0.45 * anteil), lineHeight: 1 },
+      verlauf: rangVerlauf(akzent, 0.14 - 0.08 * anteil),
     };
   }
   return { zahl: null, verlauf: undefined };
