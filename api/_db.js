@@ -119,6 +119,7 @@ async function init() {
   await ensureZusatzdaten();
   await ensureLaufzeit();
   await ensureNeueKategorien();
+  await ensureDuelle();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -421,6 +422,35 @@ async function ensureHeaderImages() {
 /** Datenbankzeile -> Kopfbild fuer das Frontend. */
 export function rowToHeaderImage(r) {
   return { id: r.id, url: r.url, position: Number(r.position) };
+}
+
+/* ----------------------------------------------------------------
+   Minispiele: gespielte Duelle je Kategorie
+
+   Was ein Duell bewirkt, steht bereits dort, wo es hingehoert — im
+   Bauchgefuehl der beiden beteiligten Eintraege. Festzuhalten bleibt
+   nur, wie oft in einer Kategorie ueberhaupt gespielt wurde. Dafuer
+   genuegt eine Zeile je Kategorie mit einem Zaehler; eine Tabelle mit
+   einer Zeile je Duell braeuchte es dafuer nicht.
+
+   Die Tabelle ist neu und steht fuer sich: keine bestehende Tabelle
+   und keine bestehende Zeile wird davon beruehrt. Fehlt eine
+   Kategorie darin, wurde in ihr noch nicht gespielt — das ist eine 0
+   und kein Fehler.
+   ---------------------------------------------------------------- */
+async function ensureDuelle() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS duel_counts (
+      category   TEXT PRIMARY KEY,
+      duels      INTEGER NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL
+    )
+  `;
+}
+
+/** Datenbankzeile -> Duellzahl fuer das Frontend. */
+export function rowToDuelCount(r) {
+  return { category: r.category, count: Number(r.duels) };
 }
 
 /* ----------------------------------------------------------------

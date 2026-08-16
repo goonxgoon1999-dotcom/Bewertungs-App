@@ -433,6 +433,8 @@ vercel dev          # startet Frontend + API zusammen
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |
 | DELETE | `/api/header-images?id=…` | Bild-Adresse entfernen |
+| GET | `/api/duels` | Gespielte Duelle je Kategorie (Minispiel Head-to-Head) |
+| POST | `/api/duels` | Ein ausgewertetes Duell zählen (`{ category }`) |
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
 alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
@@ -563,6 +565,74 @@ Beim Filter **Filmreihe** stehen echte TMDB-Collections und Studios
 gemeinsam zur Wahl; Studios sind mit „(Studio)" gekennzeichnet und die
 Näherung für Franchises ohne eigene Collection. Reihen mit nur einem
 Eintrag werden ausgelassen — eine Reihe aus einem Film ist keine Reihe.
+
+---
+
+## Minispiele
+
+Das Controller-Symbol oben rechts — links neben Statistik und Zahnrad —
+öffnet den Minispiele-Bereich. Er steht neben den Kategorien und gehört
+zu keiner einzelnen; weitere Spiele kommen später als eigene Kacheln in
+dieselbe Übersicht.
+
+### Head-to-Head
+
+Zwei Titel derselben Kategorie treten gegeneinander an. Zuerst wird die
+Kategorie gewählt — Kategorien mit weniger als zwei bewerteten Einträgen
+stehen nicht zur Wahl und sagen das auch. Duelle finden **ausschließlich
+innerhalb einer Kategorie** statt, nie kategorieübergreifend.
+
+Im Duell stehen Poster, Titel und Jahr nebeneinander, dazwischen „VS" —
+**ohne Note**, damit die Wahl aus dem Titel kommt und nicht aus der Zahl
+daneben. Ein Tippen wählt den Favoriten, „Überspringen" springt ohne
+jede Auswertung zum nächsten Duell. Ein Zähler zeigt, wie oft in dieser
+Kategorie schon gespielt wurde; gezählt werden nur ausgewertete Duelle.
+
+**Paarung.** Die beiden Titel werden nicht frei aus der ganzen
+Bandbreite gezogen: Ein zufälliger Anker aus der nach Endnote sortierten
+Kategorie-Liste bestimmt ein Fenster von ±5 Rangplätzen, aus dem der
+Gegner kommt. Ein Duell zwischen 9.8 und 4.2 wäre ohnehin entschieden
+und brächte kaum Erkenntnis; benachbarte Ränge liegen dicht beieinander,
+dort trägt die Wahl echte Auskunft. Welcher der beiden links steht, wird
+gelost, und dieselbe Paarung wiederholt sich nicht unmittelbar.
+
+**Wirkung.** Nach der Wahl steht der gewählte Titel kurz mit Rahmen in
+der Kategoriefarbe und „GEWÄHLT"-Abzeichen da, der andere abgedunkelt;
+nach etwa 1,3 Sekunden — oder sofort per Tipp — kommt das nächste Duell.
+Angepasst wird dabei **allein das Bauchgefühl** der beiden Titel:
+
+```
+expected = 1 / (1 + 10^((Endnote_Verlierer − Endnote_Gewinner) / S))     S = 2
+delta    = K × (1 − expected)                                           K = 0.3
+
+Bauchgefühl_Gewinner  += delta
+Bauchgefühl_Verlierer −= delta      danach beide auf 0–10 begrenzt
+```
+
+Wer den ohnehin höher bewerteten Titel wählt, verschiebt wenig; wer den
+niedriger bewerteten wählt, kommt nahe an das Maximum von 0.3. Zwei
+Titel mit 7.70 und 7.30 ergeben zum Beispiel:
+
+| Ausgang | expected | delta | Bauchgefühl | Endnote |
+|---------|----------|-------|-------------|---------|
+| 7.70 gewinnt (erwartet) | 0.6131 | 0.1161 | 8.00 → 8.12 / 7.60 → 7.48 | 7.70 → 7.73 / 7.30 → 7.27 |
+| 7.30 gewinnt (Überraschung) | 0.3869 | 0.1839 | 7.60 → 7.78 / 8.00 → 7.82 | 7.30 → 7.35 / 7.70 → 7.65 |
+
+Die Endnote entsteht danach über die **unveränderte** Formel unten
+(75 % Kriteriennote, 25 % Bauchgefühl) — das Minispiel führt keine
+eigene Berechnung ein, es ändert nur einen Eingabewert. Weil ein Duell
+nur ein Viertel der Endnote anfasst, wandert die Endnote um `0.25 × delta`,
+also höchstens 0.075 Punkte.
+
+Bei Einträgen **mit Staffeln** steht das Bauchgefühl je Staffel und die
+Endnote ist deren gewichtetes Mittel. Dort wandert deshalb jede Staffel
+um denselben Betrag, und der Wert am Eintrag zieht auf das neue Mittel
+nach — genau das, was auch das Bewertungsformular beim Speichern tut.
+Die Endnote verschiebt sich dadurch um exakt denselben Betrag wie bei
+einem Eintrag ohne Staffeln.
+
+Beim Überspringen passiert nichts: kein Bauchgefühl ändert sich, und der
+Zähler bleibt stehen.
 
 ---
 

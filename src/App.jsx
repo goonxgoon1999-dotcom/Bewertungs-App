@@ -317,6 +317,114 @@ function seasonFromEntry(entry, nummer) {
   };
 }
 
+/* ============================================================
+   MINISPIEL "HEAD-TO-HEAD" — Duell zweier Titel
+
+   Ein Duell aendert ausschliesslich das gespeicherte Bauchgefuehl der
+   beiden beteiligten Titel. Die Endnote entsteht danach wie immer
+   ueber computeFinalScore (75 % Kriterien, 25 % Bauchgefuehl) — an
+   der Formel selbst aendert das Minispiel nichts.
+   ============================================================ */
+
+/* Skalierung der Erwartung. Beim klassischen Elo steht dort 400, weil
+   dessen Zahlen in Tausendern laufen; unsere Noten laufen von 0 bis
+   10. S = 2 heisst: zwei Notenpunkte Vorsprung entsprechen einer
+   Erwartung von 10:1. */
+const ELO_SKALA = 2;
+
+/* Groesste Verschiebung, die ein einzelnes Duell bewirken kann. Der
+   erwartete Ausgang bleibt deutlich darunter, die Ueberraschung kommt
+   nahe heran. */
+const ELO_K = 0.3;
+
+/** Erwartung, dass der erste Titel gewinnt — zwischen 0 und 1. */
+function eloErwartung(noteGewinner, noteVerlierer) {
+  return 1 / (1 + Math.pow(10, (noteVerlierer - noteGewinner) / ELO_SKALA));
+}
+
+/**
+ * Verschiebung eines Duells: klein beim erwarteten Ausgang, nahe K bei
+ * einer Ueberraschung. Der Gewinner bekommt sie aufgeschlagen, der
+ * Verlierer abgezogen.
+ */
+function eloDelta(noteGewinner, noteVerlierer) {
+  return ELO_K * (1 - eloErwartung(noteGewinner, noteVerlierer));
+}
+
+/* Bauchgefuehl bleibt eine Note von 0 bis 10 — auf zwei Nachkomma-
+   stellen, wie jede andere gerechnete Note in der App auch. */
+function begrenzteNote(wert) {
+  return Math.round(Math.min(10, Math.max(0, wert)) * 100) / 100;
+}
+
+/**
+ * Bauchgefuehl eines Eintrags um `delta` verschieben.
+ *
+ * Bei Eintraegen mit Staffeln steht das Bauchgefuehl je Staffel und
+ * die Endnote ist deren gewichtetes Mittel — dort wandert deshalb jede
+ * Staffel um denselben Betrag, und der Wert am Eintrag zieht auf das
+ * neue Mittel nach. Genau das tut auch das Bewertungsformular beim
+ * Speichern, der Datensatz bleibt also in sich stimmig.
+ *
+ * Zurueck kommt null, wenn es nichts zu verschieben gibt.
+ */
+function mitVerschobenemBauchgefuehl(entry, delta) {
+  if (!hasSeasons(entry)) {
+    if (typeof entry.personal !== "number") return null;
+    return { personal: begrenzteNote(entry.personal + delta), seasons: [] };
+  }
+  const seasons = entry.seasons.map((sn) =>
+    typeof sn.personal === "number" ? { ...sn, personal: begrenzteNote(sn.personal + delta) } : sn
+  );
+  const personal = entryPersonal({ ...entry, seasons });
+  if (typeof personal !== "number") return null;
+  return { personal: begrenzteNote(personal), seasons };
+}
+
+/* Wie weit der Gegner in der Rangliste hoechstens entfernt sein darf.
+   Ein Duell zwischen Platz 2 und Platz 40 sagt wenig: der Ausgang
+   waere ohnehin klar und die Verschiebung entsprechend winzig.
+   Innerhalb weniger Plaetze liegen die Endnoten dicht beieinander —
+   dort traegt die Wahl echte Auskunft. */
+const DUELL_FENSTER = 5;
+
+/* Ab zwei bewerteten Titeln laesst sich in einer Kategorie spielen. */
+const MIN_DUELL_TEILNEHMER = 2;
+
+/**
+ * Zwei Titel fuer ein Duell ziehen: ein zufaelliger Anker aus der nach
+ * Endnote sortierten Liste, der Gegner aus dem Fenster um ihn herum.
+ * Welcher der beiden links steht, wird gelost — sonst saesse der Anker
+ * immer auf derselben Seite.
+ *
+ * `zuletzt` ist die vorige Paarung (zwei IDs). Sie soll sich nicht
+ * unmittelbar wiederholen; gibt es nur zwei Titel, bleibt es
+ * zwangslaeufig beim einzigen moeglichen Paar.
+ */
+function ziehePaarung(liste, zuletzt, zufall = Math.random) {
+  if (!Array.isArray(liste) || liste.length < MIN_DUELL_TEILNEHMER) return null;
+
+  let paar = null;
+  for (let versuch = 0; versuch < 12; versuch++) {
+    const ankerIndex = Math.floor(zufall() * liste.length);
+    const von = Math.max(0, ankerIndex - DUELL_FENSTER);
+    const bis = Math.min(liste.length - 1, ankerIndex + DUELL_FENSTER);
+
+    const kandidaten = [];
+    for (let i = von; i <= bis; i++) if (i !== ankerIndex) kandidaten.push(i);
+    if (!kandidaten.length) continue;
+
+    const gegnerIndex = kandidaten[Math.floor(zufall() * kandidaten.length)];
+    const gezogen = [liste[ankerIndex], liste[gegnerIndex]];
+    paar = zufall() < 0.5 ? gezogen : [gezogen[1], gezogen[0]];
+
+    const wieZuletzt =
+      Array.isArray(zuletzt) && zuletzt.includes(paar[0].id) && zuletzt.includes(paar[1].id);
+    if (!wieZuletzt) return paar;
+  }
+  return paar;
+}
+
 /* Ankerpunkte der Notenfarbe. Zwischen zwei Ankern wird pro Kanal
    linear interpoliert, sodass sich die Farbe bei jedem 0.1-Schritt
    aendert statt in Stufen zu springen. */
@@ -1110,6 +1218,22 @@ const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Löschen fehlgeschlagen");
     return res.json();
   },
+  /* Gespielte Duelle je Kategorie — der Zaehler des Minispiels. */
+  async loadDuelCounts() {
+    const res = await fetch("/api/duels");
+    if (!res.ok) throw new Error("Duelle konnten nicht geladen werden (" + res.status + ")");
+    const data = await res.json();
+    return data && data.counts ? data.counts : {};
+  },
+  async countDuel(category) {
+    const res = await fetch("/api/duels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Zählen fehlgeschlagen");
+    return res.json();
+  },
 };
 
 /* Farbiger Platzhalter aus dem Titel, falls kein Poster vorhanden ist. */
@@ -1330,6 +1454,22 @@ function IconZahnrad() {
     <svg viewBox="0 0 24 24" style={symbolBasis} aria-hidden="true" focusable="false">
       <circle cx="12" cy="12" r="3.2" />
       <path d="M19.1 14.6a1.5 1.5 0 0 0 .3 1.7l.1.1a1.8 1.8 0 1 1-2.6 2.6l-.1-.1a1.5 1.5 0 0 0-1.7-.3 1.5 1.5 0 0 0-.9 1.4v.2a1.8 1.8 0 1 1-3.6 0v-.1a1.5 1.5 0 0 0-1-1.4 1.5 1.5 0 0 0-1.7.3l-.1.1a1.8 1.8 0 1 1-2.6-2.6l.1-.1a1.5 1.5 0 0 0 .3-1.7 1.5 1.5 0 0 0-1.4-.9h-.2a1.8 1.8 0 1 1 0-3.6h.1a1.5 1.5 0 0 0 1.4-1 1.5 1.5 0 0 0-.3-1.7l-.1-.1a1.8 1.8 0 1 1 2.6-2.6l.1.1a1.5 1.5 0 0 0 1.7.3h.1a1.5 1.5 0 0 0 .9-1.4v-.2a1.8 1.8 0 1 1 3.6 0v.1a1.5 1.5 0 0 0 .9 1.4 1.5 1.5 0 0 0 1.7-.3l.1-.1a1.8 1.8 0 1 1 2.6 2.6l-.1.1a1.5 1.5 0 0 0-.3 1.7v.1a1.5 1.5 0 0 0 1.4.9h.2a1.8 1.8 0 1 1 0 3.6h-.1a1.5 1.5 0 0 0-1.4.9z" />
+    </svg>
+  );
+}
+
+/* Spielecontroller fuer die Minispiele: Gehaeuse, Steuerkreuz und
+   zwei Knoepfe. Die Knoepfe sind Striche ohne Laenge — mit dem runden
+   Abschluss aus symbolBasis werden daraus Punkte, ohne dass eine
+   Farbflaeche ins Symbol kaeme. */
+function IconSpiele() {
+  return (
+    <svg viewBox="0 0 24 24" style={symbolBasis} aria-hidden="true" focusable="false">
+      <path d="M8 8h8a4.5 4.5 0 0 1 4.4 3.5l.9 4.2a2.9 2.9 0 0 1-2.8 3.5 2.9 2.9 0 0 1-2.2-1l-1.2-1.4H8.9l-1.2 1.4a2.9 2.9 0 0 1-2.2 1 2.9 2.9 0 0 1-2.8-3.5l.9-4.2A4.5 4.5 0 0 1 8 8Z" />
+      <line x1="7.2" y1="11.6" x2="7.2" y2="14.4" />
+      <line x1="5.8" y1="13" x2="8.6" y2="13" />
+      <line x1="15.4" y1="12.6" x2="15.4" y2="12.6" />
+      <line x1="17.6" y1="14.4" x2="17.6" y2="14.4" />
     </svg>
   );
 }
@@ -3587,6 +3727,360 @@ function StatCard({ label, value, color }) {
 }
 
 /* ============================================================
+   MINISPIELE
+
+   Ein eigener Bereich neben den Kategorien und der Statistik,
+   erreichbar ueber das Controller-Symbol im Kopfbereich. Zurzeit
+   steht dort ein Spiel; weitere kommen spaeter als eigene Kacheln
+   in dieselbe Uebersicht.
+   ============================================================ */
+const MINISPIELE = [
+  {
+    key: "head-to-head",
+    name: "Head-to-Head",
+    beschreibung:
+      "Zwei Titel derselben Kategorie treten gegeneinander an. Deine Wahl verschiebt " +
+      "das Bauchgefühl beider Titel — und damit ein Stück weit ihre Endnote.",
+  },
+];
+
+/* Wie lange die Rueckmeldung nach einer Wahl stehen bleibt, bevor das
+   naechste Duell kommt. Ein Tippen springt jederzeit sofort weiter. */
+const DUELL_PAUSE_MS = 1300;
+
+function MinispielePage({ ranked, duellZahlen, onDuell, fehler }) {
+  const [spiel, setSpiel] = useState(null);
+
+  if (spiel === "head-to-head") {
+    return (
+      <HeadToHead
+        ranked={ranked}
+        duellZahlen={duellZahlen}
+        onDuell={onDuell}
+        fehler={fehler}
+        onZurueck={() => setSpiel(null)}
+      />
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
+      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
+        Minispiele
+      </h2>
+      <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
+        Kleine Spiele rund um die eigene Sammlung.
+      </p>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+        {MINISPIELE.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => setSpiel(s.key)}
+            style={{
+              flex: "1 1 240px", minWidth: 0, textAlign: "left", cursor: "pointer",
+              background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12,
+              padding: 16, color: "#EDEAE3", fontFamily: "inherit",
+            }}
+          >
+            <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 18, marginBottom: 6 }}>
+              {s.name}
+            </div>
+            <div style={{ fontSize: 12.5, color: "#9A968C", lineHeight: 1.5 }}>{s.beschreibung}</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* Eine Seite des Duells. Bewusst ohne Note: die Wahl soll aus dem
+   Titel selbst kommen, nicht aus der Zahl daneben. */
+function DuellKarte({ eintrag, zustand, onClick }) {
+  const gewaehlt = zustand === "gewaehlt";
+  const unterlegen = zustand === "unterlegen";
+  const jahr = typeof eintrag.releaseYear === "number" ? eintrag.releaseYear : null;
+
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        flex: "1 1 0", minWidth: 0, cursor: "pointer", fontFamily: "inherit",
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 9,
+        background: "#1D1D21",
+        border: "1px solid " + (gewaehlt ? "var(--accent, #C9A227)" : "#2A2A2E"),
+        borderRadius: 12, padding: 10, color: "#EDEAE3",
+        opacity: unterlegen ? 0.38 : 1,
+        transition: "opacity 200ms ease, border-color 200ms ease",
+      }}
+    >
+      <Poster url={eintrag.poster} title={eintrag.title} size={100} />
+      <div
+        style={{
+          fontSize: 14, lineHeight: 1.3, textAlign: "center",
+          width: "100%", overflowWrap: "anywhere",
+        }}
+      >
+        {eintrag.title}
+      </div>
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, color: "#77746c" }}>
+        {jahr !== null ? jahr : "—"}
+      </div>
+      {/* Der Platz fuer das Abzeichen bleibt immer frei, sonst
+          huepften die Karten beim Einblenden in der Hoehe. */}
+      <div style={{ minHeight: 20, display: "flex", alignItems: "center" }}>
+        {gewaehlt && (
+          <span
+            style={{
+              fontSize: 10.5, letterSpacing: 1, fontFamily: "'JetBrains Mono', monospace",
+              background: "var(--accent, #C9A227)", color: "#17171A",
+              borderRadius: 4, padding: "3px 8px", fontWeight: 700,
+            }}
+          >
+            GEWÄHLT
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
+  const [kategorie, setKategorie] = useState(null);
+  const [paar, setPaar] = useState(null);
+  // ID des gewaehlten Titels — solange sie steht, laeuft die Rueckmeldung.
+  const [gewaehlt, setGewaehlt] = useState(null);
+
+  /* Antreten kann nur, wer eine Endnote und ein Bauchgefuehl hat.
+     Vorgemerkte Eintraege sind hier ohnehin nicht dabei (sie stehen in
+     keiner Rangliste); Eintraege ohne Note — Staffelgewichte in Summe
+     0 — fallen heraus, und ohne Bauchgefuehl gaebe es nichts zu
+     verschieben. Die Reihenfolge ist die der Rangliste, daran haengt
+     das Fenster der Paarung. */
+  const teilnehmer = useMemo(() => {
+    const result = {};
+    for (const c of CATEGORIES) {
+      result[c.key] = (ranked[c.key] || []).filter(
+        (f) => typeof f.score === "number" && typeof entryPersonal(f) === "number"
+      );
+    }
+    return result;
+  }, [ranked]);
+
+  /* Gezogen wird immer aus dem aktuellen Stand: nach einem Duell haben
+     sich zwei Endnoten verschoben und die Rangliste sieht anders aus.
+     Der Verweis haelt ihn fuer die Zeitschaltung bereit, die nicht bei
+     jedem Neuaufbau neu gesetzt werden soll. */
+  const listeRef = useRef([]);
+  listeRef.current = kategorie ? teilnehmer[kategorie] : [];
+  const paarRef = useRef(null);
+  paarRef.current = paar;
+
+  const speicherungRef = useRef(null);
+  const wechseltRef = useRef(false);
+  const lebtRef = useRef(true);
+  useEffect(() => () => { lebtRef.current = false; }, []);
+
+  /* Naechstes Duell. Laeuft die Auswertung des letzten noch, wird sie
+     abgewartet — sonst zoege die neue Paarung aus einer Rangliste, in
+     der das eben gespielte Duell noch nicht steckt. */
+  function weiter() {
+    if (wechseltRef.current) return;
+    wechseltRef.current = true;
+
+    const zeichnen = () => {
+      wechseltRef.current = false;
+      if (!lebtRef.current) return;
+      const vorher = paarRef.current;
+      setGewaehlt(null);
+      setPaar(ziehePaarung(listeRef.current, vorher ? [vorher[0].id, vorher[1].id] : null));
+    };
+
+    const laufend = speicherungRef.current;
+    speicherungRef.current = null;
+    if (laufend) laufend.then(zeichnen, zeichnen);
+    else zeichnen();
+  }
+
+  function waehle(gewinner, verlierer) {
+    if (gewaehlt || wechseltRef.current) return;
+    setGewaehlt(gewinner.id);
+    speicherungRef.current = Promise.resolve(onDuell(kategorie, gewinner.id, verlierer.id));
+  }
+
+  /* Erstes Duell einer Kategorie. Nur die Wahl der Kategorie loest es
+     aus — sonst wuerde jede gespeicherte Verschiebung sofort ein neues
+     Paar ziehen und die Rueckmeldung waere nie zu sehen. */
+  useEffect(() => {
+    setGewaehlt(null);
+    setPaar(kategorie ? ziehePaarung(listeRef.current, null) : null);
+  }, [kategorie]);
+
+  /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt. */
+  useEffect(() => {
+    if (!gewaehlt) return undefined;
+    const zeit = setTimeout(weiter, DUELL_PAUSE_MS);
+    return () => clearTimeout(zeit);
+  }, [gewaehlt]);
+
+  // ---- Kategorie waehlen ----
+  if (!kategorie) {
+    return (
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
+        <button
+          onClick={onZurueck}
+          style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+        >
+          ← Minispiele
+        </button>
+
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
+          Head-to-Head
+        </h2>
+        <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
+          In welcher Kategorie soll gespielt werden? Duelle finden immer
+          innerhalb einer Kategorie statt.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {CATEGORIES.map((c) => {
+            const anzahl = teilnehmer[c.key].length;
+            const moeglich = anzahl >= MIN_DUELL_TEILNEHMER;
+            const gespielt = duellZahlen[c.key] || 0;
+            return (
+              <button
+                key={c.key}
+                onClick={() => moeglich && setKategorie(c.key)}
+                disabled={!moeglich}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "14px", borderRadius: 10, textAlign: "left",
+                  background: "#1D1D21",
+                  border: "1px solid " + (moeglich ? accentFor(c.key) : "#2A2A2E"),
+                  color: moeglich ? "#EDEAE3" : "#55524c",
+                  cursor: moeglich ? "pointer" : "default",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+                }}
+              >
+                <span>{c.label}</span>
+                <span
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 400,
+                    color: moeglich ? "#9A968C" : "#55524c", textAlign: "right",
+                  }}
+                >
+                  {moeglich
+                    ? anzahl + " bewertet" + (gespielt ? " · " + gespielt + " Duelle" : "")
+                    : "mind. " + MIN_DUELL_TEILNEHMER + " Bewertungen"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Duell ----
+  const catInfo = CATEGORIES.find((c) => c.key === kategorie);
+  const gespielt = duellZahlen[kategorie] || 0;
+
+  return (
+    <div
+      style={{
+        "--accent": accentFor(kategorie),
+        maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px",
+      }}
+    >
+      <button
+        onClick={() => setKategorie(null)}
+        style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+      >
+        ← Kategorie wechseln
+      </button>
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
+          HEAD-TO-HEAD · {catInfo.label.toUpperCase()}
+        </div>
+        <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+          {gespielt} {gespielt === 1 ? "Duell" : "Duelle"} gespielt
+        </div>
+      </div>
+
+      {fehler && (
+        <div style={{ background: "#2a1616", border: "1px solid #d9736a", color: "#d9736a", borderRadius: 8, padding: 12, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+          {fehler}
+        </div>
+      )}
+
+      {!paar ? (
+        <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
+          In dieser Kategorie gibt es gerade kein Duell.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {[0, 1].map((seite) => {
+              const eintrag = paar[seite];
+              const gegner = paar[1 - seite];
+              const zustand = !gewaehlt
+                ? "offen"
+                : gewaehlt === eintrag.id
+                  ? "gewaehlt"
+                  : "unterlegen";
+              return (
+                <React.Fragment key={eintrag.id}>
+                  {seite === 1 && (
+                    <div
+                      aria-hidden="true"
+                      style={{
+                        flex: "0 0 auto", width: 26, textAlign: "center",
+                        fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 16,
+                        color: "#55524c", letterSpacing: 0.5,
+                      }}
+                    >
+                      VS
+                    </div>
+                  )}
+                  <DuellKarte
+                    eintrag={eintrag}
+                    zustand={zustand}
+                    onClick={() => (gewaehlt ? weiter() : waehle(eintrag, gegner))}
+                  />
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          <div style={{ fontSize: 12, color: "#77746c", textAlign: "center", margin: "14px 0 16px", lineHeight: 1.5 }}>
+            {gewaehlt
+              ? "Tippen für das nächste Duell."
+              : "Welcher Titel gefällt dir besser?"}
+          </div>
+
+          <button
+            onClick={() => weiter()}
+            disabled={!!gewaehlt}
+            style={{
+              width: "100%", padding: "13px", borderRadius: 8, fontSize: 14,
+              background: "transparent", color: gewaehlt ? "#55524c" : "#9A968C",
+              border: "1px solid " + (gewaehlt ? "#2A2A2E" : "#33333a"),
+              cursor: gewaehlt ? "default" : "pointer", fontFamily: "inherit",
+            }}
+          >
+            Überspringen
+          </button>
+          <div style={{ fontSize: 11.5, color: "#55524c", textAlign: "center", marginTop: 8, lineHeight: 1.5 }}>
+            Überspringen zählt nicht und ändert keine Note.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    HAUPT-APP
    ============================================================ */
 const EMPTY_ITEMS = Object.fromEntries(CATEGORY_KEYS.map((k) => [k, []]));
@@ -3597,7 +4091,8 @@ export default function App() {
   const [saveError, setSaveError] = useState("");
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("movie");
-  // eine der Kategorien (movie, series, anime, kids, adultanim, game) oder stats
+  // eine der Kategorien (movie, series, anime, kids, adultanim, game),
+  // stats oder minigames
   const [activeTab, setActiveTab] = useState("movie");
   const [search, setSearch] = useState("");
   // list | suche | form | edit | watchlist-form
@@ -4047,6 +4542,27 @@ export default function App() {
     }
   }
 
+  /* ---- Gespielte Duelle je Kategorie ----
+     Geholt wird der Stand erst, wenn die Minispiele zum ersten Mal
+     geoeffnet werden — wer nie spielt, laedt ihn nie. Danach haelt ihn
+     jede Auswertung selbst aktuell. */
+  const [duellZahlen, setDuellZahlen] = useState({});
+  const [duellFehler, setDuellFehler] = useState("");
+  const duellZahlenGeholt = useRef(false);
+
+  useEffect(() => {
+    if (activeTab !== "minigames" || duellZahlenGeholt.current) return;
+    duellZahlenGeholt.current = true;
+    (async () => {
+      try {
+        const zahlen = await api.loadDuelCounts();
+        setDuellZahlen(zahlen);
+      } catch (e) {
+        // Der Zaehler ist Beiwerk — ein Fehler hier bleibt still.
+      }
+    })();
+  }, [activeTab]);
+
   // ---- Angezeigte Liste: Suche + Filter (Bereich + Sortierung) ----
   const filtered = useMemo(() => {
     let list = currentList;
@@ -4392,6 +4908,71 @@ export default function App() {
     }
   }
 
+  /* ---- Minispiel "Head-to-Head" ----
+     Ein Duell verschiebt ausschliesslich das Bauchgefuehl der beiden
+     beteiligten Eintraege; die Endnote entsteht danach wie immer ueber
+     die bestehende Formel. Uebersprungene Duelle kommen hier nie an. */
+  async function duellAuswerten(catKey, gewinnerId, verliererId) {
+    if (gewinnerId === verliererId) return;
+    const liste = items[catKey] || [];
+    const gewinner = liste.find((f) => f.id === gewinnerId);
+    const verlierer = liste.find((f) => f.id === verliererId);
+    if (!gewinner || !verlierer) return;
+
+    const noteGewinner = entryScore(gewinner, catKey);
+    const noteVerlierer = entryScore(verlierer, catKey);
+    if (typeof noteGewinner !== "number" || typeof noteVerlierer !== "number") return;
+
+    const delta = eloDelta(noteGewinner, noteVerlierer);
+    const neuGewinner = mitVerschobenemBauchgefuehl(gewinner, delta);
+    const neuVerlierer = mitVerschobenemBauchgefuehl(verlierer, -delta);
+    if (!neuGewinner || !neuVerlierer) return;
+
+    try {
+      /* Alles Uebrige des Eintrags geht unveraendert mit — wie beim
+         Speichern der Angaben fasst dieser Aufruf nur das Bauchgefuehl
+         an (bei Staffeln deren Bauchgefuehl, siehe
+         mitVerschobenemBauchgefuehl). */
+      const [gespeicherterGewinner, gespeicherterVerlierer] = await Promise.all([
+        api.update(gewinner.id, {
+          ...gewinner,
+          category: catKey,
+          personal: neuGewinner.personal,
+          seasons: neuGewinner.seasons,
+        }),
+        api.update(verlierer.id, {
+          ...verlierer,
+          category: catKey,
+          personal: neuVerlierer.personal,
+          seasons: neuVerlierer.seasons,
+        }),
+      ]);
+      setItems((prev) => ({
+        ...prev,
+        [catKey]: prev[catKey].map((f) =>
+          f.id === gewinner.id
+            ? normalizeEntry(gespeicherterGewinner)
+            : f.id === verlierer.id
+              ? normalizeEntry(gespeicherterVerlierer)
+              : f
+        ),
+      }));
+      setDuellFehler("");
+    } catch (e) {
+      setDuellFehler("Duell nicht gespeichert: " + e.message);
+      return;
+    }
+
+    /* Der Zaehler ist Beiwerk: geht er schief, bleibt die Verschiebung
+       trotzdem stehen — nur die Zahl hinkt dann hinterher. */
+    try {
+      const stand = await api.countDuel(catKey);
+      setDuellZahlen((prev) => ({ ...prev, [catKey]: stand.count }));
+    } catch (e) {
+      setDuellZahlen((prev) => ({ ...prev, [catKey]: (prev[catKey] || 0) + 1 }));
+    }
+  }
+
   async function deleteEntry(id) {
     setBusy(true);
     try {
@@ -4716,8 +5297,9 @@ export default function App() {
       >
         <HeaderSlideshow urls={headerImages.map((b) => b.url)} />
 
-        {/* Statistik und Daten-Panel sitzen als Symbole oben rechts auf
-            dem Bild — beide gehoeren zu keiner einzelnen Kategorie. */}
+        {/* Minispiele, Statistik und Daten-Panel sitzen als Symbole oben
+            rechts auf dem Bild — alle drei gehoeren zu keiner einzelnen
+            Kategorie. */}
         <div
           style={{
             position: "absolute", top: 0, left: 0, right: 0, zIndex: 2,
@@ -4725,6 +5307,13 @@ export default function App() {
           }}
         >
           <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <KopfIconButton
+              title="Minispiele"
+              active={activeTab === "minigames"}
+              onClick={() => setActiveTab(activeTab === "minigames" ? category : "minigames")}
+            >
+              <IconSpiele />
+            </KopfIconButton>
             <KopfIconButton
               title="Statistik"
               active={activeTab === "stats"}
@@ -4751,7 +5340,9 @@ export default function App() {
             <p style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
               {activeTab === "stats"
                 ? `${gesamtAnzahl} ${gesamtAnzahl === 1 ? "Eintrag" : "Einträge"}`
-                : `${currentList.length} ${catInfo.label}`}
+                : activeTab === "minigames"
+                  ? "Minispiele"
+                  : `${currentList.length} ${catInfo.label}`}
             </p>
 
           {/* Tabs — seitlich wischbar, siehe .tab-leiste */}
@@ -4952,6 +5543,13 @@ export default function App() {
 
       {activeTab === "stats" ? (
         <StatsPage ranked={rankedByCategory} watchlist={watchlistByCategory} />
+      ) : activeTab === "minigames" ? (
+        <MinispielePage
+          ranked={rankedByCategory}
+          duellZahlen={duellZahlen}
+          onDuell={duellAuswerten}
+          fehler={duellFehler}
+        />
       ) : (
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px" }}>
           {saveError && (
@@ -5188,7 +5786,7 @@ export default function App() {
         </div>
       )}
 
-      {selectedEntry && mode === "list" && activeTab !== "stats" && (
+      {selectedEntry && mode === "list" && activeTab !== "stats" && activeTab !== "minigames" && (
         <DetailView
           entry={selectedEntry}
           category={category}
