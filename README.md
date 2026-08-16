@@ -667,6 +667,42 @@ Gespielt wird ausschließlich mit **bewerteten** Titeln — vorgemerkte
 haben keine Note und kommen nicht vor. Das Spiel liest nur: es ändert
 an keiner Bewertung etwas. Festgehalten wird allein der Bestwert.
 
+### Was schau ich?
+
+Für Abende, an denen die Wahl schwerer fällt als das Schauen. Zuerst
+wird die Kategorie gewählt — jede mit der Zahl ihrer Watchlist-Einträge
+daneben („Filme · 4 vorgemerkt", bei Spielen „im Backlog"). Kategorien
+mit leerer Watchlist sind gesperrt und sagen das auch. Gedreht wird
+immer **innerhalb einer Kategorie**, nie kategorieübergreifend.
+
+„Drehen" lässt das Fenster schnell durch die Watchlist blättern: Poster,
+Titel und Jahr wechseln zunächst alle 45 Millisekunden, die Standzeit
+wächst gleichmäßig bis auf 340 ms, nach rund drei Sekunden bleibt es
+stehen. Das ist reine Text- und Bildvertauschung — kein Canvas, kein
+gezeichnetes Rad.
+
+Der Gewinner wird **vorab** gezogen; danach rechnet das Spiel zurück, wo
+die Walze anfangen muss, um genau bei ihm anzukommen. Dadurch läuft das
+Fenster durchgehend in eine Richtung durch die (vorher gemischte) Liste,
+statt bei jedem Bild neu zu würfeln — Letzteres wäre als Stottern zu
+sehen, wenn zweimal derselbe Titel hintereinander fiele. Jeder Titel der
+Watchlist ist dabei gleich wahrscheinlich.
+
+Wer schnelle Bildwechsel abbestellt hat (`prefers-reduced-motion`),
+bekommt keine: dann steht das Ergebnis nach einer kurzen Bedenkzeit ohne
+Flackern da.
+
+Am Ende steht der Titel groß unter „HEUTE SCHAUST DU", das Fenster ist in
+der Kategoriefarbe gerahmt. Zwei Wege führen weiter: **Nochmal drehen**
+für eine neue Runde in derselben Kategorie, oder **Bewerten** — das
+öffnet genau dasselbe Bewertungsformular wie „✓ Ansehen" in der
+Watchlist, samt Wechsel in die Kategorie des Titels. Gespeichert wird
+danach der vorgemerkte Eintrag selbst; es entsteht kein zweiter.
+
+Gezogen wird ausschließlich aus der **Watchlist**, nie aus bereits
+bewerteten Titeln. Das Spiel speichert nichts — kein Bestwert, keine
+Statistik; es ist für den Moment gedacht.
+
 ---
 
 ## Berechnung

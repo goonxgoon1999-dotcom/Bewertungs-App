@@ -3768,13 +3768,20 @@ const MINISPIELE = [
       "Höher oder niedriger als die Note darüber? Rate dich durch eine möglichst " +
       "lange Strähne — je Spielart zählt ein eigener Bestwert.",
   },
+  {
+    key: "was-schau-ich",
+    name: "Was schau ich?",
+    beschreibung:
+      "Keine Lust zu wählen? Das Rad dreht sich durch die Watchlist einer " +
+      "Kategorie und bleibt bei einem Titel stehen.",
+  },
 ];
 
 /* Wie lange die Rueckmeldung nach einer Wahl stehen bleibt, bevor das
    naechste Duell kommt. Ein Tippen springt jederzeit sofort weiter. */
 const DUELL_PAUSE_MS = 1300;
 
-function MinispielePage({ ranked, duellZahlen, onDuell, fehler }) {
+function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, fehler }) {
   const [spiel, setSpiel] = useState(null);
 
   if (spiel === "head-to-head") {
@@ -3791,6 +3798,16 @@ function MinispielePage({ ranked, duellZahlen, onDuell, fehler }) {
 
   if (spiel === "higher-or-lower") {
     return <HigherOrLower ranked={ranked} onZurueck={() => setSpiel(null)} />;
+  }
+
+  if (spiel === "was-schau-ich") {
+    return (
+      <WasSchauIch
+        watchlist={watchlist}
+        onBewerten={onBewerten}
+        onZurueck={() => setSpiel(null)}
+      />
+    );
   }
 
   return (
@@ -4535,6 +4552,319 @@ function HigherOrLower({ ranked, onZurueck }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   MINISPIEL "WAS SCHAU ICH?" — Zufallsrad durch die Watchlist
+
+   Fuer Abende, an denen die Wahl schwerer faellt als das Schauen: das
+   Fenster blaettert schnell durch die Watchlist einer Kategorie, wird
+   langsamer und bleibt bei einem zufaelligen Titel stehen.
+
+   Das Spiel liest nur. Gespeichert wird nichts — kein Bestwert, keine
+   Statistik; es ist fuer den Moment gedacht. Der einzige Weg hinaus
+   fuehrt ueber "Bewerten" in dasselbe Formular, das auch "Ansehen" in
+   der Watchlist oeffnet.
+   ============================================================ */
+
+/* Der Ablauf des Rads: wie viele Titelwechsel es gibt und wie lange
+   der erste und der letzte stehen bleiben. Dazwischen waechst die
+   Pause gleichmaessig — das ergibt das Auslaufen einer Walze. */
+const DREH_SCHRITTE = 20;
+const DREH_START_MS = 45;
+const DREH_ENDE_MS = 340;
+
+/* Wer schnelle Wechsel abbestellt hat, bekommt keine: dann gibt es
+   genau ein Bild, das nach kurzer Bedenkzeit das Ergebnis ist. */
+const DREH_RUHE_MS = 420;
+
+/**
+ * Die Standzeiten der einzelnen Bilder, geometrisch wachsend von `von`
+ * bis `bis`. Der letzte Wert ist die Pause, bevor das Ergebnis steht.
+ */
+function drehPausen(schritte = DREH_SCHRITTE, von = DREH_START_MS, bis = DREH_ENDE_MS) {
+  if (schritte <= 1) return [bis];
+  const faktor = Math.pow(bis / von, 1 / (schritte - 1));
+  return Array.from({ length: schritte }, (_, i) => Math.round(von * Math.pow(faktor, i)));
+}
+
+/** Kopie der Liste in zufaelliger Reihenfolge (Fisher-Yates). */
+function mische(liste, zufall = Math.random) {
+  const kopie = [...liste];
+  for (let i = kopie.length - 1; i > 0; i--) {
+    const j = Math.floor(zufall() * (i + 1));
+    [kopie[i], kopie[j]] = [kopie[j], kopie[i]];
+  }
+  return kopie;
+}
+
+/**
+ * Der ganze Durchlauf eines Drehs: die Bilder in ihrer Reihenfolge und
+ * der Titel, bei dem es stehen bleibt.
+ *
+ * Gezogen wird zuerst der Gewinner, danach wird rueckwaerts gerechnet,
+ * wo die Walze anfangen muss, damit sie genau bei ihm ankommt. Dadurch
+ * laeuft das Fenster durchgehend in eine Richtung durch die Liste —
+ * eine Walze eben — statt bei jedem Bild neu zu wuerfeln, was als
+ * Stottern zu sehen waere (derselbe Titel zweimal hintereinander).
+ *
+ * Weil die Liste vorher gemischt und der Gewinner gleichverteilt aus
+ * ihr gezogen wird, ist jeder Titel der Watchlist gleich wahrscheinlich.
+ */
+function drehSequenz(liste, schritte, zufall = Math.random) {
+  if (!Array.isArray(liste) || !liste.length || schritte < 1) return null;
+  const reihe = mische(liste, zufall);
+  const laenge = reihe.length;
+  const gewinnerIndex = Math.floor(zufall() * laenge);
+  const start = (((gewinnerIndex - (schritte - 1)) % laenge) + laenge) % laenge;
+  const bilder = [];
+  for (let i = 0; i < schritte; i++) bilder.push(reihe[(start + i) % laenge]);
+  return { bilder, gewinner: reihe[gewinnerIndex] };
+}
+
+/* Wie die Watchlist einer Kategorie in Worten heisst — bei Spielen
+   liegt der Titel im Backlog, nicht auf der Watchlist. */
+function vorgemerktText(category, anzahl) {
+  return anzahl + (category === "game" ? " im Backlog" : " vorgemerkt");
+}
+
+/* Das Fenster des Rads. Poster, Titel und Jahr stehen bei jedem Bild an
+   derselben Stelle: die Hoehe ist fest, sonst huepfte der Kasten bei
+   jedem Titelwechsel. */
+function RadFenster({ eintrag, hervorgehoben }) {
+  const jahr = eintrag && typeof eintrag.releaseYear === "number" ? eintrag.releaseYear : null;
+  return (
+    <div
+      style={{
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+        background: "#1D1D21",
+        border: "1px solid " + (hervorgehoben ? "var(--accent, #C9A227)" : "#2A2A2E"),
+        borderRadius: 12, padding: "20px 16px",
+        transition: "border-color 200ms ease",
+      }}
+    >
+      {eintrag ? (
+        <Poster url={eintrag.poster} title={eintrag.title} size={124} />
+      ) : (
+        <div
+          aria-hidden="true"
+          style={{
+            width: 124, height: 176, borderRadius: 5, border: "1px dashed #33333a",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            color: "#3d3a35", fontFamily: "'Playfair Display', serif", fontSize: 34, fontWeight: 800,
+          }}
+        >
+          ?
+        </div>
+      )}
+
+      {/* Platz fuer zwei Zeilen in der groessten vorkommenden Schrift —
+          damit der Kasten beim Anhalten nicht die Hoehe wechselt. */}
+      <div style={{ minHeight: 58, display: "flex", alignItems: "center", width: "100%" }}>
+        <div
+          style={{
+            width: "100%", textAlign: "center", overflowWrap: "anywhere", lineHeight: 1.25,
+            fontFamily: hervorgehoben ? "'Playfair Display', serif" : "inherit",
+            fontWeight: hervorgehoben ? 800 : 400,
+            fontSize: hervorgehoben ? 22 : 16,
+            color: eintrag ? "#EDEAE3" : "#55524c",
+          }}
+        >
+          {eintrag ? eintrag.title : "Bereit zum Drehen"}
+        </div>
+      </div>
+
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#77746c", minHeight: 16 }}>
+        {jahr !== null ? jahr : ""}
+      </div>
+    </div>
+  );
+}
+
+function WasSchauIch({ watchlist, onBewerten, onZurueck }) {
+  const [kategorie, setKategorie] = useState(null);
+  // bereit | dreht | ergebnis
+  const [phase, setPhase] = useState("bereit");
+  const [lauf, setLauf] = useState(null);
+  const [schritt, setSchritt] = useState(0);
+
+  /* Schnelle Bildwechsel sind genau das, was diese Einstellung
+     abbestellt — dann steht das Ergebnis nach einer kurzen Bedenkzeit
+     ohne Flackern da. */
+  const reduzierteBewegung = usePrefersReducedMotion();
+  const pausen = useMemo(
+    () => (reduzierteBewegung ? [DREH_RUHE_MS] : drehPausen()),
+    [reduzierteBewegung]
+  );
+
+  const liste = kategorie ? watchlist[kategorie] || [] : [];
+
+  function drehen() {
+    const sequenz = drehSequenz(liste, pausen.length);
+    if (!sequenz) return;
+    setLauf(sequenz);
+    setSchritt(0);
+    setPhase("dreht");
+  }
+
+  /* Ein Bild nach dem anderen, mit wachsender Standzeit. Beim letzten
+     steht das Ergebnis. Das Aufraeumen beendet den Lauf sauber, wenn
+     der Bereich waehrend des Drehens verlassen wird. */
+  useEffect(() => {
+    if (phase !== "dreht" || !lauf) return undefined;
+    const letztes = schritt >= lauf.bilder.length - 1;
+    const pause = pausen[Math.min(schritt, pausen.length - 1)];
+    const zeit = setTimeout(
+      () => (letztes ? setPhase("ergebnis") : setSchritt((s) => s + 1)),
+      pause
+    );
+    return () => clearTimeout(zeit);
+  }, [phase, schritt, lauf, pausen]);
+
+  // ---- Kategorie waehlen ----
+  if (!kategorie) {
+    return (
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
+        <button
+          onClick={onZurueck}
+          style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+        >
+          ← Minispiele
+        </button>
+
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
+          Was schau ich?
+        </h2>
+        <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
+          Aus welcher Watchlist soll gezogen werden? Gedreht wird immer
+          innerhalb einer Kategorie.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {CATEGORIES.map((c) => {
+            const anzahl = (watchlist[c.key] || []).length;
+            const moeglich = anzahl > 0;
+            return (
+              <button
+                key={c.key}
+                onClick={() => { if (moeglich) { setKategorie(c.key); setPhase("bereit"); setLauf(null); } }}
+                disabled={!moeglich}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "14px", borderRadius: 10, textAlign: "left",
+                  background: "#1D1D21",
+                  border: "1px solid " + (moeglich ? accentFor(c.key) : "#2A2A2E"),
+                  color: moeglich ? "#EDEAE3" : "#55524c",
+                  cursor: moeglich ? "pointer" : "default",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+                }}
+              >
+                <span>{c.label}</span>
+                <span
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 400,
+                    color: moeglich ? "#9A968C" : "#55524c", textAlign: "right", flexShrink: 0,
+                  }}
+                >
+                  {moeglich
+                    ? vorgemerktText(c.key, anzahl)
+                    : c.key === "game" ? "nichts im Backlog" : "nichts vorgemerkt"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Drehen ----
+  const catInfo = CATEGORIES.find((c) => c.key === kategorie);
+  const dreht = phase === "dreht";
+  const fertig = phase === "ergebnis";
+  const gezeigt = fertig ? lauf.gewinner : dreht ? lauf.bilder[schritt] : null;
+
+  return (
+    <div
+      style={{
+        "--accent": accentFor(kategorie),
+        maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px",
+      }}
+    >
+      <button
+        onClick={() => { setKategorie(null); setPhase("bereit"); setLauf(null); }}
+        style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+      >
+        ← Kategorie wechseln
+      </button>
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
+          WAS SCHAU ICH? · {catInfo.label.toUpperCase()}
+        </div>
+        <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+          {vorgemerktText(kategorie, liste.length)}
+        </div>
+      </div>
+
+      {/* Die Zeile ueber dem Fenster hat immer dieselbe Hoehe, damit der
+          Kasten beim Anhalten nicht nach unten rutscht. */}
+      <div
+        style={{
+          minHeight: 20, marginBottom: 10, textAlign: "center",
+          fontSize: 12, letterSpacing: 1, fontFamily: "'JetBrains Mono', monospace",
+          color: fertig ? "var(--accent, #C9A227)" : "#55524c",
+        }}
+      >
+        {fertig ? "HEUTE SCHAUST DU" : dreht ? "…" : ""}
+      </div>
+
+      <RadFenster eintrag={gezeigt} hervorgehoben={fertig} />
+
+      {fertig ? (
+        <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+          {/* Beide Knoepfe bleiben einzeilig; wird es zu eng, rutscht
+              der zweite auf eine eigene Zeile statt umzubrechen. */}
+          <button
+            onClick={drehen}
+            style={{
+              flex: "1 1 auto", padding: "15px", borderRadius: 8, whiteSpace: "nowrap",
+              background: "transparent", color: "var(--accent, #C9A227)",
+              border: "1px solid var(--accent, #C9A227)", fontWeight: 700, fontSize: 15,
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            Nochmal drehen
+          </button>
+          <button
+            onClick={() => onBewerten(kategorie, lauf.gewinner)}
+            style={{
+              flex: "1 1 auto", padding: "15px", borderRadius: 8, whiteSpace: "nowrap",
+              background: "var(--accent, #C9A227)", color: "#17171A",
+              border: "none", fontWeight: 700, fontSize: 15.5,
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            Bewerten
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={drehen}
+          disabled={dreht}
+          style={{
+            width: "100%", padding: "16px", borderRadius: 8, marginTop: 18,
+            background: dreht ? "#2A2A2E" : "var(--accent, #C9A227)",
+            color: dreht ? "#77746c" : "#17171A",
+            border: "none", fontWeight: 700, fontSize: 15.5,
+            cursor: dreht ? "default" : "pointer", fontFamily: "inherit",
+          }}
+        >
+          {dreht ? "Dreht…" : "Drehen"}
+        </button>
       )}
     </div>
   );
@@ -5433,6 +5763,26 @@ export default function App() {
     }
   }
 
+  /* ---- Minispiel "Was schau ich?" ----
+     Der ausgeloste Titel geht in genau dasselbe Bewertungsformular, das
+     auch "✓ Ansehen" in der Watchlist oeffnet. Dafuer muss der
+     Minispiele-Bereich verlassen und in die Kategorie des Titels
+     gewechselt werden — gesetzt wird dabei dasselbe wie beim Klick auf
+     einen Kategorie-Tab, damit die Liste dahinter stimmig ist. */
+  function vorgemerktesBewerten(catKey, eintrag) {
+    if (!eintrag || !CATEGORY_KEYS.includes(catKey)) return;
+    setCategory(catKey);
+    setActiveTab(catKey);
+    setSelectedId(null);
+    setSearch("");
+    setUnterReiter("watchlist");
+    /* Genre, Jahrzehnt, Regie und Reihe gehoeren zur Kategorie, aus der
+       sie stammen; nach dem Wechsel gelten sie nicht mehr. */
+    setFilterState((f) => ({ ...f, genre: "", jahrzehnt: "", regie: "", reihe: "" }));
+    setBewerteVorgemerkt(eintrag);
+    setMode("watchlist-form");
+  }
+
   async function deleteEntry(id) {
     setBusy(true);
     try {
@@ -6006,8 +6356,10 @@ export default function App() {
       ) : activeTab === "minigames" ? (
         <MinispielePage
           ranked={rankedByCategory}
+          watchlist={watchlistByCategory}
           duellZahlen={duellZahlen}
           onDuell={duellAuswerten}
+          onBewerten={vorgemerktesBewerten}
           fehler={duellFehler}
         />
       ) : (
