@@ -3610,6 +3610,9 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [showExport, setShowExport] = useState(false);
+  /* Der Bilder-Abschnitt im Daten-Panel startet bei jedem Oeffnen
+     zugeklappt — gemerkt wird der Zustand bewusst nicht. */
+  const [zeigeKopfbilder, setZeigeKopfbilder] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
   const [exportFormat, setExportFormat] = useState("json");
   const [importPreview, setImportPreview] = useState(null);
@@ -4731,7 +4734,7 @@ export default function App() {
             <KopfIconButton
               title="Daten (Export & Import)"
               active={showExport}
-              onClick={() => setShowExport((v) => !v)}
+              onClick={() => { setShowExport((v) => !v); setZeigeKopfbilder(false); }}
             >
               <IconZahnrad />
             </KopfIconButton>
@@ -4814,56 +4817,77 @@ export default function App() {
                 Selbst eingetragene Poster und alle Bewertungen bleiben erhalten.
               </div>
 
-              {/* Bilder des Kopfbereichs — von Hand gepflegt. */}
+              {/* Bilder des Kopfbereichs — von Hand gepflegt. Die Liste
+                  wird mit jedem Bild laenger und stuende sonst zwischen
+                  dem Panel-Anfang und Export/Import; der Abschnitt
+                  klappt deshalb erst auf Wunsch auf. */}
               <div style={{ borderTop: "1px solid #2A2A2E", marginTop: 14, paddingTop: 14 }}>
-                <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 8 }}>
-                  BILDER IM KOPFBEREICH
-                </div>
-                <div style={{ fontSize: 11, color: "#77746c", marginBottom: 10, lineHeight: 1.5 }}>
-                  Adressen von Bildern, die oben im Kopf angezeigt werden.
-                  Mehrere wechseln alle 8 Sekunden. Für diesen Bereich
-                  gibt es keine automatische Suche.
-                </div>
+                <button
+                  onClick={() => setZeigeKopfbilder((v) => !v)}
+                  aria-expanded={zeigeKopfbilder}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8, width: "100%",
+                    background: "transparent", border: "none", padding: 0,
+                    cursor: "pointer", textAlign: "left",
+                    fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)",
+                    fontFamily: "'JetBrains Mono', monospace",
+                  }}
+                >
+                  <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>
+                    {zeigeKopfbilder ? "▾" : "▸"}
+                  </span>
+                  BILDER IM KOPFBEREICH ({headerImages.length})
+                </button>
 
-                <HeaderBildFormular onAdd={headerBildHinzufuegen} busy={busy} />
-                {headerFehler && (
-                  <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{headerFehler}</div>
-                )}
-
-                {headerImages.length === 0 ? (
-                  <div style={{ fontSize: 11.5, color: "#55524c", marginTop: 10 }}>
-                    Noch keine Bilder hinterlegt — der Kopfbereich bleibt dunkel.
-                  </div>
-                ) : (
+                {zeigeKopfbilder && (
                   <div style={{ marginTop: 10 }}>
-                    {headerImages.map((bild) => (
-                      <div
-                        key={bild.id}
-                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #232326" }}
-                      >
-                        <div
-                          style={{
-                            width: 48, height: 27, flexShrink: 0, borderRadius: 4,
-                            background: "#141416 center/cover no-repeat",
-                            backgroundImage: `url("${bild.url}")`,
-                          }}
-                        />
-                        <span
-                          title={bild.url}
-                          style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "#9A968C", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
-                        >
-                          {bild.url}
-                        </span>
-                        <button
-                          onClick={() => headerBildLoeschen(bild.id)}
-                          title="Bild entfernen"
-                          aria-label="Bild entfernen"
-                          style={{ background: "transparent", border: "none", color: "#d9736a", fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
-                        >
-                          ×
-                        </button>
+                    <div style={{ fontSize: 11, color: "#77746c", marginBottom: 10, lineHeight: 1.5 }}>
+                      Adressen von Bildern, die oben im Kopf angezeigt werden.
+                      Mehrere wechseln alle 8 Sekunden. Für diesen Bereich
+                      gibt es keine automatische Suche.
+                    </div>
+
+                    <HeaderBildFormular onAdd={headerBildHinzufuegen} busy={busy} />
+                    {headerFehler && (
+                      <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{headerFehler}</div>
+                    )}
+
+                    {headerImages.length === 0 ? (
+                      <div style={{ fontSize: 11.5, color: "#55524c", marginTop: 10 }}>
+                        Noch keine Bilder hinterlegt — der Kopfbereich bleibt dunkel.
                       </div>
-                    ))}
+                    ) : (
+                      <div style={{ marginTop: 10 }}>
+                        {headerImages.map((bild) => (
+                          <div
+                            key={bild.id}
+                            style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #232326" }}
+                          >
+                            <div
+                              style={{
+                                width: 48, height: 27, flexShrink: 0, borderRadius: 4,
+                                background: "#141416 center/cover no-repeat",
+                                backgroundImage: `url("${bild.url}")`,
+                              }}
+                            />
+                            <span
+                              title={bild.url}
+                              style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "#9A968C", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                            >
+                              {bild.url}
+                            </span>
+                            <button
+                              onClick={() => headerBildLoeschen(bild.id)}
+                              title="Bild entfernen"
+                              aria-label="Bild entfernen"
+                              style={{ background: "transparent", border: "none", color: "#d9736a", fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1, flexShrink: 0 }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
