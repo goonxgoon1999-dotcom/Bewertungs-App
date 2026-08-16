@@ -1253,6 +1253,26 @@ const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Bestwert nicht gespeichert");
     return res.json();
   },
+  /* Aktivitaets-Punkte. Wie viel eine Aktion wert ist, entscheidet der
+     Server — hier wird nur gemeldet, was passiert ist. */
+  async loadXp() {
+    const res = await fetch("/api/xp");
+    if (!res.ok) throw new Error("Punktestand konnte nicht geladen werden (" + res.status + ")");
+    const data = await res.json();
+    return {
+      xp: typeof data.xp === "number" ? data.xp : 0,
+      once: Array.isArray(data.once) ? data.once : [],
+    };
+  },
+  async grantXp(source, zusatz) {
+    const res = await fetch("/api/xp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source, ...(zusatz || {}) }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Punkte nicht gespeichert");
+    return res.json();
+  },
 };
 
 /* Farbiger Platzhalter aus dem Titel, falls kein Poster vorhanden ist. */
@@ -3781,7 +3801,7 @@ const MINISPIELE = [
    naechste Duell kommt. Ein Tippen springt jederzeit sofort weiter. */
 const DUELL_PAUSE_MS = 1300;
 
-function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, fehler }) {
+function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, onXP, fehler }) {
   const [spiel, setSpiel] = useState(null);
 
   if (spiel === "head-to-head") {
@@ -3797,7 +3817,7 @@ function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, f
   }
 
   if (spiel === "higher-or-lower") {
-    return <HigherOrLower ranked={ranked} onZurueck={() => setSpiel(null)} />;
+    return <HigherOrLower ranked={ranked} onZurueck={() => setSpiel(null)} onXP={onXP} />;
   }
 
   if (spiel === "was-schau-ich") {
@@ -4224,7 +4244,7 @@ function HoLKarte({ eintrag, verdeckt, rahmen }) {
   );
 }
 
-function HigherOrLower({ ranked, onZurueck }) {
+function HigherOrLower({ ranked, onZurueck, onXP }) {
   const [modus, setModus] = useState(null);
   const [bestwerte, setBestwerte] = useState({});
   const [fehler, setFehler] = useState("");
@@ -4298,6 +4318,8 @@ function HigherOrLower({ ranked, onZurueck }) {
       const gespeichert = await api.reportHighscore(HOL_SPIEL, modus, erreicht);
       setBestwerte((prev) => ({ ...prev, [modus]: gespeichert.score }));
       setFehler("");
+      // Punkte fuer den neuen persoenlichen Bestwert.
+      if (onXP) onXP();
     } catch (e) {
       setFehler("Bestwert nicht gespeichert: " + e.message);
     }
@@ -4871,6 +4893,290 @@ function WasSchauIch({ watchlist, onBewerten, onZurueck }) {
 }
 
 /* ============================================================
+   AKTIVITAETS-RANG DES NUTZERS
+
+   Rein kosmetisch und rein persoenlich: der Rang haengt daran, was
+   man in der App tut, nicht an den Noten der Titel. Mit den Medaillen
+   der ersten drei Plaetze (siehe rangSchmuck) hat er nichts zu tun —
+   die zeichnen eine Rangliste aus, dieser hier den Nutzer.
+
+   Gespeichert wird allein die Gesamtzahl der Punkte (siehe /api/xp);
+   die Stufe wird daraus abgeleitet und nirgends festgehalten.
+   ============================================================ */
+const RAENGE = [
+  { key: "kupfer", name: "Kupfer", farbe: "#C97D4A", ab: 0 },
+  { key: "bronze", name: "Bronze", farbe: "#A9662F", ab: 200 },
+  { key: "silber", name: "Silber", farbe: "#A8A8B0", ab: 500 },
+  { key: "gold", name: "Gold", farbe: "#D4AF37", ab: 900 },
+  { key: "platin", name: "Platin", farbe: "#7FA8B3", ab: 1800 },
+  { key: "smaragd", name: "Smaragd", farbe: "#2E9B6F", ab: 3200 },
+  { key: "diamant", name: "Diamant", farbe: "#9B7FD4", ab: 5000 },
+  { key: "champion", name: "Champion", farbe: "#D6453F", ab: 7500 },
+];
+
+/**
+ * Stufe zu einer Punktzahl.
+ *
+ * Zurueck kommt die erreichte Stufe, ihr Platz in der Leiter, die
+ * naechste Stufe (null beim Champion) und wie weit der Weg dorthin
+ * zurueckgelegt ist — als Anteil zwischen 0 und 1.
+ */
+function rangFuer(xp) {
+  const punkte = typeof xp === "number" && xp > 0 ? Math.floor(xp) : 0;
+  let index = 0;
+  for (let i = 0; i < RAENGE.length; i++) if (punkte >= RAENGE[i].ab) index = i;
+
+  const rang = RAENGE[index];
+  const naechster = RAENGE[index + 1] || null;
+  const spanne = naechster ? naechster.ab - rang.ab : 0;
+  const fortschritt =
+    naechster && spanne > 0 ? Math.min(1, Math.max(0, (punkte - rang.ab) / spanne)) : 1;
+
+  return { xp: punkte, index, rang, naechster, fortschritt };
+}
+
+/** Punktzahlen mit Tausenderpunkt — "1.240". */
+function xpText(n) {
+  return Math.round(n).toLocaleString("de-DE");
+}
+
+/**
+ * Ist in jeder vorhandenen Kategorie mindestens ein Titel bewertet?
+ *
+ * Welche Kategorien es gibt, steht in CATEGORIES — kommt spaeter eine
+ * dazu, zaehlt sie hier von selbst mit, ohne dass hier etwas zu
+ * aendern waere.
+ */
+function alleKategorienBewertet(items) {
+  return CATEGORY_KEYS.every((k) => (items[k] || []).some((f) => !istVorgemerkt(f)));
+}
+
+/* Schild — das Zeichen des Rangs. Wie die uebrigen Symbole der App
+   eine reine Strichzeichnung, die ihre Farbe vom Umfeld erbt. */
+function IconSchild({ groesse = 18 }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      style={{ ...symbolBasis, width: groesse, height: groesse }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M12 3.2l7 2.5v5.2c0 4.3-2.9 8.1-7 9.2-4.1-1.1-7-4.9-7-9.2V5.7l7-2.5Z" />
+    </svg>
+  );
+}
+
+/* Haekchen fuer erreichte Stufen. */
+function IconHaken({ groesse = 18 }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      style={{ ...symbolBasis, width: groesse, height: groesse }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4.5 12.5l4.7 4.7L19.5 6.9" />
+    </svg>
+  );
+}
+
+/* Schloss fuer noch gesperrte Stufen. */
+function IconSchloss({ groesse = 18 }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      style={{ ...symbolBasis, width: groesse, height: groesse }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="4.8" y="10.5" width="14.4" height="9.7" rx="2" />
+      <path d="M8.2 10.5V7.6a3.8 3.8 0 0 1 7.6 0v2.9" />
+    </svg>
+  );
+}
+
+/* Der Rang unter dem Titel: Schild und Name in der Rangfarbe. */
+function RangChip({ xp, onClick }) {
+  const { rang } = rangFuer(xp);
+  return (
+    <button
+      onClick={onClick}
+      title="Dein Rang"
+      aria-label={"Dein Rang: " + rang.name + " — Übersicht öffnen"}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 7,
+        marginTop: 10, padding: "5px 12px 5px 10px", borderRadius: 999,
+        background: mitDeckkraft(rang.farbe, 0.14),
+        border: "1px solid " + mitDeckkraft(rang.farbe, 0.55),
+        color: rang.farbe, cursor: "pointer", fontFamily: "inherit",
+        fontSize: 12.5, fontWeight: 700, lineHeight: 1,
+      }}
+    >
+      <IconSchild groesse={14} />
+      {rang.name}
+    </button>
+  );
+}
+
+/* Eine Zeile der Leiter. */
+function RangZeile({ stufe, platz, erreicht, aktuell }) {
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "10px 12px", borderRadius: 8,
+        background: aktuell ? mitDeckkraft(stufe.farbe, 0.12) : "#141416",
+        border: "1px solid " + (aktuell ? stufe.farbe : "#2A2A2E"),
+        // Was noch aussteht, tritt zurueck — bleibt aber lesbar.
+        opacity: erreicht ? 1 : 0.55,
+      }}
+    >
+      <span style={{ color: stufe.farbe, display: "flex", flexShrink: 0 }}>
+        <IconSchild groesse={16} />
+      </span>
+      <span
+        style={{
+          flex: 1, minWidth: 0, fontSize: 14,
+          fontWeight: aktuell ? 700 : 400,
+          color: aktuell ? stufe.farbe : "#EDEAE3",
+        }}
+      >
+        {stufe.name}
+      </span>
+
+      {aktuell && (
+        <span
+          style={{
+            flexShrink: 0, fontSize: 9.5, letterSpacing: 1,
+            fontFamily: "'JetBrains Mono', monospace", fontWeight: 700,
+            background: stufe.farbe, color: "#17171A",
+            borderRadius: 4, padding: "3px 7px",
+          }}
+        >
+          AKTUELL
+        </span>
+      )}
+
+      <span
+        style={{
+          flexShrink: 0, fontFamily: "'JetBrains Mono', monospace",
+          fontSize: 11, color: "#77746c",
+        }}
+        title={"Rang " + platz + " von " + RAENGE.length}
+      >
+        {xpText(stufe.ab)}
+      </span>
+
+      <span style={{ display: "flex", flexShrink: 0, color: erreicht ? "#9A968C" : "#55524c" }}>
+        {erreicht ? <IconHaken groesse={15} /> : <IconSchloss groesse={15} />}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Die Rang-Uebersicht. Oben der eigene Stand, darunter die ganze
+ * Leiter — hoechste Stufe zuerst.
+ *
+ * Getoent wird durchweg mit der Farbe der aktuellen Stufe, nicht mit
+ * der Akzentfarbe der App: der Rang bringt seine eigene Farbe mit.
+ */
+function RangOverlay({ xp, onClose }) {
+  const stand = rangFuer(xp);
+  const { rang, naechster, fortschritt, index } = stand;
+
+  return (
+    <BottomSheet onClose={onClose}>
+      <div style={{ textAlign: "center", paddingBottom: 20, borderBottom: "1px solid #2A2A2E", marginBottom: 18 }}>
+        <div
+          style={{
+            width: 66, height: 66, borderRadius: "50%", margin: "0 auto 12px",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: mitDeckkraft(rang.farbe, 0.16),
+            border: "1px solid " + mitDeckkraft(rang.farbe, 0.5),
+            color: rang.farbe,
+          }}
+        >
+          <IconSchild groesse={30} />
+        </div>
+
+        <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 26, color: rang.farbe, lineHeight: 1.1 }}>
+          {rang.name}
+        </div>
+        <div style={{ fontSize: 12.5, color: "#9A968C", marginTop: 6 }}>
+          Rang {index + 1} von {RAENGE.length}
+        </div>
+
+        {naechster ? (
+          <>
+            <div style={{ height: 8, borderRadius: 4, background: "#2A2A2E", margin: "16px 0 9px", overflow: "hidden" }}>
+              <div
+                style={{
+                  width: (fortschritt * 100).toFixed(1) + "%", height: "100%",
+                  background: rang.farbe, borderRadius: 4,
+                  transition: "width 300ms ease",
+                }}
+              />
+            </div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#9A968C" }}>
+              {xpText(stand.xp)} / {xpText(naechster.ab)} XP bis {naechster.name}
+            </div>
+          </>
+        ) : (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: rang.farbe, marginTop: 16 }}>
+            Höchster Rang erreicht · {xpText(stand.xp)} XP
+          </div>
+        )}
+      </div>
+
+      {/* Die Leiter, hoechste Stufe oben. */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {RAENGE.map((stufe, i) => ({ stufe, platz: i + 1 }))
+          .reverse()
+          .map(({ stufe, platz }) => (
+            <RangZeile
+              key={stufe.key}
+              stufe={stufe}
+              platz={platz}
+              erreicht={stand.xp >= stufe.ab}
+              aktuell={stufe.key === rang.key}
+            />
+          ))}
+      </div>
+    </BottomSheet>
+  );
+}
+
+/* Wie lange die Punkte-Einblendung stehen bleibt. */
+const XP_HINWEIS_MS = 1800;
+
+/* Kurze Einblendung nach einem Punktgewinn — im selben Ton wie die
+   Rueckmeldung im Duell: kurz da, dann von selbst wieder weg. Sie
+   liegt unter den Overlays (zIndex 100), damit sie ein offenes Blatt
+   nicht ueberdeckt. */
+function XpHinweis({ punkte, farbe }) {
+  return (
+    <div
+      aria-live="polite"
+      style={{
+        position: "fixed", left: 0, right: 0, bottom: 26, zIndex: 90,
+        display: "flex", justifyContent: "center", pointerEvents: "none",
+      }}
+    >
+      <div
+        style={{
+          background: "#1D1D21", border: "1px solid " + farbe, color: farbe,
+          borderRadius: 999, padding: "9px 16px",
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700,
+        }}
+      >
+        +{xpText(punkte)} XP
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    HAUPT-APP
    ============================================================ */
 const EMPTY_ITEMS = Object.fromEntries(CATEGORY_KEYS.map((k) => [k, []]));
@@ -5332,6 +5638,83 @@ export default function App() {
     }
   }
 
+  /* ---- Aktivitaets-Rang ----
+     Der Punktestand wird einmal beim Start geholt und danach von jeder
+     Gutschrift aktuell gehalten. Er ist Beiwerk: geht hier etwas
+     schief, laeuft die App unveraendert weiter, nur der Rang-Chip
+     bleibt auf dem letzten bekannten Stand. */
+  const [xpStand, setXpStand] = useState({ xp: 0, once: [] });
+  const [xpGeladen, setXpGeladen] = useState(false);
+  const [rangOffen, setRangOffen] = useState(false);
+  // Die zuletzt gutgeschriebenen Punkte, solange die Einblendung steht.
+  const [xpHinweis, setXpHinweis] = useState(null);
+
+  useEffect(() => {
+    let abgebrochen = false;
+    (async () => {
+      try {
+        const stand = await api.loadXp();
+        if (!abgebrochen) setXpStand(stand);
+      } catch (e) {
+        // Der Rang ist Beiwerk — ein Fehler hier bleibt still.
+      } finally {
+        if (!abgebrochen) setXpGeladen(true);
+      }
+    })();
+    return () => { abgebrochen = true; };
+  }, []);
+
+  /* Die Einblendung verschwindet von selbst. Kommen zwei Gutschriften
+     kurz hintereinander, loest die zweite die erste ab. */
+  useEffect(() => {
+    if (!xpHinweis) return undefined;
+    const zeit = setTimeout(() => setXpHinweis(null), XP_HINWEIS_MS);
+    return () => clearTimeout(zeit);
+  }, [xpHinweis]);
+
+  /**
+   * Punkte gutschreiben. Der Server entscheidet ueber die Hoehe und
+   * darueber, ob ein einmaliger Bonus noch aussteht; `granted` sagt,
+   * was wirklich dazugekommen ist.
+   */
+  async function xpGeben(quelle, zusatz) {
+    try {
+      const stand = await api.grantXp(quelle, zusatz);
+      setXpStand({ xp: stand.xp, once: stand.once });
+      if (stand.granted > 0) setXpHinweis({ punkte: stand.granted, id: Date.now() });
+    } catch (e) {
+      // Ohne Punkte laeuft alles Uebrige weiter.
+    }
+  }
+
+  /* Der einmalige Bonus, sobald in jeder Kategorie etwas bewertet ist.
+     Geprueft wird nach jeder neuen Bewertung — und nur, solange der
+     Bonus ueberhaupt noch aussteht. */
+  async function kategorieBonusPruefen(stand) {
+    if (xpStand.once.includes("alle-kategorien")) return;
+    if (!alleKategorienBewertet(stand)) return;
+    await xpGeben("alle-kategorien", { once: "alle-kategorien" });
+  }
+
+  /* Bewertungen, die es schon gab, bevor es Punkte gab: einmalig
+     angerechnet, mit demselben Wert wie eine neue Bewertung. Der
+     Server laesst das genau einmal zu.
+
+     Erst wenn beides steht — Sammlung und Punktestand — und das Laden
+     der Sammlung geklappt hat: sonst wuerde eine leer geladene
+     Sammlung den Bonus mit 0 verbrauchen. */
+  const bestandGemeldet = useRef(false);
+  useEffect(() => {
+    if (!loaded || !xpGeladen || bestandGemeldet.current || saveError) return;
+    bestandGemeldet.current = true;
+    if (xpStand.once.includes("bestand")) return;
+    const anzahl = CATEGORY_KEYS.reduce(
+      (s, k) => s + (items[k] || []).filter((f) => !istVorgemerkt(f)).length,
+      0
+    );
+    xpGeben("bewertung", { once: "bestand", count: anzahl });
+  }, [loaded, xpGeladen, saveError]);
+
   /* ---- Gespielte Duelle je Kategorie ----
      Geholt wird der Stand erst, wenn die Minispiele zum ersten Mal
      geoeffnet werden — wer nie spielt, laedt ihn nie. Danach haelt ihn
@@ -5452,6 +5835,11 @@ export default function App() {
       setSaveError("");
       setGewaehlterTreffer(null);
       setMode("list");
+      // Punkte fuer die neue Bewertung — und der Kategorie-Bonus, falls
+      // damit die letzte offene Kategorie belegt ist.
+      const danach = { ...items, [category]: [normalizeEntry(created), ...items[category]] };
+      await xpGeben("bewertung");
+      await kategorieBonusPruefen(danach);
     } catch (e) {
       setSaveError("Nicht gespeichert: " + e.message);
     } finally {
@@ -5537,6 +5925,14 @@ export default function App() {
       // Der Eintrag steht jetzt in der Rangliste — dorthin auch zeigen.
       setUnterReiter("bewertet");
       setMode("list");
+      // Punkte fuer den Uebergang von vorgemerkt zu bewertet — und der
+      // Kategorie-Bonus, falls damit die letzte Kategorie belegt ist.
+      const danach = {
+        ...items,
+        [category]: items[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      };
+      await xpGeben("watchlist");
+      await kategorieBonusPruefen(danach);
     } catch (e) {
       setSaveError("Bewertung nicht gespeichert: " + e.message);
     } finally {
@@ -5761,6 +6157,9 @@ export default function App() {
     } catch (e) {
       setDuellZahlen((prev) => ({ ...prev, [catKey]: (prev[catKey] || 0) + 1 }));
     }
+
+    // Punkte fuer das gespielte Duell.
+    await xpGeben("duell");
   }
 
   /* ---- Minispiel "Was schau ich?" ----
@@ -6147,6 +6546,11 @@ export default function App() {
               <span style={{ display: "block" }}>Rifat's</span>
               <span style={{ display: "block" }}>Archiv</span>
             </h1>
+            {/* Der eigene Rang — er gehoert zum Nutzer, nicht zu einer
+                Kategorie, und steht deshalb direkt unter dem Titel. */}
+            <div>
+              <RangChip xp={xpStand.xp} onClick={() => setRangOffen(true)} />
+            </div>
             <p style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
               {activeTab === "stats"
                 ? `${gesamtAnzahl} ${gesamtAnzahl === 1 ? "Eintrag" : "Einträge"}`
@@ -6360,6 +6764,7 @@ export default function App() {
           duellZahlen={duellZahlen}
           onDuell={duellAuswerten}
           onBewerten={vorgemerktesBewerten}
+          onXP={() => xpGeben("highscore")}
           fehler={duellFehler}
         />
       ) : (
@@ -6621,6 +7026,12 @@ export default function App() {
           onApply={(f) => { setFilterState(f); setShowFilter(false); }}
           onClose={() => setShowFilter(false)}
         />
+      )}
+
+      {rangOffen && <RangOverlay xp={xpStand.xp} onClose={() => setRangOffen(false)} />}
+
+      {xpHinweis && (
+        <XpHinweis key={xpHinweis.id} punkte={xpHinweis.punkte} farbe={rangFuer(xpStand.xp).rang.farbe} />
       )}
 
       {confirmDelete && (

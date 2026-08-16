@@ -121,6 +121,7 @@ async function init() {
   await ensureNeueKategorien();
   await ensureDuelle();
   await ensureHighscores();
+  await ensureXp();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -487,6 +488,50 @@ async function ensureHighscores() {
 /** Datenbankzeile -> Bestwert fuer das Frontend. */
 export function rowToHighscore(r) {
   return { game: r.game, mode: r.mode, score: Number(r.score) };
+}
+
+/* ----------------------------------------------------------------
+   Aktivitaets-Punkte des Nutzers (XP)
+
+   Die App hat genau einen Nutzer — es gibt also genau eine Zeile,
+   erkennbar an der festen Kennung 'self'. Gespeichert wird nur die
+   Gesamtsumme; die Rangstufe wird daraus abgeleitet und nirgends
+   festgehalten, damit eine spaetere Aenderung der Schwellen nichts
+   umschreiben muss.
+
+   `once` haelt fest, welche einmaligen Boni schon vergeben wurden —
+   als Pipe-Liste, wie die Genres nebenan. Ohne diese Liste wuerde ein
+   Bonus bei jedem Seitenaufruf erneut gutgeschrieben.
+
+   Wie alle uebrigen Tabellen hier ist sie neu und steht fuer sich:
+   keine bestehende Tabelle und keine bestehende Zeile wird beruehrt.
+   ---------------------------------------------------------------- */
+export const XP_ZEILE = "self";
+
+async function ensureXp() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS user_progress (
+      id         TEXT PRIMARY KEY,
+      xp         INTEGER NOT NULL DEFAULT 0,
+      once       TEXT NOT NULL DEFAULT '',
+      updated_at BIGINT NOT NULL
+    )
+  `;
+}
+
+/* Die vergebenen Einmal-Boni stehen — wie die Genres — als eine
+   Zeichenkette in der Spalte, getrennt durch einen senkrechten Strich. */
+const ONCE_TRENNER = "|";
+
+/** "bestand|alle-kategorien" -> ["bestand", "alle-kategorien"] */
+export function onceAus(text) {
+  if (typeof text !== "string" || !text) return [];
+  return text.split(ONCE_TRENNER).map((s) => s.trim()).filter(Boolean);
+}
+
+/** Datenbankzeile -> XP-Stand fuer das Frontend. */
+export function rowToXp(r) {
+  return { xp: Number(r.xp), once: onceAus(r.once) };
 }
 
 /* ----------------------------------------------------------------

@@ -437,6 +437,8 @@ vercel dev          # startet Frontend + API zusammen
 | POST | `/api/duels` | Ein ausgewertetes Duell zählen (`{ category }`) |
 | GET | `/api/highscores?game=…` | Bestwerte eines Minispiels, je Spielart |
 | POST | `/api/highscores` | Ergebnis eines Durchgangs melden (`{ game, mode, score }`) — gespeichert wird nur, was den Bestwert übertrifft |
+| GET | `/api/xp` | Aktivitäts-Punkte und schon vergebene Einmal-Boni |
+| POST | `/api/xp` | Eine Aktion melden (`{ source, count?, once? }`) — wie viel sie wert ist, entscheidet der Server |
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
 alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
@@ -702,6 +704,76 @@ danach der vorgemerkte Eintrag selbst; es entsteht kein zweiter.
 Gezogen wird ausschließlich aus der **Watchlist**, nie aus bereits
 bewerteten Titeln. Das Spiel speichert nichts — kein Bestwert, keine
 Statistik; es ist für den Moment gedacht.
+
+---
+
+## Aktivitäts-Rang
+
+Unter dem Titel „Rifat's Archiv" steht ein kleiner Chip mit Schild und
+Rangnamen. Er gehört **dem Nutzer**, nicht den Titeln: mit den
+Medaillen der ersten drei Plätze in den Ranglisten hat er nichts zu
+tun. Er ist rein kosmetisch — kein Filter, keine Sortierung, keine
+Bewertung hängt daran.
+
+Ein Tipp öffnet die Übersicht: oben der eigene Stand (Schild im
+Farbkreis, Rangname, „Rang X von 8", Fortschrittsbalken und der
+XP-Text, z. B. „1.240 / 1.800 XP bis Platin"), darunter die ganze
+Leiter mit der höchsten Stufe zuoberst. Erreichte Stufen tragen ein
+Häkchen, die aktuelle einen Rahmen, einen getönten Hintergrund und ein
+„AKTUELL"-Abzeichen, kommende ein Schloss. Getönt wird durchweg mit der
+Farbe der **aktuellen** Stufe. Beim Champion entfällt der Balken; dort
+steht „Höchster Rang erreicht".
+
+### Stufen
+
+| Stufe | Farbe | ab |
+|---|---|---|
+| Kupfer | `#C97D4A` | 0 XP |
+| Bronze | `#A9662F` | 200 XP |
+| Silber | `#A8A8B0` | 500 XP |
+| Gold | `#D4AF37` | 900 XP |
+| Platin | `#7FA8B3` | 1.800 XP |
+| Smaragd | `#2E9B6F` | 3.200 XP |
+| Diamant | `#9B7FD4` | 5.000 XP |
+| Champion | `#D6453F` | 7.500 XP |
+
+Gespeichert wird **nur die Gesamtzahl der Punkte**; die Stufe wird
+daraus abgeleitet und nirgends festgehalten. Eine spätere Änderung der
+Schwellen muss deshalb nichts umschreiben.
+
+### Punkte
+
+| Aktion | XP |
+|---|---|
+| Neue Bewertung abgegeben | 10 |
+| Vorgemerkter Eintrag wird bewertet | 15 |
+| Head-to-Head-Duell gespielt | 2 |
+| Turnier abgeschlossen | 25 |
+| Neuer persönlicher Bestwert bei Higher or Lower | 10 |
+| In **jeder** Kategorie mindestens ein Titel bewertet (einmalig) | 20 |
+
+Wie viel eine Aktion wert ist, entscheidet ausschließlich der Server —
+das Frontend meldet nur, was passiert ist. Punkte werden nur addiert;
+es gibt keinen Weg, sie zu verringern oder zurückzusetzen.
+
+Der Kategorie-Bonus zählt die Kategorien **dynamisch** aus der
+Kategorienliste: kommt später eine neue dazu, gehört sie automatisch
+dazu. Einmalige Boni sind serverseitig gesichert — ihr Schlüssel wird
+mit derselben Anweisung eingetragen, mit der die Punkte gutgeschrieben
+werden, sodass auch zwei gleichzeitige Meldungen nur einmal zählen.
+
+Nach jeder Gutschrift blendet sich kurz „+10 XP" ein, in der Farbe des
+aktuellen Rangs.
+
+**Turnier:** Die Quelle ist vollständig angelegt und gültig, wird aber
+noch von niemandem ausgelöst — ein Turnier-Minispiel gibt es bisher
+nicht. Sobald es dazukommt, genügt ein Aufruf mit dieser Quelle.
+
+**Der Bestand:** Beim ersten Start nach Einführung der Punkte werden
+die bereits vorhandenen Bewertungen einmalig mit je 10 XP angerechnet.
+Das passiert genau einmal (Schlüssel `bestand`) und erst, wenn die
+Sammlung wirklich geladen ist — eine leer geladene Sammlung soll den
+Bonus nicht mit 0 verbrauchen.
 
 ---
 
