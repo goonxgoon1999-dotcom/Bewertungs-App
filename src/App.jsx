@@ -169,6 +169,70 @@ function rangSchmuck(platz, akzent) {
   return { zahl: null, verlauf: undefined };
 }
 
+/* ------------------------------------------------------------
+   Das Podest — Platz 1, 2 und 3 einer Rangliste
+
+   Die vorderen drei Plaetze tragen keinen Farbverlauf mehr, sondern
+   eine eigene, lebende Flaeche. Sie liegt wie der Verlauf der Plaetze
+   4-10 hinter der ganzen Zeile und reicht bis an den linken
+   Bildschirmrand; nur ihr Aussehen steckt jetzt in CSS-Klassen, weil
+   es ohne Keyframes nicht geht (siehe den <style>-Block in App).
+
+   Abgestuft ist die Auszeichnung in drei Schritten — Platz 1 ist am
+   kraeftigsten, Platz 3 am leisesten:
+
+     1  Iridescent: drei kraeftige Farbflaechen in Pink, Blau und
+        Tuerkis, die unruhig gegeneinander wandern (Seegang), dazu
+        vier kurz aufblitzende Glanzpunkte.
+     2  Champion: glattes, warmes Karminrot mit einem ruhig
+        durchziehenden Glanzstreifen.
+     3  Diamond: glattes Violett, still — nur die Deckkraft atmet.
+
+   Die Plaetze 4-10 und alles ab 11 fasst das hier nicht an; dafuer
+   bleibt rangSchmuck zustaendig.
+   ------------------------------------------------------------ */
+
+/* Die Zusatzebenen je Platz. Sie sind leere <span>, die allein ueber
+   ihre Klasse gefaerbt und bewegt werden — Platz 3 braucht keine. */
+const PODEST_EBENEN = {
+  1: [
+    "podest1-welle podest1-welle-a",
+    "podest1-welle podest1-welle-b",
+    "podest1-welle podest1-welle-c",
+    "podest1-glanz podest1-glanz-a",
+    "podest1-glanz podest1-glanz-b",
+    "podest1-glanz podest1-glanz-c",
+    "podest1-glanz podest1-glanz-d",
+  ],
+  2: ["podest2-streifen"],
+  3: [],
+};
+
+/* Die Rang-Zahl bleibt in Playfair Display und wird von Platz zu Platz
+   kleiner: 26 > 23 > 20 — und darunter die 14 der Plaetze ab 4. */
+const PODEST_ZAHL = {
+  1: { fontSize: 26, color: "#FBE4EE", textShadow: "0 0 12px rgba(255, 190, 225, 0.45)" },
+  2: { fontSize: 23, color: "#F2AAB4", textShadow: "0 0 10px rgba(230, 120, 140, 0.35)" },
+  3: { fontSize: 20, color: "#C9B0F5", textShadow: "0 0 8px rgba(150, 110, 220, 0.30)" },
+};
+
+function podestSchmuck(platz) {
+  const zahl = PODEST_ZAHL[platz];
+  if (!zahl) return null;
+  return {
+    zahl: { fontFamily: "'Playfair Display', serif", fontWeight: 800, lineHeight: 1, ...zahl },
+    klasse: "podest podest" + platz,
+    ebenen: PODEST_EBENEN[platz],
+    verlauf: undefined,
+  };
+}
+
+/* Auszeichnung einer Ranglisten-Zeile: vorne das Podest, dahinter
+   unveraendert der Verlauf aus rangSchmuck. */
+function zeilenSchmuck(platz, akzent) {
+  return podestSchmuck(platz) || rangSchmuck(platz, akzent);
+}
+
 /* Alle vorkommenden Kriterien-Felder, in stabiler Reihenfolge —
    für den CSV-Export über mehrere Kategorien hinweg. */
 const ALL_CRITERIA_KEYS = Array.from(
@@ -6487,6 +6551,145 @@ export default function App() {
         @supports not (aspect-ratio: 16 / 9) {
           .kopfbereich { min-height: 56.25vw; }
         }
+
+        /* ----------------------------------------------------------
+           Das Podest — Auszeichnung der Plaetze 1-3 (siehe
+           podestSchmuck). Die Flaeche liegt hinter der ganzen Zeile
+           und laeuft nach rechts aus, damit Titel und Note lesbar
+           bleiben. Alles darin ist rein dekorativ.
+           ---------------------------------------------------------- */
+        .podest {
+          overflow: hidden;
+          -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 46%, rgba(0,0,0,0.35) 72%, transparent 92%);
+          mask-image: linear-gradient(90deg, #000 0%, #000 46%, rgba(0,0,0,0.35) 72%, transparent 92%);
+        }
+
+        /* --- Platz 1: Iridescent, "Seegang" ---------------------- */
+        /* Drei Farbflaechen, die mit verschiedener Dauer und
+           verschiedenem Versatz gegeneinander wandern. Keine von ihnen
+           verschwindet je ganz — die Deckkraft bleibt ueberall > 0. */
+        .podest1 {
+          box-shadow:
+            inset 0 0 0 1px rgba(255, 180, 220, 0.14),
+            0 0 16px -5px rgba(120, 190, 255, 0.40),
+            0 0 22px -8px rgba(240, 90, 170, 0.35);
+        }
+        .podest1-welle {
+          position: absolute;
+          top: -40%; bottom: -40%; left: -12%; right: -12%;
+          will-change: transform, opacity;
+        }
+        .podest1-welle-a {
+          background: radial-gradient(42% 130% at 24% 50%, rgba(238, 74, 156, 0.52) 0%, rgba(238, 74, 156, 0.24) 46%, rgba(238, 74, 156, 0) 74%);
+          animation: podest1SeegangA 3.3s ease-in-out infinite;
+        }
+        .podest1-welle-b {
+          background: radial-gradient(40% 125% at 44% 46%, rgba(66, 128, 246, 0.48) 0%, rgba(66, 128, 246, 0.22) 44%, rgba(66, 128, 246, 0) 73%);
+          animation: podest1SeegangB 4.1s ease-in-out -1.4s infinite;
+        }
+        .podest1-welle-c {
+          background: radial-gradient(38% 120% at 62% 56%, rgba(45, 212, 191, 0.44) 0%, rgba(45, 212, 191, 0.20) 42%, rgba(45, 212, 191, 0) 72%);
+          animation: podest1SeegangC 4.9s ease-in-out -2.7s infinite;
+        }
+        @keyframes podest1SeegangA {
+          0%   { transform: translate3d(-7%, -5%, 0) scale(1.04); opacity: 0.82; }
+          27%  { transform: translate3d(6%, 6%, 0) scale(1.24); opacity: 1; }
+          51%  { transform: translate3d(-4%, 3%, 0) scale(0.96); opacity: 0.68; }
+          74%  { transform: translate3d(8%, -6%, 0) scale(1.16); opacity: 0.93; }
+          100% { transform: translate3d(-7%, -5%, 0) scale(1.04); opacity: 0.82; }
+        }
+        @keyframes podest1SeegangB {
+          0%   { transform: translate3d(5%, 6%, 0) scale(1.18); opacity: 0.95; }
+          22%  { transform: translate3d(-8%, -4%, 0) scale(0.94); opacity: 0.66; }
+          49%  { transform: translate3d(7%, -7%, 0) scale(1.26); opacity: 1; }
+          73%  { transform: translate3d(-3%, 5%, 0) scale(1.02); opacity: 0.74; }
+          100% { transform: translate3d(5%, 6%, 0) scale(1.18); opacity: 0.95; }
+        }
+        @keyframes podest1SeegangC {
+          0%   { transform: translate3d(-5%, 4%, 0) scale(1.10); opacity: 0.70; }
+          31%  { transform: translate3d(9%, -6%, 0) scale(1.28); opacity: 0.98; }
+          58%  { transform: translate3d(-9%, 5%, 0) scale(0.95); opacity: 0.62; }
+          80%  { transform: translate3d(3%, -3%, 0) scale(1.14); opacity: 0.88; }
+          100% { transform: translate3d(-5%, 4%, 0) scale(1.10); opacity: 0.70; }
+        }
+
+        /* Vier Glanzpunkte, die unregelmaessig aufblitzen: jeder mit
+           eigener Dauer und eigenem Versatz, damit sie nie im
+           Gleichschritt blinken. */
+        .podest1-glanz {
+          position: absolute;
+          width: 26px; height: 26px;
+          margin: -13px 0 0 -13px;
+          border-radius: 50%;
+          opacity: 0;
+          background: radial-gradient(circle, rgba(255,255,255,0.92) 0%, rgba(255,236,248,0.42) 34%, rgba(255,255,255,0) 70%);
+          will-change: transform, opacity;
+        }
+        .podest1-glanz-a { left: 13%; top: 26%; animation: podest1Glanz 2.6s ease-out -0.4s infinite; }
+        .podest1-glanz-b { left: 31%; top: 72%; animation: podest1Glanz 3.7s ease-out -1.9s infinite; }
+        .podest1-glanz-c { left: 52%; top: 34%; animation: podest1Glanz 4.3s ease-out -3.1s infinite; }
+        .podest1-glanz-d { left: 68%; top: 64%; animation: podest1Glanz 5.1s ease-out -0.9s infinite; }
+        @keyframes podest1Glanz {
+          0%, 74%, 100% { opacity: 0; transform: scale(0.5); }
+          80%           { opacity: 0.95; transform: scale(1); }
+          88%           { opacity: 0.18; transform: scale(0.72); }
+        }
+
+        /* --- Platz 2: Champion ----------------------------------- */
+        /* Glatte Flaeche, kein Linienmuster — nur ein Glanzstreifen,
+           der alle 3,6 s einmal von rechts nach links durchzieht. */
+        .podest2 {
+          background: linear-gradient(90deg,
+            rgba(198, 58, 84, 0.46) 0%,
+            rgba(216, 86, 108, 0.32) 32%,
+            rgba(198, 58, 84, 0.12) 60%,
+            rgba(198, 58, 84, 0) 82%);
+          box-shadow:
+            inset 0 0 0 1px rgba(255, 175, 190, 0.10),
+            0 0 12px -7px rgba(216, 86, 108, 0.45);
+        }
+        .podest2-streifen {
+          position: absolute;
+          top: -70%; bottom: -70%; left: 0; width: 16%;
+          background: linear-gradient(90deg, rgba(255,226,232,0) 0%, rgba(255,226,232,0.34) 50%, rgba(255,226,232,0) 100%);
+          opacity: 0;
+          will-change: transform, opacity;
+          animation: podest2Glanz 3.6s linear infinite;
+        }
+        @keyframes podest2Glanz {
+          0%        { transform: translateX(560%) rotate(18deg); opacity: 0; }
+          8%        { opacity: 0.9; }
+          52%       { opacity: 0.9; }
+          62%, 100% { transform: translateX(-160%) rotate(18deg); opacity: 0; }
+        }
+
+        /* --- Platz 3: Diamond ------------------------------------ */
+        /* Glattes Violett, kein Muster und kein Glanzstreifen. Die
+           Flaeche steht still; nur die Deckkraft atmet sehr langsam. */
+        .podest3 {
+          background: linear-gradient(90deg,
+            rgba(139, 107, 201, 0.36) 0%,
+            rgba(158, 128, 214, 0.23) 34%,
+            rgba(139, 107, 201, 0.08) 62%,
+            rgba(139, 107, 201, 0) 84%);
+          box-shadow: inset 0 0 0 1px rgba(190, 170, 240, 0.07);
+          animation: podest3Atmen 7s ease-in-out infinite;
+        }
+        @keyframes podest3Atmen {
+          0%, 100% { opacity: 0.88; }
+          50%      { opacity: 1; }
+        }
+
+        /* Wer weniger Bewegung eingestellt hat, bekommt dieselben
+           Farben — nur still. Die Glanzpunkte blieben sonst
+           unsichtbar, sie bekommen deshalb eine feste Deckkraft. */
+        @media (prefers-reduced-motion: reduce) {
+          .podest1-welle, .podest1-glanz, .podest2-streifen, .podest3 {
+            animation: none !important;
+          }
+          .podest1-glanz { opacity: 0.30; }
+          .podest2-streifen { opacity: 0; }
+        }
       `}</style>
 
       {/* Header — mit laufendem Poster-Hintergrund */}
@@ -6950,11 +7153,12 @@ export default function App() {
                 {filtered.length} von {currentList.length} {catInfo.label}
               </div>
 
-              {/* Liste — die vorderen Plaetze tragen ihre Auszeichnung,
-                  siehe rangSchmuck. */}
+              {/* Liste — die vorderen Plaetze tragen ihre Auszeichnung:
+                  Platz 1-3 das Podest, Platz 4-10 den Verlauf. Siehe
+                  zeilenSchmuck. */}
               <div>
                 {filtered.map((f, i) => {
-                  const rang = rangSchmuck(i + 1, accent);
+                  const rang = zeilenSchmuck(i + 1, accent);
                   return (
                   <div
                     key={f.id}
@@ -6967,16 +7171,24 @@ export default function App() {
                         nach links zurueck, den Rand und Innenabstand
                         einnehmen. Nach rechts endet die Flaeche wie die
                         Zeile — dort laeuft der Verlauf ohnehin aus. */}
-                    {rang.verlauf && (
+                    {(rang.verlauf || rang.klasse) && (
                       <div
                         aria-hidden="true"
+                        className={rang.klasse}
                         style={{
                           position: "absolute", top: 0, bottom: 0, right: 0,
                           left: "calc(-50vw + 50%)",
                           background: rang.verlauf,
                           pointerEvents: "none",
                         }}
-                      />
+                      >
+                        {/* Nur das Podest bringt eigene Ebenen mit —
+                            Wellen und Glanz von Platz 1, der
+                            Glanzstreifen von Platz 2. */}
+                        {(rang.ebenen || []).map((klasse) => (
+                          <span key={klasse} className={klasse} />
+                        ))}
+                      </div>
                     )}
                     <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1, position: "relative", zIndex: 1 }}>
                       <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 22, textAlign: "right", flexShrink: 0, ...rang.zahl }}>
