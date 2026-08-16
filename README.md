@@ -435,6 +435,8 @@ vercel dev          # startet Frontend + API zusammen
 | DELETE | `/api/header-images?id=…` | Bild-Adresse entfernen |
 | GET | `/api/duels` | Gespielte Duelle je Kategorie (Minispiel Head-to-Head) |
 | POST | `/api/duels` | Ein ausgewertetes Duell zählen (`{ category }`) |
+| GET | `/api/highscores?game=…` | Bestwerte eines Minispiels, je Spielart |
+| POST | `/api/highscores` | Ergebnis eines Durchgangs melden (`{ game, mode, score }`) — gespeichert wird nur, was den Bestwert übertrifft |
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
 alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
@@ -633,6 +635,37 @@ einem Eintrag ohne Staffeln.
 
 Beim Überspringen passiert nichts: kein Bauchgefühl ändert sich, und der
 Zähler bleibt stehen.
+
+### Higher or Lower
+
+Oben ein Titel mit sichtbarer Endnote, darunter einer mit verdeckter:
+**↑ Höher** oder **↓ Niedriger**? Wer richtig liegt, rückt den unteren
+Titel nach oben und bekommt einen neuen darunter — so lange, bis ein
+Tipp danebengeht.
+
+**Spielart.** Vor dem Start wird gewählt, womit gespielt wird:
+„Gemischt" wirft alle Kategorien zusammen (die Notenskala ist überall
+dieselbe, also lassen sich die Noten direkt vergleichen), oder eine
+einzelne Kategorie — dann kommen beide Titel aus dieser einen.
+Spielarten mit weniger als zwei bewerteten Einträgen sind gesperrt.
+Jede Spielart führt **ihren eigenen Bestwert**; er steht schon in der
+Auswahl neben der Zahl der bewerteten Titel.
+
+**Ablauf.** Liegt der Tipp richtig, wird die Note aufgedeckt, die Karte
+bekommt einen grünen Rahmen und die Strähne wächst um eins; nach etwa
+1,3 Sekunden — oder sofort per „Weiter" — kommt die nächste Runde.
+**Gleichstand zählt immer als richtig**, in beide Richtungen: bei exakt
+gleicher Note ist keine Richtung falscher als die andere.
+
+Liegt der Tipp daneben, endet die Strähne. Der Endstand zeigt die Zahl
+der richtigen Tipps und den Bestwert der Spielart zum Vergleich; wurde
+er übertroffen, ist er bereits aktualisiert und mit „NEUER BESTWERT"
+hervorgehoben. „Nochmal" startet einen neuen Durchgang in derselben
+Spielart.
+
+Gespielt wird ausschließlich mit **bewerteten** Titeln — vorgemerkte
+haben keine Note und kommen nicht vor. Das Spiel liest nur: es ändert
+an keiner Bewertung etwas. Festgehalten wird allein der Bestwert.
 
 ---
 

@@ -120,6 +120,7 @@ async function init() {
   await ensureLaufzeit();
   await ensureNeueKategorien();
   await ensureDuelle();
+  await ensureHighscores();
 
   // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
   // vorhandene Bewertungen niemals verloren.
@@ -451,6 +452,41 @@ async function ensureDuelle() {
 /** Datenbankzeile -> Duellzahl fuer das Frontend. */
 export function rowToDuelCount(r) {
   return { category: r.category, count: Number(r.duels) };
+}
+
+/* ----------------------------------------------------------------
+   Minispiele: Bestwert je Spiel und Spielart
+
+   "Higher or Lower" fuehrt je Spielart einen eigenen Bestwert —
+   gemischt ueber alle Kategorien oder je Kategorie einzeln. Mehr als
+   eine Zahl je Spielart gibt es nicht festzuhalten, also genuegt eine
+   Zeile dafuer.
+
+   Der Schluessel ist zweiteilig: `game` und `mode`. Damit kann ein
+   spaeteres Minispiel eigene Bestwerte fuehren, ohne mit den hiesigen
+   Spielarten zusammenzustossen — "movie" bei einem anderen Spiel ist
+   dann eine andere Zeile.
+
+   Wie bei den Duellen ist die Tabelle neu und steht fuer sich: keine
+   bestehende Tabelle und keine bestehende Zeile wird davon beruehrt.
+   Fehlt eine Spielart, wurde sie noch nicht gespielt — das ist eine 0
+   und kein Fehler.
+   ---------------------------------------------------------------- */
+async function ensureHighscores() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS highscores (
+      game       TEXT NOT NULL,
+      mode       TEXT NOT NULL,
+      score      INTEGER NOT NULL DEFAULT 0,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY (game, mode)
+    )
+  `;
+}
+
+/** Datenbankzeile -> Bestwert fuer das Frontend. */
+export function rowToHighscore(r) {
+  return { game: r.game, mode: r.mode, score: Number(r.score) };
 }
 
 /* ----------------------------------------------------------------
