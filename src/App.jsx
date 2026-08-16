@@ -1234,6 +1234,25 @@ const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Zählen fehlgeschlagen");
     return res.json();
   },
+  /* Bestwerte eines Minispiels, je Spielart. */
+  async loadHighscores(game) {
+    const res = await fetch("/api/highscores?game=" + encodeURIComponent(game));
+    if (!res.ok) throw new Error("Bestwerte konnten nicht geladen werden (" + res.status + ")");
+    const data = await res.json();
+    return data && data.scores ? data.scores : {};
+  },
+  /* Meldet das Ergebnis eines Durchgangs. Gespeichert wird davon nur,
+     was den bisherigen Bestwert uebertrifft — das entscheidet der
+     Server, zurueck kommt der geltende Bestwert. */
+  async reportHighscore(game, mode, score) {
+    const res = await fetch("/api/highscores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game, mode, score }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Bestwert nicht gespeichert");
+    return res.json();
+  },
 };
 
 /* Farbiger Platzhalter aus dem Titel, falls kein Poster vorhanden ist. */
@@ -3742,6 +3761,13 @@ const MINISPIELE = [
       "Zwei Titel derselben Kategorie treten gegeneinander an. Deine Wahl verschiebt " +
       "das Bauchgefühl beider Titel — und damit ein Stück weit ihre Endnote.",
   },
+  {
+    key: "higher-or-lower",
+    name: "Higher or Lower",
+    beschreibung:
+      "Höher oder niedriger als die Note darüber? Rate dich durch eine möglichst " +
+      "lange Strähne — je Spielart zählt ein eigener Bestwert.",
+  },
 ];
 
 /* Wie lange die Rueckmeldung nach einer Wahl stehen bleibt, bevor das
@@ -3761,6 +3787,10 @@ function MinispielePage({ ranked, duellZahlen, onDuell, fehler }) {
         onZurueck={() => setSpiel(null)}
       />
     );
+  }
+
+  if (spiel === "higher-or-lower") {
+    return <HigherOrLower ranked={ranked} onZurueck={() => setSpiel(null)} />;
   }
 
   return (
@@ -4074,6 +4104,436 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
           <div style={{ fontSize: 11.5, color: "#55524c", textAlign: "center", marginTop: 8, lineHeight: 1.5 }}>
             Überspringen zählt nicht und ändert keine Note.
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   MINISPIEL "HIGHER OR LOWER"
+
+   Oben ein Titel mit sichtbarer Endnote, darunter einer mit
+   verdeckter: hoeher oder niedriger? Wer richtig liegt, ruecht den
+   unteren Titel nach oben und bekommt einen neuen darunter — solange,
+   bis ein Tipp danebengeht.
+
+   Das Spiel liest nur; es schreibt an keiner Bewertung. Festgehalten
+   wird allein der Bestwert je Spielart.
+   ============================================================ */
+
+/* Schluessel des Spiels in der Bestwert-Tabelle. */
+const HOL_SPIEL = "higher-or-lower";
+
+/* Gemischt ueber alle Kategorien oder eine einzelne. Jede Spielart
+   fuehrt ihren eigenen Bestwert. */
+const HOL_MODI = [
+  { key: "mixed", label: "Gemischt" },
+  ...CATEGORIES.map((c) => ({ key: c.key, label: c.label })),
+];
+
+/* Unter zwei bewerteten Titeln gibt es nichts zu vergleichen. */
+const HOL_MIN_TITEL = 2;
+
+/* Wie lange die aufgedeckte Note stehen bleibt, bevor die naechste
+   Runde kommt — dieselbe Pause wie beim Duell nebenan. Ein Tippen
+   springt jederzeit sofort weiter. */
+const HOL_PAUSE_MS = 1300;
+
+/* Gruen der Rueckmeldung. Kein neuer Farbton: es ist genau das Gruen,
+   das die Notenskala bei 7.5 traegt (siehe SCORE_COLOR_STOPS). */
+const TREFFER_GRUEN = "rgb(22, 163, 74)";
+
+/** Einen zufaelligen Titel ziehen, aber nicht den ausgeschlossenen. */
+function zieheAnderen(liste, ausser, zufall = Math.random) {
+  if (!Array.isArray(liste)) return null;
+  const moeglich = ausser ? liste.filter((f) => f.id !== ausser.id) : liste;
+  if (!moeglich.length) return null;
+  return moeglich[Math.floor(zufall() * moeglich.length)];
+}
+
+/**
+ * War der Tipp richtig?
+ *
+ * Gleichstand geht immer als richtig durch — bei exakt gleicher Note
+ * gibt es keine Richtung, die falscher waere als die andere.
+ */
+function tippStimmt(richtung, noteOben, noteUnten) {
+  if (noteUnten === noteOben) return true;
+  return richtung === "hoeher" ? noteUnten > noteOben : noteUnten < noteOben;
+}
+
+/* Die verdeckte Note. Masse und Schrift wie beim Notenschild daneben,
+   damit beim Aufdecken nichts springt. */
+function VerdeckteNote() {
+  return (
+    <span
+      title="Note verdeckt — genau darum geht es"
+      style={{
+        background: "#2A2A2E", color: "#77746c", borderRadius: 4, padding: "6px 14px",
+        fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700,
+        minWidth: 72, textAlign: "center", display: "inline-block", flexShrink: 0,
+      }}
+    >
+      ?
+    </span>
+  );
+}
+
+/* Eine der beiden Zeilen des Spiels: Poster, Titel, Jahr — und rechts
+   die Note, entweder sichtbar oder verdeckt. */
+function HoLKarte({ eintrag, verdeckt, rahmen }) {
+  const jahr = typeof eintrag.releaseYear === "number" ? eintrag.releaseYear : null;
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 12,
+        background: "#1D1D21", border: "1px solid " + (rahmen || "#2A2A2E"),
+        borderRadius: 12, padding: 12,
+        transition: "border-color 200ms ease",
+      }}
+    >
+      <Poster url={eintrag.poster} title={eintrag.title} size={52} />
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 15, lineHeight: 1.3, overflowWrap: "anywhere" }}>{eintrag.title}</div>
+        {jahr !== null && (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, color: "#77746c", marginTop: 3 }}>
+            {jahr}
+          </div>
+        )}
+      </div>
+      {verdeckt ? <VerdeckteNote /> : <ScoreBadge score={eintrag.score} size="lg" />}
+    </div>
+  );
+}
+
+function HigherOrLower({ ranked, onZurueck }) {
+  const [modus, setModus] = useState(null);
+  const [bestwerte, setBestwerte] = useState({});
+  const [fehler, setFehler] = useState("");
+
+  const [oben, setOben] = useState(null);
+  const [unten, setUnten] = useState(null);
+  const [streak, setStreak] = useState(0);
+  // raten | richtig | ende
+  const [phase, setPhase] = useState("raten");
+  const [neuerRekord, setNeuerRekord] = useState(false);
+
+  /* Bestwerte einmal beim Oeffnen des Spiels holen. Sie sind Beiwerk:
+     ohne sie laesst sich weiterspielen, es fehlt nur der Vergleich. */
+  useEffect(() => {
+    let abgebrochen = false;
+    (async () => {
+      try {
+        const werte = await api.loadHighscores(HOL_SPIEL);
+        if (!abgebrochen) setBestwerte(werte);
+      } catch (e) {
+        if (!abgebrochen) setFehler("Bestwerte konnten nicht geladen werden.");
+      }
+    })();
+    return () => { abgebrochen = true; };
+  }, []);
+
+  /* Antreten kann nur, wer eine Endnote hat — vorgemerkte Eintraege
+     stehen in keiner Rangliste und haben keine. "Gemischt" wirft alle
+     Kategorien zusammen; die Notenskala ist ueberall dieselbe. */
+  const titelJeModus = useMemo(() => {
+    const bewertet = (k) => (ranked[k] || []).filter((f) => typeof f.score === "number");
+    const result = {};
+    for (const c of CATEGORIES) result[c.key] = bewertet(c.key);
+    result.mixed = CATEGORY_KEYS.flatMap((k) => result[k]);
+    return result;
+  }, [ranked]);
+
+  const liste = modus ? titelJeModus[modus] : [];
+  const listeRef = useRef(liste);
+  listeRef.current = liste;
+
+  /* Der Verweis sperrt die Phase sofort, noch bevor React neu
+     zeichnet: sonst koennte die Zeitschaltung eine Runde
+     weiterspringen, die das Tippen gerade schon weitergeschaltet hat. */
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+
+  function starte(fuerModus) {
+    const pool = titelJeModus[fuerModus] || [];
+    const ersterOben = zieheAnderen(pool, null);
+    setOben(ersterOben);
+    setUnten(zieheAnderen(pool, ersterOben));
+    setStreak(0);
+    setNeuerRekord(false);
+    phaseRef.current = "raten";
+    setPhase("raten");
+  }
+
+  /* Ergebnis eines Durchgangs melden. Gespeichert wird davon nur, was
+     den bisherigen Bestwert uebertrifft — das entscheidet der Server. */
+  async function bestwertMelden(erreicht) {
+    const bisher = bestwerte[modus] || 0;
+    if (erreicht <= bisher) {
+      setNeuerRekord(false);
+      return;
+    }
+    setNeuerRekord(true);
+    // Sofort anzeigen; der Server bestaetigt gleich darauf.
+    setBestwerte((prev) => ({ ...prev, [modus]: erreicht }));
+    try {
+      const gespeichert = await api.reportHighscore(HOL_SPIEL, modus, erreicht);
+      setBestwerte((prev) => ({ ...prev, [modus]: gespeichert.score }));
+      setFehler("");
+    } catch (e) {
+      setFehler("Bestwert nicht gespeichert: " + e.message);
+    }
+  }
+
+  function rate(richtung) {
+    if (phaseRef.current !== "raten" || !oben || !unten) return;
+    if (tippStimmt(richtung, oben.score, unten.score)) {
+      phaseRef.current = "richtig";
+      setStreak((s) => s + 1);
+      setPhase("richtig");
+    } else {
+      phaseRef.current = "ende";
+      setPhase("ende");
+      // Die erreichte Straehne ist der Stand vor diesem Tipp.
+      bestwertMelden(streak);
+    }
+  }
+
+  /* Naechste Runde: der aufgedeckte untere Titel rueckt nach oben, ein
+     neuer kommt darunter. */
+  function weiter() {
+    if (phaseRef.current !== "richtig") return;
+    phaseRef.current = "raten";
+    const neuesOben = unten;
+    setOben(neuesOben);
+    setUnten(zieheAnderen(listeRef.current, neuesOben));
+    setPhase("raten");
+  }
+
+  /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt. */
+  useEffect(() => {
+    if (phase !== "richtig") return undefined;
+    const zeit = setTimeout(weiter, HOL_PAUSE_MS);
+    return () => clearTimeout(zeit);
+  }, [phase]);
+
+  // ---- Spielart waehlen ----
+  if (!modus) {
+    return (
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
+        <button
+          onClick={onZurueck}
+          style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+        >
+          ← Minispiele
+        </button>
+
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
+          Higher or Lower
+        </h2>
+        <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
+          Womit soll gespielt werden? „Gemischt" wirft alle Kategorien
+          zusammen — die Notenskala ist überall dieselbe. Jede Spielart führt
+          ihren eigenen Bestwert.
+        </p>
+
+        {fehler && (
+          <div style={{ background: "#2a1616", border: "1px solid #d9736a", color: "#d9736a", borderRadius: 8, padding: 12, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+            {fehler}
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {HOL_MODI.map((m) => {
+            const anzahl = (titelJeModus[m.key] || []).length;
+            const moeglich = anzahl >= HOL_MIN_TITEL;
+            const best = bestwerte[m.key] || 0;
+            return (
+              <button
+                key={m.key}
+                onClick={() => { if (moeglich) { setModus(m.key); starte(m.key); } }}
+                disabled={!moeglich}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "14px", borderRadius: 10, textAlign: "left",
+                  background: "#1D1D21",
+                  border: "1px solid " + (moeglich ? accentFor(m.key) : "#2A2A2E"),
+                  color: moeglich ? "#EDEAE3" : "#55524c",
+                  cursor: moeglich ? "pointer" : "default",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+                }}
+              >
+                <span>{m.label}</span>
+                {/* Anzahl und Bestwert stehen bewusst untereinander: als
+                    eine Zeile braechen sie auf schmalen Displays an
+                    unguenstiger Stelle um. */}
+                <span
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 400,
+                    color: moeglich ? "#9A968C" : "#55524c", textAlign: "right", flexShrink: 0,
+                  }}
+                >
+                  {moeglich ? (
+                    <>
+                      <span style={{ display: "block", whiteSpace: "nowrap" }}>{anzahl} bewertet</span>
+                      <span style={{ display: "block", whiteSpace: "nowrap", color: "#77746c", marginTop: 2 }}>
+                        Bestwert {best}
+                      </span>
+                    </>
+                  ) : (
+                    "mind. " + HOL_MIN_TITEL + " Bewertungen"
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Spiel ----
+  const modusInfo = HOL_MODI.find((m) => m.key === modus);
+  const best = bestwerte[modus] || 0;
+  const aufgedeckt = phase !== "raten";
+  const rahmenUnten = phase === "richtig" ? TREFFER_GRUEN : phase === "ende" ? "#d9736a" : undefined;
+
+  return (
+    <div
+      style={{
+        // Bei "Gemischt" gibt es keine Kategoriefarbe; accentFor faellt
+        // dort auf den Grundton der App zurueck.
+        "--accent": accentFor(modus),
+        maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px",
+      }}
+    >
+      <button
+        onClick={() => setModus(null)}
+        style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+      >
+        ← Spielart wechseln
+      </button>
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
+          HIGHER OR LOWER · {modusInfo.label.toUpperCase()}
+        </div>
+        <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+          Strähne {streak} · Bestwert {best}
+        </div>
+      </div>
+
+      {fehler && (
+        <div style={{ background: "#2a1616", border: "1px solid #d9736a", color: "#d9736a", borderRadius: 8, padding: 12, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+          {fehler}
+        </div>
+      )}
+
+      {!oben || !unten ? (
+        <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
+          In dieser Spielart gibt es gerade nichts zu raten.
+        </div>
+      ) : (
+        <>
+          <HoLKarte eintrag={oben} verdeckt={false} />
+
+          <div style={{ fontSize: 11.5, color: "#55524c", textAlign: "center", margin: "10px 0", fontFamily: "'JetBrains Mono', monospace", letterSpacing: 1 }}>
+            HÖHER ODER NIEDRIGER?
+          </div>
+
+          <HoLKarte eintrag={unten} verdeckt={!aufgedeckt} rahmen={rahmenUnten} />
+
+          {phase === "raten" && (
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              {[
+                { key: "hoeher", label: "↑ Höher" },
+                { key: "niedriger", label: "↓ Niedriger" },
+              ].map((k) => (
+                <button
+                  key={k.key}
+                  onClick={() => rate(k.key)}
+                  style={{
+                    flex: "1 1 0", minWidth: 0, padding: "15px", borderRadius: 8,
+                    background: "var(--accent, #C9A227)", color: "#17171A",
+                    border: "none", fontWeight: 700, fontSize: 15.5,
+                    cursor: "pointer", fontFamily: "inherit",
+                  }}
+                >
+                  {k.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {phase === "richtig" && (
+            <>
+              <div style={{ color: TREFFER_GRUEN, fontSize: 14, fontWeight: 700, textAlign: "center", marginTop: 16 }}>
+                {unten.score === oben.score ? "Gleichstand — zählt als richtig!" : "Richtig!"}
+              </div>
+              <button
+                onClick={weiter}
+                style={{
+                  width: "100%", padding: "13px", borderRadius: 8, fontSize: 14, marginTop: 12,
+                  background: "transparent", color: "#9A968C", border: "1px solid #33333a",
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >
+                Weiter
+              </button>
+            </>
+          )}
+
+          {phase === "ende" && (
+            <div
+              style={{
+                marginTop: 18, background: "#141416", borderRadius: 12, padding: 18,
+                border: "1px solid " + (neuerRekord ? "var(--accent, #C9A227)" : "#2A2A2E"),
+                textAlign: "center",
+              }}
+            >
+              <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
+                DANEBEN — STRÄHNE VORBEI
+              </div>
+
+              <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 40, lineHeight: 1, marginBottom: 6 }}>
+                {streak}
+              </div>
+              <div style={{ fontSize: 13, color: "#9A968C" }}>
+                {streak === 1 ? "richtiger Tipp" : "richtige Tipps"}
+              </div>
+
+              {neuerRekord && (
+                <div style={{ marginTop: 14 }}>
+                  <span
+                    style={{
+                      fontSize: 10.5, letterSpacing: 1, fontFamily: "'JetBrains Mono', monospace",
+                      background: "var(--accent, #C9A227)", color: "#17171A",
+                      borderRadius: 4, padding: "4px 10px", fontWeight: 700,
+                    }}
+                  >
+                    NEUER BESTWERT
+                  </span>
+                </div>
+              )}
+
+              <div style={{ fontSize: 12.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace", marginTop: 14 }}>
+                Bestwert {modusInfo.label}: {best}
+              </div>
+
+              <button
+                onClick={() => starte(modus)}
+                style={{
+                  width: "100%", padding: "15px", borderRadius: 8, marginTop: 18,
+                  background: "var(--accent, #C9A227)", color: "#17171A",
+                  border: "none", fontWeight: 700, fontSize: 15.5,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >
+                Nochmal
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
