@@ -132,19 +132,20 @@ const MEDAILLEN = { 1: "#E8C158", 2: "#D3D7DC", 3: "#D4915A" };
 
    Der Verlauf hinter der Zeile ist absichtlich blass und endet weit vor
    dem Notenschild — er soll den Rang begleiten, nicht den Titel
-   einfaerben. Er blendet an beiden Enden aus: links traegt er erst kurz
-   hinter dem Rand seine volle Deckkraft, sonst stuende dort eine harte
-   Farbkante.
+   einfaerben. Er hat genau einen Hoehepunkt und steigt und faellt
+   ringsum: eine gehaltene Flaeche braeche am Poster sichtbar ab, weil
+   das Bild sie deckt. Der Hoehepunkt liegt deshalb hinter dem Poster —
+   davor waechst die Farbe an, dahinter laeuft sie aus.
    ------------------------------------------------------------ */
-const RANG_VERLAUF_ANFANG = "6%";
+const RANG_VERLAUF_HOEHEPUNKT = "22%";
 const RANG_VERLAUF_ENDE = "68%";
 
-/* Verlauf einer Rang-Zeile: unsichtbar, kurz sichtbar, wieder
-   unsichtbar — alles in derselben Farbe. */
+/* Verlauf einer Rang-Zeile: unsichtbar, ein einzelner Hoehepunkt,
+   wieder unsichtbar — alles in derselben Farbe. */
 function rangVerlauf(farbe, deckkraft) {
   const unsichtbar = mitDeckkraft(farbe, 0);
   return (
-    `linear-gradient(90deg, ${unsichtbar} 0%, ${mitDeckkraft(farbe, deckkraft)} ${RANG_VERLAUF_ANFANG}, ` +
+    `linear-gradient(90deg, ${unsichtbar} 0%, ${mitDeckkraft(farbe, deckkraft)} ${RANG_VERLAUF_HOEHEPUNKT}, ` +
     `${unsichtbar} ${RANG_VERLAUF_ENDE})`
   );
 }
