@@ -5143,9 +5143,26 @@ export default function App() {
                   <div
                     key={f.id}
                     onClick={() => { setSelectedId(f.id); setMode("list"); }}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: "pointer", background: rang.verlauf }}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: "pointer", position: "relative" }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1 }}>
+                    {/* Der Verlauf gehoert an den Bildschirmrand, nicht an
+                        den Innenabstand der Liste: die Zeile sitzt mittig
+                        im Fenster, also holt "-50vw + 50%" genau den Weg
+                        nach links zurueck, den Rand und Innenabstand
+                        einnehmen. Nach rechts endet die Flaeche wie die
+                        Zeile — dort laeuft der Verlauf ohnehin aus. */}
+                    {rang.verlauf && (
+                      <div
+                        aria-hidden="true"
+                        style={{
+                          position: "absolute", top: 0, bottom: 0, right: 0,
+                          left: "calc(-50vw + 50%)",
+                          background: rang.verlauf,
+                          pointerEvents: "none",
+                        }}
+                      />
+                    )}
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1, position: "relative", zIndex: 1 }}>
                       <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 22, textAlign: "right", flexShrink: 0, ...rang.zahl }}>
                         {i + 1}
                       </span>
