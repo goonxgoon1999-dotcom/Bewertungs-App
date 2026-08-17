@@ -3846,6 +3846,13 @@ const MINISPIELE = [
       "das Bauchgefühl beider Titel — und damit ein Stück weit ihre Endnote.",
   },
   {
+    key: "turnier",
+    name: "Turnier",
+    beschreibung:
+      "Vier, acht oder sechzehn Titel im K.o.-System: Runde für Runde bis zum " +
+      "Sieger. Jede Paarung ist ein Duell — überspringen geht hier nicht.",
+  },
+  {
     key: "higher-or-lower",
     name: "Higher or Lower",
     beschreibung:
@@ -3865,7 +3872,7 @@ const MINISPIELE = [
    naechste Duell kommt. Ein Tippen springt jederzeit sofort weiter. */
 const DUELL_PAUSE_MS = 1300;
 
-function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, onXP, fehler }) {
+function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, onXP, onTurnier, fehler }) {
   const [spiel, setSpiel] = useState(null);
 
   if (spiel === "head-to-head") {
@@ -3874,6 +3881,20 @@ function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, o
         ranked={ranked}
         duellZahlen={duellZahlen}
         onDuell={onDuell}
+        fehler={fehler}
+        onZurueck={() => setSpiel(null)}
+      />
+    );
+  }
+
+  /* Dasselbe onDuell wie beim Head-to-Head: eine Turnier-Paarung wird
+     genauso ausgewertet wie ein freies Duell. */
+  if (spiel === "turnier") {
+    return (
+      <Turnier
+        ranked={ranked}
+        onDuell={onDuell}
+        onFertig={onTurnier}
         fehler={fehler}
         onZurueck={() => setSpiel(null)}
       />
@@ -3976,27 +3997,34 @@ function DuellKarte({ eintrag, zustand, onClick }) {
   );
 }
 
+/**
+ * Wer je Kategorie ueberhaupt antreten kann — fuer jedes Spiel, das
+ * Duelle auswertet (Head-to-Head wie Turnier).
+ *
+ * Antreten kann nur, wer eine Endnote und ein Bauchgefuehl hat.
+ * Vorgemerkte Eintraege sind hier ohnehin nicht dabei (sie stehen in
+ * keiner Rangliste); Eintraege ohne Note — Staffelgewichte in Summe 0 —
+ * fallen heraus, und ohne Bauchgefuehl gaebe es nichts zu verschieben.
+ * Die Reihenfolge bleibt die der Rangliste, daran haengt das Fenster
+ * der Head-to-Head-Paarung.
+ */
+function duellTeilnehmer(ranked) {
+  const result = {};
+  for (const c of CATEGORIES) {
+    result[c.key] = (ranked[c.key] || []).filter(
+      (f) => typeof f.score === "number" && typeof entryPersonal(f) === "number"
+    );
+  }
+  return result;
+}
+
 function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
   const [kategorie, setKategorie] = useState(null);
   const [paar, setPaar] = useState(null);
   // ID des gewaehlten Titels — solange sie steht, laeuft die Rueckmeldung.
   const [gewaehlt, setGewaehlt] = useState(null);
 
-  /* Antreten kann nur, wer eine Endnote und ein Bauchgefuehl hat.
-     Vorgemerkte Eintraege sind hier ohnehin nicht dabei (sie stehen in
-     keiner Rangliste); Eintraege ohne Note — Staffelgewichte in Summe
-     0 — fallen heraus, und ohne Bauchgefuehl gaebe es nichts zu
-     verschieben. Die Reihenfolge ist die der Rangliste, daran haengt
-     das Fenster der Paarung. */
-  const teilnehmer = useMemo(() => {
-    const result = {};
-    for (const c of CATEGORIES) {
-      result[c.key] = (ranked[c.key] || []).filter(
-        (f) => typeof f.score === "number" && typeof entryPersonal(f) === "number"
-      );
-    }
-    return result;
-  }, [ranked]);
+  const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
 
   /* Gezogen wird immer aus dem aktuellen Stand: nach einem Duell haben
      sich zwei Endnoten verschoben und die Rangliste sieht anders aus.
@@ -4207,6 +4235,635 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   MINISPIEL "TURNIER" — K.o.-System
+
+   Kein zweites Duellspiel, sondern die Runden drumherum: gespielt
+   wird Paarung fuer Paarung mit genau demselben Duell-Bildschirm
+   (DuellKarte) und genau derselben Auswertung wie bei Head-to-Head
+   (onDuell — siehe duellAuswerten). Neu sind allein die Auslosung,
+   der Bracket-Baum und der Sieger am Ende.
+
+   Anders als beim freien Head-to-Head gibt es kein Ueberspringen: in
+   jeder Paarung muss eine Wahl getroffen werden, sonst gaebe es
+   niemanden, der weiterkommt.
+   ============================================================ */
+
+/* Waehlbare Turniergroessen. Groesser als das Feld bewerteter Titel
+   kann ein Turnier nicht werden — zu grosse Groessen stehen deshalb
+   nicht zur Wahl. */
+const TURNIER_GROESSEN = [4, 8, 16];
+
+/* Ab so vielen bewerteten Titeln laesst sich in einer Kategorie
+   ueberhaupt ein Turnier spielen. */
+const TURNIER_MIN_TEILNEHMER = TURNIER_GROESSEN[0];
+
+/* Der Name einer Runde haengt allein an der Zahl ihrer Paarungen —
+   bei acht Teilnehmern faengt es also im Viertelfinale an. */
+function turnierRundenName(paare) {
+  if (paare === 1) return "Finale";
+  if (paare === 2) return "Halbfinale";
+  if (paare === 4) return "Viertelfinale";
+  return "Achtelfinale";
+}
+
+/**
+ * `groesse` Teilnehmer aus der Liste losen.
+ *
+ * Gemischt wird die ganze Liste (Fisher-Yates), danach wird vorne
+ * abgeschnitten: jeder bewertete Titel hat dieselbe Chance, und
+ * gesetzt wird nichts — Platz 1 kann schon in der ersten Runde auf
+ * Platz 2 treffen. Zurueck kommt null, wenn das Feld nicht reicht.
+ */
+function zieheTurnierFeld(liste, groesse, zufall = Math.random) {
+  if (!Array.isArray(liste) || liste.length < groesse) return null;
+  const kopie = liste.slice();
+  for (let i = kopie.length - 1; i > 0; i--) {
+    const j = Math.floor(zufall() * (i + 1));
+    const merk = kopie[i];
+    kopie[i] = kopie[j];
+    kopie[j] = merk;
+  }
+  return kopie.slice(0, groesse);
+}
+
+/**
+ * Der Baum zu einem gelosten Feld: die erste Runde mit den ausgelosten
+ * Paarungen, darunter je Runde halb so viele noch leere Paarungen bis
+ * zum Finale.
+ *
+ * Eine Paarung haelt ihre beiden Plaetze (`a`, `b` — null, solange
+ * niemand dort steht) und die ID des Siegers (null, solange sie nicht
+ * entschieden ist).
+ */
+function baueTurnierbaum(feld) {
+  if (!Array.isArray(feld) || feld.length < 2) return null;
+  const erste = [];
+  for (let i = 0; i + 1 < feld.length; i += 2) {
+    erste.push({ a: feld[i], b: feld[i + 1], sieger: null });
+  }
+  const baum = [erste];
+  let anzahl = erste.length;
+  while (anzahl > 1) {
+    anzahl = Math.floor(anzahl / 2);
+    const runde = [];
+    for (let i = 0; i < anzahl; i++) runde.push({ a: null, b: null, sieger: null });
+    baum.push(runde);
+  }
+  return baum;
+}
+
+/**
+ * Die naechste zu entscheidende Paarung: die erste ohne Sieger, von
+ * oben nach unten gelesen. Weil in dieser Reihenfolge entschieden
+ * wird, stehen dort immer schon beide Teilnehmer fest.
+ *
+ * Zurueck kommt null, wenn auch das Finale entschieden ist.
+ */
+function offeneTurnierPaarung(baum) {
+  for (let r = 0; r < baum.length; r++) {
+    for (let p = 0; p < baum[r].length; p++) {
+      if (!baum[r][p].sieger) return { runde: r, paar: p };
+    }
+  }
+  return null;
+}
+
+/**
+ * Den Baum mit einer entschiedenen Paarung zurueckgeben — der alte
+ * bleibt unberuehrt. Der Sieger rueckt zugleich in die naechste Runde
+ * nach: zwei benachbarte Paarungen treffen sich dort, die gerade
+ * Nummer links, die ungerade rechts.
+ */
+function mitTurnierEntscheidung(baum, ort, siegerId) {
+  const neu = baum.map((runde) => runde.map((paarung) => ({ ...paarung })));
+  const paarung = neu[ort.runde][ort.paar];
+  const sieger = paarung.a && paarung.a.id === siegerId ? paarung.a : paarung.b;
+  if (!sieger || sieger.id !== siegerId) return baum;
+  paarung.sieger = sieger.id;
+
+  const naechste = neu[ort.runde + 1];
+  if (naechste) {
+    const ziel = naechste[Math.floor(ort.paar / 2)];
+    if (ort.paar % 2 === 0) ziel.a = sieger;
+    else ziel.b = sieger;
+  }
+  return neu;
+}
+
+/** Der Turniersieger — null, solange das Finale nicht entschieden ist. */
+function turnierSieger(baum) {
+  const finale = baum[baum.length - 1][0];
+  if (!finale || !finale.sieger) return null;
+  return finale.a && finale.a.id === finale.sieger ? finale.a : finale.b;
+}
+
+/* Pokal — das Zeichen des Turniersiegers. Wie die uebrigen Symbole der
+   App eine reine Strichzeichnung, die ihre Farbe vom Umfeld erbt. */
+function IconPokal({ groesse = 18 }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      style={{ ...symbolBasis, width: groesse, height: groesse }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M7.4 3.4h9.2v5.1a4.6 4.6 0 0 1-9.2 0V3.4Z" />
+      <path d="M7.4 5.4H4.5v1.3a3.4 3.4 0 0 0 3.4 3.4" />
+      <path d="M16.6 5.4h2.9v1.3a3.4 3.4 0 0 1-3.4 3.4" />
+      <path d="M12 13.1v3.4" />
+      <path d="M8.5 20.6h7l-1-4.1h-5l-1 4.1Z" />
+    </svg>
+  );
+}
+
+/* Eine Zeile der Bracket-Karte. Ohne Eintrag steht dort "?" — dieser
+   Platz ist noch nicht ausgespielt. */
+function BracketTeilnehmer({ eintrag, sieger, verloren, trennlinie, akzent }) {
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 8, minWidth: 0,
+        padding: "8px 10px",
+        borderBottom: trennlinie ? "1px solid #2A2A2E" : "none",
+        opacity: verloren ? 0.5 : 1,
+      }}
+    >
+      <span
+        style={{
+          flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.35,
+          overflowWrap: "anywhere", color: eintrag ? "#EDEAE3" : "#55524c",
+          fontFamily: eintrag ? "inherit" : "'JetBrains Mono', monospace",
+        }}
+      >
+        {eintrag ? eintrag.title : "?"}
+      </span>
+      {sieger && (
+        <span style={{ flexShrink: 0, display: "flex", color: akzent }} title="weiter">
+          <IconHaken groesse={14} />
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Eine Paarung im Baum. Vier Zustaende:
+ *
+ *   aktuell       — jetzt zu entscheiden: Rahmen und getoenter Grund
+ *                   in der Kategoriefarbe.
+ *   entschieden   — Sieger mit Haekchen, Verlierer abgeblendet.
+ *   unerreichbar  — mindestens ein Platz noch offen ("?"), stark
+ *                   abgeblendet.
+ *   bereit        — beide Teilnehmer stehen fest, die Paarung ist aber
+ *                   noch nicht an der Reihe.
+ */
+function BracketKarte({ paarung, zustand, akzent }) {
+  const aktuell = zustand === "aktuell";
+  const entschieden = zustand === "entschieden";
+  const unerreichbar = zustand === "unerreichbar";
+
+  const gewinnerA = entschieden && paarung.a && paarung.sieger === paarung.a.id;
+  const gewinnerB = entschieden && paarung.b && paarung.sieger === paarung.b.id;
+
+  return (
+    <div
+      style={{
+        borderRadius: 10, overflow: "hidden",
+        border: "1px solid " + (aktuell ? akzent : "#2A2A2E"),
+        background: aktuell ? mitDeckkraft(akzent, 0.12) : "#1D1D21",
+        opacity: unerreichbar ? 0.35 : entschieden ? 0.85 : 1,
+      }}
+    >
+      <BracketTeilnehmer
+        eintrag={paarung.a}
+        sieger={gewinnerA}
+        verloren={entschieden && !gewinnerA}
+        trennlinie
+        akzent={akzent}
+      />
+      <BracketTeilnehmer
+        eintrag={paarung.b}
+        sieger={gewinnerB}
+        verloren={entschieden && !gewinnerB}
+        akzent={akzent}
+      />
+    </div>
+  );
+}
+
+/* Welchen Zustand eine Paarung im Baum hat — siehe BracketKarte. */
+function bracketZustand(paarung, runde, paar, ort) {
+  if (paarung.sieger) return "entschieden";
+  if (ort && ort.runde === runde && ort.paar === paar) return "aktuell";
+  if (!paarung.a || !paarung.b) return "unerreichbar";
+  return "bereit";
+}
+
+/**
+ * Der Baum als Ganzes.
+ *
+ * Ein klassischer Turnierbaum laeuft in die Breite und passt damit auf
+ * kein Telefon. Hier stehen die Runden deshalb untereinander — Runde 1
+ * oben, darunter die naechste —, je Runde eine Spalte aus
+ * Paarungskarten, dazwischen ein Pfeil nach unten.
+ */
+function TurnierBracket({ baum, ort, akzent }) {
+  const sieger = turnierSieger(baum);
+  return (
+    <div style={{ marginTop: 26 }}>
+      <div
+        style={{
+          fontSize: 11.5, letterSpacing: 1, color: "#55524c",
+          fontFamily: "'JetBrains Mono', monospace", marginBottom: 12,
+        }}
+      >
+        BRACKET
+      </div>
+
+      {baum.map((runde, r) => (
+        <React.Fragment key={r}>
+          {r > 0 && (
+            <div
+              aria-hidden="true"
+              style={{ textAlign: "center", color: "#3B3B41", fontSize: 15, padding: "8px 0" }}
+            >
+              ↓
+            </div>
+          )}
+          <div>
+            <div
+              style={{
+                fontSize: 11, letterSpacing: 1, color: "#77746c",
+                fontFamily: "'JetBrains Mono', monospace", marginBottom: 8,
+              }}
+            >
+              {turnierRundenName(runde.length).toUpperCase()}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {runde.map((paarung, p) => (
+                <BracketKarte
+                  key={p}
+                  paarung={paarung}
+                  zustand={bracketZustand(paarung, r, p, ort)}
+                  akzent={akzent}
+                />
+              ))}
+            </div>
+          </div>
+        </React.Fragment>
+      ))}
+
+      <div
+        aria-hidden="true"
+        style={{ textAlign: "center", color: "#3B3B41", fontSize: 15, padding: "8px 0" }}
+      >
+        ↓
+      </div>
+
+      {/* Der Platz des Siegers steht von Anfang an da und wird
+          ausgefuellt, sobald das Finale entschieden ist. */}
+      <div
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 9,
+          padding: "13px 14px", borderRadius: 10, textAlign: "center",
+          border: "1px solid " + (sieger ? akzent : "#2A2A2E"),
+          background: sieger ? mitDeckkraft(akzent, 0.12) : "#1D1D21",
+          opacity: sieger ? 1 : 0.6,
+        }}
+      >
+        <span style={{ flexShrink: 0, display: "flex", color: sieger ? akzent : "#55524c" }}>
+          <IconPokal groesse={18} />
+        </span>
+        <span
+          style={{
+            fontFamily: "'Playfair Display', serif", fontWeight: 800,
+            fontSize: sieger ? 16 : 13.5, minWidth: 0, overflowWrap: "anywhere",
+            color: sieger ? "#EDEAE3" : "#55524c",
+          }}
+        >
+          {sieger ? sieger.title : "Turniersieger wird hier gekrönt"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function Turnier({ ranked, onDuell, onFertig, fehler, onZurueck }) {
+  const [kategorie, setKategorie] = useState(null);
+  const [baum, setBaum] = useState(null);
+  // ID des gewaehlten Titels — solange sie steht, laeuft die Rueckmeldung.
+  const [gewaehlt, setGewaehlt] = useState(null);
+
+  const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
+
+  /* Dieselbe Wahl darf nur einmal weiterruecken. Der Verweis
+     entscheidet das ohne Umweg ueber den naechsten Aufbau: ein Tippen
+     und die ablaufende Pause koennen sonst beide durchkommen. */
+  const gewaehltRef = useRef(null);
+
+  /* Die Auswertungen laufen nacheinander. Zwei gleichzeitige
+     Speicherungen laesen denselben Stand und schrieben sich
+     gegenseitig zu — die Kette haelt sie auseinander, ohne die
+     Oberflaeche warten zu lassen. */
+  const speicherungRef = useRef(Promise.resolve());
+
+  function abbrechen() {
+    /* Ein abgebrochenes Turnier ist keins: es gibt keine Punkte, und
+       stehen bleibt nichts. Die bereits ausgespielten Paarungen haben
+       ihre Wirkung natuerlich behalten — sie waren richtige Duelle. */
+    gewaehltRef.current = null;
+    setGewaehlt(null);
+    setBaum(null);
+  }
+
+  function starte(groesse) {
+    const feld = zieheTurnierFeld(teilnehmer[kategorie], groesse);
+    if (!feld) return;
+    gewaehltRef.current = null;
+    setGewaehlt(null);
+    setBaum(baueTurnierbaum(feld));
+  }
+
+  function waehle(gewinner, verlierer) {
+    if (gewaehltRef.current) return;
+    gewaehltRef.current = gewinner.id;
+    setGewaehlt(gewinner.id);
+    speicherungRef.current = speicherungRef.current
+      .catch(() => {})
+      .then(() => onDuell(kategorie, gewinner.id, verlierer.id));
+  }
+
+  /* Die Wahl in den Baum uebernehmen und zur naechsten Paarung. */
+  function weiter() {
+    const wahl = gewaehltRef.current;
+    if (!wahl || !baum) return;
+    const ort = offeneTurnierPaarung(baum);
+    if (!ort) return;
+
+    gewaehltRef.current = null;
+    const neu = mitTurnierEntscheidung(baum, ort, wahl);
+    setGewaehlt(null);
+    setBaum(neu);
+
+    /* Punkte gibt es fuer das abgeschlossene Turnier, nicht fuer die
+       einzelne Paarung — die zaehlt bereits als Duell. */
+    if (turnierSieger(neu)) onFertig();
+  }
+
+  /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt.
+     Dieselbe Pause wie beim Duell nebenan. */
+  useEffect(() => {
+    if (!gewaehlt) return undefined;
+    const zeit = setTimeout(weiter, DUELL_PAUSE_MS);
+    return () => clearTimeout(zeit);
+  }, [gewaehlt]);
+
+  // ---- Kategorie waehlen ----
+  if (!kategorie) {
+    return (
+      <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
+        <button
+          onClick={onZurueck}
+          style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+        >
+          ← Minispiele
+        </button>
+
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
+          Turnier
+        </h2>
+        <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
+          In welcher Kategorie soll gespielt werden? Ein Turnier läuft
+          immer innerhalb einer Kategorie.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {CATEGORIES.map((c) => {
+            const anzahl = teilnehmer[c.key].length;
+            const moeglich = anzahl >= TURNIER_MIN_TEILNEHMER;
+            return (
+              <button
+                key={c.key}
+                onClick={() => moeglich && setKategorie(c.key)}
+                disabled={!moeglich}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "14px", borderRadius: 10, textAlign: "left",
+                  background: "#1D1D21",
+                  border: "1px solid " + (moeglich ? accentFor(c.key) : "#2A2A2E"),
+                  color: moeglich ? "#EDEAE3" : "#55524c",
+                  cursor: moeglich ? "pointer" : "default",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+                }}
+              >
+                <span>{c.label}</span>
+                <span
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 400,
+                    color: moeglich ? "#9A968C" : "#55524c", textAlign: "right", flexShrink: 0,
+                  }}
+                >
+                  {moeglich
+                    ? anzahl + " bewertet"
+                    : "mind. " + TURNIER_MIN_TEILNEHMER + " Bewertungen"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const catInfo = CATEGORIES.find((c) => c.key === kategorie);
+  const akzent = accentFor(kategorie);
+  const anzahl = teilnehmer[kategorie].length;
+
+  // ---- Groesse waehlen ----
+  if (!baum) {
+    return (
+      <div style={{ "--accent": akzent, maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
+        <button
+          onClick={() => setKategorie(null)}
+          style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+        >
+          ← Kategorie wechseln
+        </button>
+
+        <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 16 }}>
+          TURNIER · {catInfo.label.toUpperCase()}
+        </div>
+
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
+          Wie viele Teilnehmer?
+        </h2>
+        <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
+          Gelost wird zufällig aus den {anzahl} bewerteten Titeln dieser
+          Kategorie — gesetzt wird nichts, Platz 1 kann schon in der
+          ersten Runde auf Platz 2 treffen.
+        </p>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {TURNIER_GROESSEN.map((g) => {
+            const moeglich = anzahl >= g;
+            const runden = Math.round(Math.log2(g));
+            return (
+              <button
+                key={g}
+                onClick={() => moeglich && starte(g)}
+                disabled={!moeglich}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  gap: 12, padding: "14px", borderRadius: 10, textAlign: "left",
+                  background: "#1D1D21",
+                  border: "1px solid " + (moeglich ? akzent : "#2A2A2E"),
+                  color: moeglich ? "#EDEAE3" : "#55524c",
+                  cursor: moeglich ? "pointer" : "default",
+                  fontFamily: "inherit", fontSize: 15, fontWeight: 700,
+                }}
+              >
+                <span>{g} Teilnehmer</span>
+                <span
+                  style={{
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 400,
+                    color: moeglich ? "#9A968C" : "#55524c", textAlign: "right", flexShrink: 0,
+                  }}
+                >
+                  {moeglich
+                    ? runden + " Runden · " + (g - 1) + " Duelle"
+                    : "mind. " + g + " Bewertungen"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Turnier ----
+  const ort = offeneTurnierPaarung(baum);
+  const sieger = turnierSieger(baum);
+  const paarung = ort ? baum[ort.runde][ort.paar] : null;
+
+  return (
+    <div style={{ "--accent": akzent, maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
+      {/* Abbrechen ist jederzeit moeglich — und kostet das Turnier. */}
+      <button
+        onClick={sieger ? onZurueck : abbrechen}
+        style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
+      >
+        {sieger ? "← Minispiele" : "← Turnier abbrechen"}
+      </button>
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
+          TURNIER · {catInfo.label.toUpperCase()}
+        </div>
+        <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+          {ort
+            ? turnierRundenName(baum[ort.runde].length) +
+              " · Duell " + (ort.paar + 1) + " von " + baum[ort.runde].length
+            : "Turnier entschieden"}
+        </div>
+      </div>
+
+      {fehler && (
+        <div style={{ background: "#2a1616", border: "1px solid #d9736a", color: "#d9736a", borderRadius: 8, padding: 12, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+          {fehler}
+        </div>
+      )}
+
+      {paarung ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {["a", "b"].map((seite, i) => {
+              const eintrag = paarung[seite];
+              const gegner = paarung[seite === "a" ? "b" : "a"];
+              const zustand = !gewaehlt
+                ? "offen"
+                : gewaehlt === eintrag.id
+                  ? "gewaehlt"
+                  : "unterlegen";
+              return (
+                <React.Fragment key={eintrag.id}>
+                  {i === 1 && (
+                    <div
+                      aria-hidden="true"
+                      style={{
+                        flex: "0 0 auto", width: 26, textAlign: "center",
+                        fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 16,
+                        color: "#55524c", letterSpacing: 0.5,
+                      }}
+                    >
+                      VS
+                    </div>
+                  )}
+                  <DuellKarte
+                    eintrag={eintrag}
+                    zustand={zustand}
+                    onClick={() => (gewaehlt ? weiter() : waehle(eintrag, gegner))}
+                  />
+                </React.Fragment>
+              );
+            })}
+          </div>
+
+          <div style={{ fontSize: 12, color: "#77746c", textAlign: "center", margin: "14px 0 6px", lineHeight: 1.5 }}>
+            {gewaehlt
+              ? "Tippen für die nächste Paarung."
+              : "Welcher Titel gefällt dir besser?"}
+          </div>
+          <div style={{ fontSize: 11.5, color: "#55524c", textAlign: "center", lineHeight: 1.5 }}>
+            Im Turnier gibt es kein Überspringen.
+          </div>
+        </>
+      ) : (
+        <>
+          {/* ---- Sieger ---- */}
+          <div
+            style={{
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+              borderRadius: 12, padding: "24px 16px",
+              border: "1px solid " + akzent, background: mitDeckkraft(akzent, 0.12),
+            }}
+          >
+            <span style={{ display: "flex", color: akzent }}>
+              <IconPokal groesse={38} />
+            </span>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: akzent, fontFamily: "'JetBrains Mono', monospace" }}>
+              TURNIERSIEGER
+            </div>
+            <Poster url={sieger.poster} title={sieger.title} size={120} />
+            <div
+              style={{
+                fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 22,
+                lineHeight: 1.25, textAlign: "center", overflowWrap: "anywhere",
+              }}
+            >
+              {sieger.title}
+            </div>
+          </div>
+
+          <button
+            onClick={abbrechen}
+            style={{
+              width: "100%", padding: "15px", borderRadius: 8, marginTop: 14,
+              background: akzent, color: "#17171A", border: "none",
+              fontWeight: 700, fontSize: 15.5, cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            Neues Turnier
+          </button>
+        </>
+      )}
+
+      <TurnierBracket baum={baum} ort={ort} akzent={akzent} />
     </div>
   );
 }
@@ -6968,6 +7625,7 @@ export default function App() {
           onDuell={duellAuswerten}
           onBewerten={vorgemerktesBewerten}
           onXP={() => xpGeben("highscore")}
+          onTurnier={() => xpGeben("turnier")}
           fehler={duellFehler}
         />
       ) : (
