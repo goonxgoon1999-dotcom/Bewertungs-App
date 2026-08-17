@@ -1807,6 +1807,40 @@ function KopfIconButton({ title, active, onClick, children }) {
   );
 }
 
+/* Huelle fuer einen Listenwechsel: der Inhalt blendet auf und rutscht
+   dabei leicht heran (siehe .uebergang).
+
+   Die Kinder werden bewusst *nicht* ueber einen key ausgetauscht — ein
+   Neuaufbau wuerde Zustand und Effekte der Kinder zuruecksetzen. Die
+   Animation wird stattdessen von Hand neu angestossen: Klasse ab,
+   einmal Layout erzwingen, Klasse wieder dran. So bleibt jeder
+   Klick-Handler und jeder Zustand darunter unberuehrt.
+
+   Beim ersten Aufbau traegt das Element die Klasse schon im Markup und
+   spielt die Bewegung von allein. */
+function Uebergang({ trigger, children }) {
+  const ref = useRef(null);
+  const ersterLauf = useRef(true);
+
+  useEffect(() => {
+    if (ersterLauf.current) { ersterLauf.current = false; return; }
+    const el = ref.current;
+    if (!el) return;
+    el.classList.remove("uebergang");
+    void el.offsetWidth;
+    el.classList.add("uebergang");
+  }, [trigger]);
+
+  return <div ref={ref} className="uebergang">{children}</div>;
+}
+
+/* Versatz einer Listenzeile beim Erscheinen: 25ms je Zeile, ab der
+   zehnten bleibt es dabei. Sonst warteten die unteren Zeilen einer
+   langen Liste sekundenlang auf ihren Auftritt. */
+function listenVersatz(i) {
+  return Math.min(i, 9) * 25 + "ms";
+}
+
 function BottomSheet({ title, onClose, children }) {
   return (
     <div
@@ -2448,12 +2482,12 @@ function duplikatText(warnung, categoryLabel) {
 /* ============================================================
    WATCHLIST — vorgemerkt, noch ohne Note
    ============================================================ */
-function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen }) {
+function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen, reihe = 0 }) {
   /* Die eigene Laufzeit des Eintrags. Ist sie nicht bekannt — oder
      handelt es sich um ein Spiel —, bleibt sie einfach weg. */
   const laufzeit = eintragLaufzeit(eintrag);
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326" }}>
+    <div className="listen-eintrag" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326", animationDelay: listenVersatz(reihe) }}>
       <Poster url={eintrag.poster} title={eintrag.title} size={34} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -8121,6 +8155,53 @@ export default function App() {
           .backdrop-layer { animation: none !important; transform: none !important; }
         }
 
+        /* ----------------------------------------------------------
+           Grundbewegungen der Bedienung. Rein dekorativ: keine der
+           Regeln aendert Farbe, Schrift, Groesse oder Position im
+           Ruhezustand — sie beschreiben nur den Weg dorthin.
+           ---------------------------------------------------------- */
+
+        /* Wechsel der Liste (Kategorie-Tab oder Unterreiter): der neue
+           Inhalt blendet auf und kommt dabei ein Stueck von links
+           heran. Der Versatz geht bewusst nach links: nach rechts
+           haette er auf schmalen Displays fuer den Moment der
+           Animation eine Querlaufleiste ausgeloest. */
+        /* fill-mode ist bewusst backwards und nicht both: "both" haelt
+           den Endzustand fest und liesse damit dauerhaft eine
+           transform-Matrix am Element stehen — auch eine Identitaet
+           macht das Element zum Bezugsrahmen fuer position: fixed
+           darin. Mit "backwards" gilt der Anfangszustand nur vor dem
+           Start (wichtig fuer den Versatz der Listenzeilen), danach
+           faellt alles auf den normalen Stil zurueck: kein transform,
+           volle Deckkraft. */
+        @keyframes inhaltRein {
+          from { opacity: 0; transform: translateX(-10px); }
+          to   { opacity: 1; transform: none; }
+        }
+        .uebergang { animation: inhaltRein 180ms ease-out backwards; }
+
+        /* Listeneintraege beim Erscheinen — dieselbe Bewegung, nur
+           kleiner und nacheinander. Der Versatz steht als
+           animation-delay an der Zeile und ist bei den ersten zehn
+           gedeckelt (siehe listenVersatz), damit lange Listen nicht
+           spuerbar nachhinken. */
+        @keyframes zeileRein {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: none; }
+        }
+        .listen-eintrag { animation: zeileRein 190ms ease-out backwards; }
+
+        /* Tap-Rueckmeldung: der Knopf federt beim Antippen kurz ein
+           und kommt von selbst zurueck. */
+        button { transition: transform 100ms ease-out; }
+        button:active { transform: scale(0.96); }
+
+        @media (prefers-reduced-motion: reduce) {
+          .uebergang, .listen-eintrag { animation: none !important; }
+          button { transition: none !important; }
+          button:active { transform: none !important; }
+        }
+
         input:focus, button:focus-visible, input:focus-visible {
           outline: 2px solid var(--accent, #C9A227);
           outline-offset: 1px;
@@ -8158,9 +8239,31 @@ export default function App() {
         /* Fester 16:9-Ausschnitt ueber die volle Breite. Der Inhalt sitzt
            unten; reicht er einmal tiefer als 16:9 hergeben, waechst der
            Bereich mit, damit nichts abgeschnitten wird. */
-        .kopfbereich { aspect-ratio: 16 / 9; }
+        /* Luft ueber dem Titel. Der Inhalt haengt am unteren Rand des
+           Kopfbereichs (justify-content: flex-end) — ein groesserer
+           Innenabstand am Inhalt selbst haette den Titel deshalb nicht
+           nach unten geschoben, sondern nur oben mehr abgeschnitten.
+           Der Abstand gehoert an den Kopfbereich: der 16:9-Ausschnitt
+           gilt fuer die Inhaltsflaeche (box-sizing content-box), die
+           Polsterung kommt also oben drauf und der ganze Block darin
+           rutscht mit nach unten.
+
+           Die Safe-Area ersetzt den Zuschlag nicht, sie kommt davor:
+           auf Geraeten mit Kerbe lag der Titel bisher unter der
+           Statusleiste. Ohne Kerbe liefert env() 0px, dort bleiben die
+           28px uebrig.
+
+           Die Symbole oben rechts bleiben, wo sie waren: sie sind
+           absolut positioniert und beziehen ihr top: 0 auf die
+           Polsterungskante, nicht auf den Inhalt. Ebenso das Bild
+           dahinter (inset: 0), das den groesseren Ausschnitt einfach
+           mitfuellt. */
+        .kopfbereich {
+          aspect-ratio: 16 / 9;
+          padding-top: calc(env(safe-area-inset-top, 0px) + 28px);
+        }
         @supports not (aspect-ratio: 16 / 9) {
-          .kopfbereich { min-height: 56.25vw; }
+          .kopfbereich { min-height: calc(56.25vw + env(safe-area-inset-top, 0px) + 28px); }
         }
 
         /* ----------------------------------------------------------
@@ -8584,6 +8687,10 @@ export default function App() {
         />
       ) : (
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px" }}>
+          {/* Der Tabwechsel blendet den neuen Kategorie-Inhalt ein.
+              Der Zustand darunter bleibt erhalten — die Huelle tauscht
+              nichts aus, sie startet nur die Bewegung neu. */}
+          <Uebergang trigger={activeTab}>
           {saveError && (
             <div style={{ background: "#2a1616", border: "1px solid #d9736a", color: "#d9736a", borderRadius: 8, padding: 12, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
               {saveError}
@@ -8690,6 +8797,7 @@ export default function App() {
           )}
 
           {mode === "list" && unterReiter === "watchlist" && (
+            <Uebergang trigger={unterReiter}>
             <>
               <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
                 {watchlistList.length === 0
@@ -8711,10 +8819,11 @@ export default function App() {
                   ohne sie schon zu bewerten.
                 </div>
               ) : (
-                watchlistList.map((f) => (
+                watchlistList.map((f, i) => (
                   <WatchlistZeile
                     key={f.id}
                     eintrag={f}
+                    reihe={i}
                     busy={busy}
                     merkliste={merklisteLabel(category)}
                     onBewerten={() => { setBewerteVorgemerkt(f); setMode("watchlist-form"); }}
@@ -8738,9 +8847,11 @@ export default function App() {
                 />
               )}
             </>
+            </Uebergang>
           )}
 
           {mode === "list" && unterReiter === "bewertet" && (
+            <Uebergang trigger={unterReiter}>
             <>
               {/* Suchzeile: Feld schrumpft mit (minWidth 0), der Knopf
                   bleibt als Symbol in fester Breite — so passt die Zeile
@@ -8776,7 +8887,8 @@ export default function App() {
                   <div
                     key={f.id}
                     onClick={() => { setSelectedId(f.id); setMode("list"); }}
-                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: "pointer", position: "relative" }}
+                    className="listen-eintrag"
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: "pointer", position: "relative", animationDelay: listenVersatz(i) }}
                   >
                     {/* Der Verlauf gehoert an den Bildschirmrand, nicht an
                         den Innenabstand der Liste: die Zeile sitzt mittig
@@ -8831,7 +8943,9 @@ export default function App() {
                 )}
               </div>
             </>
+            </Uebergang>
           )}
+          </Uebergang>
         </div>
       )}
 
