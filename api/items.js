@@ -2,7 +2,7 @@ import {
   sql, ensureReady, rowToItem, rowToSeason, validateItem,
   criteriaKeysFor, CATEGORIES, supportsSeasons, normalizeWeight,
   normalizeWatchCount, WATCH_COUNT_DEFAULT, genresZuText,
-  episodenZuText, positiveZahl,
+  episodenZuText, positiveZahl, logFehler, fehlerBeschreibung,
 } from "./_db.js";
 
 /**
@@ -260,8 +260,8 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "GET, POST, PUT, PATCH, DELETE");
     return res.status(405).json({ error: "Methode nicht erlaubt." });
   } catch (err) {
-    console.error("API-Fehler:", err);
-    return res.status(500).json({ error: "Serverfehler: " + (err.message || "unbekannt") });
+    logFehler("API-Fehler (/api/items " + req.method + ")", err);
+    return res.status(500).json({ error: "Serverfehler: " + fehlerBeschreibung(err) });
   }
 }
 
@@ -320,7 +320,7 @@ async function create(req, res) {
          ${body.createdAt || now}, ${now},
          -- Wann bewertet wurde. Vorgemerktes hat noch kein Datum; es
          -- kommt erst, wenn daraus ein bewerteter Eintrag wird (siehe
-         -- update). `ratedAt` aus der Anfrage gibt es nur beim
+         -- update). Ein ratedAt aus der Anfrage gibt es nur beim
          -- Einspielen eines Backups.
          ${merkliste ? null : bewertetAm(body) || now})
       RETURNING *

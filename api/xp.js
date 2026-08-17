@@ -1,4 +1,6 @@
-import { sql, ensureReady, rowToXp, XP_ZEILE } from "./_db.js";
+import {
+  sql, ensureReady, rowToXp, XP_ZEILE, logFehler, fehlerBeschreibung,
+} from "./_db.js";
 
 /**
  * Aktivitaets-Punkte des Nutzers.
@@ -63,8 +65,8 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "GET, POST");
     return res.status(405).json({ error: "Methode nicht erlaubt." });
   } catch (err) {
-    console.error("API-Fehler:", err);
-    return res.status(500).json({ error: "Serverfehler: " + (err.message || "unbekannt") });
+    logFehler("API-Fehler (/api/xp)", err);
+    return res.status(500).json({ error: "Serverfehler: " + fehlerBeschreibung(err) });
   }
 }
 

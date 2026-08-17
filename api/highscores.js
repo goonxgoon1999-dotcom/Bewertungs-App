@@ -1,4 +1,6 @@
-import { sql, ensureReady, rowToHighscore, CATEGORIES } from "./_db.js";
+import {
+  sql, ensureReady, rowToHighscore, CATEGORIES, logFehler, fehlerBeschreibung,
+} from "./_db.js";
 
 /**
  * Bestwerte der Minispiele, je Spiel und Spielart.
@@ -33,8 +35,8 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "GET, POST");
     return res.status(405).json({ error: "Methode nicht erlaubt." });
   } catch (err) {
-    console.error("API-Fehler:", err);
-    return res.status(500).json({ error: "Serverfehler: " + (err.message || "unbekannt") });
+    logFehler("API-Fehler (/api/highscores)", err);
+    return res.status(500).json({ error: "Serverfehler: " + fehlerBeschreibung(err) });
   }
 }
 
