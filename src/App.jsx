@@ -1006,6 +1006,92 @@ function vergissAlleOhneLaufzeit() {
   } catch (e) {}
 }
 
+/* ------------------------------------------------------------
+   Anzeige-Cache
+
+   Beim Start steht der zuletzt vom Server bestaetigte Stand sofort auf
+   dem Schirm, waehrend der echte Abruf noch laeuft.
+
+   NICHT VERHANDELBARE REGELN — beim Aendern bitte lesen:
+
+   1. Der Cache ist REINE ANZEIGE. Aus ihm entsteht niemals ein
+      Schreibvorgang. Kein POST/PUT/PATCH/DELETE nimmt seine Nutzlast
+      von hier. Deshalb landet er auch nicht in `items`, sondern in
+      einem eigenen Zustand, den ausschliesslich die Darstellung liest
+      (siehe `anzeigeCache` in App).
+   2. Geschrieben wird er nur aus einer bestaetigten Server-Antwort,
+      nie aus einem optimistischen Zwischenzustand.
+   3. Aendert sich das Feld-Schema der Eintraege, muss
+      ANZEIGE_CACHE_VERSION erhoeht werden. Aeltere Staende werden
+      beim Lesen dann verworfen.
+   ------------------------------------------------------------ */
+const ANZEIGE_CACHE_SCHLUESSEL = "archiv-anzeige-cache-v1";
+/* Schema-Fassung des Feldes `daten`. Bei jeder Aenderung an den
+   gespeicherten Feldern um eins erhoehen. */
+const ANZEIGE_CACHE_VERSION = 1;
+const ANZEIGE_CACHE_MAX_ALTER_MS = 7 * 24 * 60 * 60 * 1000;
+/* Groesser als das schreibt sich der Cache gar nicht erst — der
+   Speicher der Seite ist begrenzt und der Cache ist nur Beiwerk. */
+const ANZEIGE_CACHE_MAX_ZEICHEN = 2 * 1024 * 1024;
+
+function verwirfAnzeigeCache() {
+  try {
+    window.localStorage.removeItem(ANZEIGE_CACHE_SCHLUESSEL);
+  } catch (e) {}
+}
+
+/**
+ * Liest den gespeicherten Stand. Jeder Zweifelsfall — kaputter Text,
+ * andere Fassung, aelter als eine Woche, unerwarteter Aufbau — fuehrt
+ * zum Verwerfen: der Cache wird geloescht und es wird ganz normal
+ * geladen. Der Nutzer bekommt davon nichts zu sehen.
+ */
+function ladeAnzeigeCache() {
+  try {
+    const roh = window.localStorage.getItem(ANZEIGE_CACHE_SCHLUESSEL);
+    if (!roh) return null;
+    const eintrag = JSON.parse(roh);
+    if (!eintrag || typeof eintrag !== "object") { verwirfAnzeigeCache(); return null; }
+    if (eintrag.version !== ANZEIGE_CACHE_VERSION) { verwirfAnzeigeCache(); return null; }
+    if (typeof eintrag.gespeichertAm !== "number") { verwirfAnzeigeCache(); return null; }
+    if (Date.now() - eintrag.gespeichertAm > ANZEIGE_CACHE_MAX_ALTER_MS) { verwirfAnzeigeCache(); return null; }
+    const daten = eintrag.daten;
+    if (!daten || typeof daten !== "object") { verwirfAnzeigeCache(); return null; }
+    // Nur bekannte Kategorien, nur Listen, nur Eintraege mit Kennung.
+    const sauber = {};
+    let vorhanden = 0;
+    for (const key of CATEGORY_KEYS) {
+      const liste = Array.isArray(daten[key]) ? daten[key] : [];
+      sauber[key] = liste.filter((e) => e && typeof e === "object" && e.id != null);
+      vorhanden += sauber[key].length;
+    }
+    if (!vorhanden) { verwirfAnzeigeCache(); return null; }
+    return sauber;
+  } catch (e) {
+    verwirfAnzeigeCache();
+    return null;
+  }
+}
+
+/**
+ * Speichert einen bestaetigten Server-Stand. Aufrufer duerfen hier
+ * ausschliesslich das uebergeben, was der Server geliefert hat.
+ */
+function schreibeAnzeigeCache(daten) {
+  try {
+    const eintrag = {
+      version: ANZEIGE_CACHE_VERSION,
+      gespeichertAm: Date.now(),
+      daten: Object.fromEntries(CATEGORY_KEYS.map((k) => [k, daten[k] || []])),
+    };
+    const text = JSON.stringify(eintrag);
+    // Zu gross: still uebergehen. Lieber kein Cache als ein voller
+    // Speicher, der andere Eintraege der App verdraengt.
+    if (text.length > ANZEIGE_CACHE_MAX_ZEICHEN) { verwirfAnzeigeCache(); return; }
+    window.localStorage.setItem(ANZEIGE_CACHE_SCHLUESSEL, text);
+  } catch (e) {}
+}
+
 /* Angaben zum Werk gibt es nur bei Film, Serie und Anime. */
 function unterstuetztAngaben(category) {
   return category !== "game";
@@ -1839,6 +1925,66 @@ function Uebergang({ trigger, children }) {
    langen Liste sekundenlang auf ihren Auftritt. */
 function listenVersatz(i) {
   return Math.min(i, 9) * 25 + "ms";
+}
+
+/* ============================================================
+   LADESKELETT
+
+   Platzhalter fuer noch nicht geladene Listen. Die Bausteine tragen
+   die Klasse `skelett` — gedimmte Flaechen in der vorhandenen
+   Kartenfarbe, die still zwischen 0,45 und 0,75 Deckkraft atmen. Kein
+   Verlauf, kein Sweep.
+
+   Wichtig sind die Masse: Eine Skelettzeile muss genau so hoch sein
+   wie die echte Zeile, die sie vertritt — sonst springt die Liste,
+   sobald die Daten eintreffen.
+   ============================================================ */
+
+/* Eine gedimmte Flaeche. `rund` nur, wo auch das Echte rund ist. */
+function SkelettFlaeche({ breite, hoehe, rund = 5, style }) {
+  return (
+    <span
+      className="skelett"
+      style={{ display: "block", width: breite, height: hoehe, borderRadius: rund, ...style }}
+    />
+  );
+}
+
+/* Eine Zeile der Ranglisten-Ansicht: Rangzahl, Poster (34 x 48 —
+   dasselbe Mass wie <Poster size={34} />), zwei Textbalken, Noten-Chip.
+   Aussenmasse und Innenabstaende sind aus der echten Zeile
+   uebernommen; die Posterkachel gibt die Hoehe vor. */
+function SkelettListenZeile() {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1 }}>
+        <SkelettFlaeche breite={14} hoehe={10} rund={3} style={{ marginLeft: 8, flexShrink: 0 }} />
+        <SkelettFlaeche breite={34} hoehe={48} style={{ flexShrink: 0 }} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <SkelettFlaeche breite="62%" hoehe={13} rund={3} />
+          <SkelettFlaeche breite="34%" hoehe={9} rund={3} style={{ marginTop: 6 }} />
+        </div>
+      </div>
+      <SkelettFlaeche breite={48} hoehe={22} rund={4} style={{ flexShrink: 0 }} />
+    </div>
+  );
+}
+
+/* Acht Zeilen — genug, um den ersten Bildschirm zu fuellen. */
+function SkelettListe({ anzahl = 8 }) {
+  return (
+    <div>
+      {Array.from({ length: anzahl }, (_, i) => (
+        <SkelettListenZeile key={i} />
+      ))}
+    </div>
+  );
 }
 
 function BottomSheet({ title, onClose, children }) {
@@ -6791,6 +6937,17 @@ export default function App() {
   const [items, setItems] = useState(EMPTY_ITEMS);
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState("");
+  /* Der zuletzt bestaetigte Server-Stand aus dem Anzeige-Cache. Er ist
+     bewusst NICHT Teil von `items`: aus ihm darf nie ein
+     Schreibvorgang entstehen (siehe ladeAnzeigeCache). Sobald die
+     echte Antwort da ist, faellt er ersatzlos weg; scheitert der
+     Abruf, bleibt er als "zuletzt bekannter Stand" stehen. */
+  const [anzeigeCache, setAnzeigeCache] = useState(() => ladeAnzeigeCache());
+  /* Der Ladeeffekt laeuft nur einmal und kennt den Zustand von damals.
+     Ob ein Cache-Stand da ist, muss er im Fehlerfall aber aktuell
+     wissen — daher zusaetzlich als Ref. */
+  const anzeigeCacheRef = useRef(anzeigeCache);
+  anzeigeCacheRef.current = anzeigeCache;
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("movie");
   // eine der Kategorien (movie, series, anime, kids, adultanim, game),
@@ -6906,12 +7063,23 @@ export default function App() {
         if (cancelled) return;
         setItems(Object.fromEntries(CATEGORY_KEYS.map((k) => [k, (data[k] || []).map(normalizeEntry)])));
         setSaveError("");
+        /* Die Antwort ersetzt den Cache-Stand vollstaendig — auch wenn
+           sie weniger Eintraege enthaelt als das, was gespeichert war.
+           Und nur sie: geschrieben wird ausschliesslich aus einer
+           bestaetigten Server-Antwort. */
+        setAnzeigeCache(null);
+        schreibeAnzeigeCache(data);
       } catch (e) {
         if (!cancelled) {
-          setSaveError(
-            "Die Bewertungen konnten nicht geladen werden: " + e.message +
-              ". Bitte Seite neu laden. (Prüfe, ob die Datenbank verbunden ist.)"
-          );
+          /* Mit gecachter Ansicht bleibt der Stand stehen und es gibt
+             nur den dezenten Hinweis darunter (siehe `cacheHinweis`);
+             ohne sie die ausfuehrliche Meldung wie bisher. */
+          if (!anzeigeCacheRef.current) {
+            setSaveError(
+              "Die Bewertungen konnten nicht geladen werden: " + e.message +
+                ". Bitte Seite neu laden. (Prüfe, ob die Datenbank verbunden ist.)"
+            );
+          }
         }
       } finally {
         if (!cancelled) setLoaded(true);
@@ -7206,6 +7374,39 @@ export default function App() {
   const watchlistList = watchlistByCategory[category] || [];
   const accent = accentFor(category);
 
+  /* ---- Anzeige-Cache: nur zum Hinsehen ----
+     Die beiden Listen hier entstehen aus dem gespeicherten Stand und
+     gehen in keinen einzigen Schreibvorgang ein. `rankedByCategory`
+     und `watchlistByCategory` darueber bleiben unberuehrt bei den
+     echten Daten — daran haengen Duelle, Statistik und alles, was
+     speichert. */
+  const zeigtCache = anzeigeCache !== null;
+
+  const cacheListe = useMemo(() => {
+    if (!anzeigeCache) return null;
+    const liste = (anzeigeCache[category] || [])
+      .filter((f) => !istVorgemerkt(f))
+      .map((f) => ({ ...f, score: entryScore(f, category) }));
+    liste.sort((a, b) => sortWert(b.score) - sortWert(a.score));
+    return liste;
+  }, [anzeigeCache, category]);
+
+  const cacheWatchlist = useMemo(() => {
+    if (!anzeigeCache) return null;
+    return (anzeigeCache[category] || [])
+      .filter(istVorgemerkt)
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }, [anzeigeCache, category]);
+
+  /* Was die Liste zeigt — echte Daten, sobald sie da sind. */
+  const anzeigeListe = zeigtCache && cacheListe ? cacheListe : currentList;
+  const anzeigeWatchlist = zeigtCache && cacheWatchlist ? cacheWatchlist : watchlistList;
+
+  /* Steht der Cache noch, obwohl der Abruf durch ist, ist er
+     fehlgeschlagen — dann sagt ein dezenter Hinweis, woher die Liste
+     stammt. */
+  const cacheHinweis = zeigtCache && loaded;
+
   /* Im Statistik-Tab zaehlt die Kopfzeile alle Kategorien zusammen,
      nicht die zuletzt gewaehlte. */
   const gesamtAnzahl = CATEGORY_KEYS.reduce((s, k) => s + rankedByCategory[k].length, 0);
@@ -7417,7 +7618,7 @@ export default function App() {
 
   // ---- Angezeigte Liste: Suche + Filter (Bereich + Sortierung) ----
   const filtered = useMemo(() => {
-    let list = currentList;
+    let list = anzeigeListe;
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter((f) => f.title.toLowerCase().includes(q));
@@ -7459,7 +7660,7 @@ export default function App() {
         sorted.sort((a, b) => sortWert(b.score) - sortWert(a.score));
     }
     return sorted;
-  }, [currentList, search, filterState]);
+  }, [anzeigeListe, search, filterState, category]);
 
   const isFilterActive = filterAktiv(filterState);
   const isSortActive = filterState.sort !== DEFAULT_FILTER.sort;
@@ -8202,6 +8403,21 @@ export default function App() {
           button:active { transform: none !important; }
         }
 
+        /* Ladeskelett: gedimmte Flaechen in der vorhandenen Kartenfarbe,
+           die zwischen 0,45 und 0,75 Deckkraft atmen. Bewegt wird nur
+           die Deckkraft — kein Verlauf, kein Sweep, kein Layout. */
+        @keyframes skelettPuls {
+          from { opacity: 0.45; }
+          to   { opacity: 0.75; }
+        }
+        .skelett {
+          background: #1D1D21;
+          animation: skelettPuls 1400ms ease-in-out alternate infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .skelett { animation: none !important; opacity: 0.6; }
+        }
+
         input:focus, button:focus-visible, input:focus-visible {
           outline: 2px solid var(--accent, #C9A227);
           outline-offset: 1px;
@@ -8464,17 +8680,45 @@ export default function App() {
               <span style={{ display: "block" }}>Archiv</span>
             </h1>
             {/* Der eigene Rang — er gehoert zum Nutzer, nicht zu einer
-                Kategorie, und steht deshalb direkt unter dem Titel. */}
+                Kategorie, und steht deshalb direkt unter dem Titel.
+
+                Solange der Punktestand nicht geholt ist, steht hier
+                KEIN Abzeichen: 0 XP hiesse "Kupfer", und das waere
+                schlicht falsch. Stattdessen haelt ein gedimmter
+                Platzhalter genau dessen Platz frei, damit beim
+                Eintreffen nichts springt. */}
             <div>
-              <RangChip xp={xpStand.xp} onClick={() => setRangOffen(true)} />
+              {xpGeladen ? (
+                <RangChip xp={xpStand.xp} onClick={() => setRangOffen(true)} />
+              ) : (
+                <SkelettFlaeche
+                  breite={104}
+                  hoehe={25}
+                  rund={999}
+                  style={{ marginTop: 10 }}
+                />
+              )}
             </div>
-            <p style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
-              {activeTab === "stats"
-                ? `${gesamtAnzahl} ${gesamtAnzahl === 1 ? "Eintrag" : "Einträge"}`
-                : activeTab === "minigames"
-                  ? "Minispiele"
-                  : `${currentList.length} ${catInfo.label}`}
-            </p>
+            <div style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
+              {/* Der Zaehler zeigt erst eine Zahl, wenn es eine gibt —
+                  "0 Filme" waehrend des Ladens sah aus wie eine leere
+                  Sammlung. Bis dahin ein Platzhalter derselben Hoehe. */}
+              {activeTab === "minigames" ? (
+                "Minispiele"
+              ) : activeTab === "stats" ? (
+                /* Die Statistik rechnet ausschliesslich mit den echten
+                   Daten — solange die fehlen, gibt es hier keine Zahl. */
+                loaded && !zeigtCache ? (
+                  `${gesamtAnzahl} ${gesamtAnzahl === 1 ? "Eintrag" : "Einträge"}`
+                ) : (
+                  <SkelettFlaeche breite={92} hoehe={15} rund={3} style={{ margin: "3px 0" }} />
+                )
+              ) : loaded || zeigtCache ? (
+                `${anzeigeListe.length} ${catInfo.label}`
+              ) : (
+                <SkelettFlaeche breite={92} hoehe={15} rund={3} style={{ margin: "3px 0" }} />
+              )}
+            </div>
 
           {/* Tabs — seitlich wischbar, siehe .tab-leiste */}
           <div className="tab-leiste" ref={tabLeisteRef} style={{ marginBottom: 0 }}>
@@ -8697,15 +8941,15 @@ export default function App() {
             </div>
           )}
 
-          {!loaded && (
-            <div style={{ color: "#9A968C", fontSize: 13, marginBottom: 16 }}>
-              Bewertungen werden geladen…
-            </div>
-          )}
+          {/* Kein "Bewertungen werden geladen…" mehr — das Ladeskelett
+              der Liste sagt dasselbe, ohne die Seite kurz leer zu
+              lassen. */}
 
-          {busy && (
-            <div style={{ color: "var(--accent, #C9A227)", fontSize: 13, marginBottom: 16 }}>
-              Wird gespeichert…
+          {/* Der Abruf ist gescheitert, aber es gibt einen gespeicherten
+              Stand: der bleibt stehen, mit Hinweis woher er stammt. */}
+          {cacheHinweis && (
+            <div style={{ color: "#77746c", fontSize: 12.5, marginBottom: 16 }}>
+              Offline — zuletzt bekannter Stand.
             </div>
           )}
 
@@ -8767,7 +9011,7 @@ export default function App() {
                     key: "watchlist",
                     label:
                       merklisteLabel(category) +
-                      (watchlistList.length ? " · " + watchlistList.length : ""),
+                      (anzeigeWatchlist.length ? " · " + anzeigeWatchlist.length : ""),
                   },
                 ].map((r) => (
                   <button
@@ -8800,31 +9044,43 @@ export default function App() {
             <Uebergang trigger={unterReiter}>
             <>
               <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
-                {watchlistList.length === 0
-                  ? category === "game"
+                {!loaded && !zeigtCache ? (
+                  <SkelettFlaeche breite={120} hoehe={11} rund={3} style={{ margin: "3px 0" }} />
+                ) : anzeigeWatchlist.length === 0 ? (
+                  category === "game"
                     ? "Nichts im Backlog."
                     : "Nichts vorgemerkt."
-                  : watchlistList.length +
-                    (category === "game"
-                      ? watchlistList.length === 1 ? " Eintrag im Backlog" : " Einträge im Backlog"
-                      : watchlistList.length === 1 ? " Eintrag vorgemerkt" : " Einträge vorgemerkt")}
+                ) : (
+                  anzeigeWatchlist.length +
+                  (category === "game"
+                    ? anzeigeWatchlist.length === 1 ? " Eintrag im Backlog" : " Einträge im Backlog"
+                    : anzeigeWatchlist.length === 1 ? " Eintrag vorgemerkt" : " Einträge vorgemerkt")
+                )}
               </div>
-              {watchlistList.length === 0 ? (
-                <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
-                  {category === "game"
-                    ? "Der Backlog ist leer."
-                    : "Noch nichts vorgemerkt."}{" "}
-                  Über „+ Neu hinzufügen" kannst du Titel{" "}
-                  {category === "game" ? "in den Backlog" : "auf die Watchlist"} setzen,
-                  ohne sie schon zu bewerten.
-                </div>
+              {!loaded && !zeigtCache ? (
+                <SkelettListe />
+              ) : anzeigeWatchlist.length === 0 ? (
+                /* Der Satz erscheint erst, wenn der Abruf durch ist —
+                   vorher wuesste niemand, ob wirklich nichts da ist. */
+                loaded && (
+                  <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
+                    {category === "game"
+                      ? "Der Backlog ist leer."
+                      : "Noch nichts vorgemerkt."}{" "}
+                    Über „+ Neu hinzufügen" kannst du Titel{" "}
+                    {category === "game" ? "in den Backlog" : "auf die Watchlist"} setzen,
+                    ohne sie schon zu bewerten.
+                  </div>
+                )
               ) : (
-                watchlistList.map((f, i) => (
+                anzeigeWatchlist.map((f, i) => (
                   <WatchlistZeile
                     key={f.id}
                     eintrag={f}
                     reihe={i}
-                    busy={busy}
+                    /* Gecachte Zeilen sind reine Anzeige: aus ihnen darf
+                       weder eine Bewertung noch ein Loeschen entstehen. */
+                    busy={busy || zeigtCache}
                     merkliste={merklisteLabel(category)}
                     onBewerten={() => { setBewerteVorgemerkt(f); setMode("watchlist-form"); }}
                     onEntfernen={() => watchlistEntfernen(f.id)}
@@ -8874,21 +9130,32 @@ export default function App() {
               </div>
 
               <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
-                {filtered.length} von {currentList.length} {catInfo.label}
+                {!loaded && !zeigtCache ? (
+                  <SkelettFlaeche breite={120} hoehe={11} rund={3} style={{ margin: "3px 0" }} />
+                ) : (
+                  `${filtered.length} von ${anzeigeListe.length} ${catInfo.label}`
+                )}
               </div>
 
               {/* Liste — die vorderen Plaetze tragen ihre Auszeichnung:
                   Platz 1-3 das Podest, Platz 4-10 den Verlauf. Siehe
                   zeilenSchmuck. */}
               <div>
-                {filtered.map((f, i) => {
+                {/* Noch keine Daten: acht Platzhalterzeilen in der Hoehe
+                    echter Zeilen. Die echten Daten ersetzen sie ohne
+                    Hoehensprung. */}
+                {!loaded && !zeigtCache && <SkelettListe />}
+                {(loaded || zeigtCache) && filtered.map((f, i) => {
                   const rang = zeilenSchmuck(i + 1, accent);
                   return (
                   <div
                     key={f.id}
-                    onClick={() => { setSelectedId(f.id); setMode("list"); }}
+                    /* Gecachte Zeilen fuehren bewusst nirgendwohin — der
+                       Cache ist reine Anzeige und darf nie Ausgangspunkt
+                       eines Schreibvorgangs werden. */
+                    onClick={zeigtCache ? undefined : () => { setSelectedId(f.id); setMode("list"); }}
                     className="listen-eintrag"
-                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: "pointer", position: "relative", animationDelay: listenVersatz(i) }}
+                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", borderBottom: "1px solid #232326", gap: 10, cursor: zeigtCache ? "default" : "pointer", position: "relative", animationDelay: listenVersatz(i) }}
                   >
                     {/* Der Verlauf gehoert an den Bildschirmrand, nicht an
                         den Innenabstand der Liste: die Zeile sitzt mittig
@@ -8936,7 +9203,11 @@ export default function App() {
                   </div>
                   );
                 })}
-                {filtered.length === 0 && (
+                {/* Der Leer-Satz erscheint erst, wenn der Abruf
+                    abgeschlossen ist UND die Kategorie wirklich leer
+                    ist — waehrend des Ladens stand hier bisher
+                    faelschlich "Noch keine … bewertet." */}
+                {loaded && filtered.length === 0 && (
                   <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
                     {search.trim() || isFilterActive ? "Nichts gefunden." : `Noch keine ${catInfo.label} bewertet.`}
                   </div>
@@ -8966,8 +9237,8 @@ export default function App() {
       {showFilter && (
         <FilterSheet
           initial={filterState}
-          totalCount={currentList.length}
-          allInCategory={currentList}
+          totalCount={anzeigeListe.length}
+          allInCategory={anzeigeListe}
           category={category}
           onApply={(f) => { setFilterState(f); setShowFilter(false); }}
           onClose={() => setShowFilter(false)}
