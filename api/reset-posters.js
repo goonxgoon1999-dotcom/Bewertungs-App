@@ -1,4 +1,4 @@
-import { sql, ensureReady } from "./_db.js";
+import { sql, ensureReady, logFehler, fehlerBeschreibung } from "./_db.js";
 
 /**
  * POST /api/reset-posters
@@ -42,7 +42,7 @@ export default async function handler(req, res) {
       cleared: rows.length,
     });
   } catch (err) {
-    console.error("API-Fehler:", err);
-    return res.status(500).json({ error: "Serverfehler: " + (err.message || "unbekannt") });
+    logFehler("API-Fehler (/api/reset-posters)", err);
+    return res.status(500).json({ error: "Serverfehler: " + fehlerBeschreibung(err) });
   }
 }

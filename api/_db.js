@@ -8,11 +8,85 @@ const connectionString =
   process.env.POSTGRES_URL ||
   process.env.NEON_DATABASE_URL;
 
-if (!connectionString) {
-  console.error("Keine Datenbank-Verbindung gefunden. Bitte DATABASE_URL setzen.");
+/* Die Verbindung entsteht erst beim ersten Zugriff, nicht schon beim
+   Laden des Moduls.
+
+   `neon()` wirft sofort, wenn die Zeichenkette fehlt ("No database
+   connection string was provided"). Stand der Aufruf hier oben, flog
+   dieser Fehler waehrend des Imports — also bevor irgendein
+   try/catch in einem Handler ueberhaupt existierte. Vercel
+   beantwortete die Anfrage dann mit einem nackten 500 ohne Rumpf, und
+   in der App stand nur "Laden fehlgeschlagen (500)". Die eigentliche
+   Ursache — eine fehlende oder umbenannte Umgebungsvariable — war
+   weder in der App noch sauber im Log zu sehen.
+
+   Jetzt faellt der Fehler beim ersten `sql`-Aufruf an, also innerhalb
+   des Handlers: Er wird gefangen, protokolliert und als lesbare
+   Meldung beantwortet. */
+let verbindung = null;
+
+function db() {
+  if (verbindung) return verbindung;
+  if (!connectionString) {
+    throw new Error(
+      "Keine Datenbank-Verbindung konfiguriert. Es ist weder DATABASE_URL " +
+        "noch POSTGRES_URL oder NEON_DATABASE_URL gesetzt."
+    );
+  }
+  verbindung = neon(connectionString);
+  return verbindung;
 }
 
-export const sql = neon(connectionString);
+/* Nach aussen verhaelt sich `sql` unveraendert: als Template-Tag fuer
+   einzelne Abfragen und mit `.transaction([...])` fuer mehrere in
+   einem Rutsch. Beides wird unveraendert an den Treiber
+   durchgereicht — `transaction` bekommt damit genau die Objekte, die
+   der Treiber selbst erzeugt hat. */
+export function sql(strings, ...werte) {
+  return db()(strings, ...werte);
+}
+
+sql.transaction = (queries, options) => db().transaction(queries, options);
+
+/* ----------------------------------------------------------------
+   Fehler lesbar machen
+
+   Geht in Postgres etwas schief, wirft der Treiber einen
+   `NeonDbError`. Dessen `message` ist nur die erste Zeile der
+   Meldung ("column ... does not exist"). Alles, was den Fehler
+   wirklich erklaert, haengt in eigenen Feldern: `code` (der
+   SQLSTATE), `detail`, `hint`, `constraint`, `table`, `column`.
+
+   Bisher ging beides verloren: `console.error("API-Fehler:", err)`
+   gibt diese Felder nicht aus, und in der Antwort stand nur
+   `err.message`. In der App kam davon nicht einmal das an — sie
+   zeigte allein den Status. Aus einem "relation seasons does not
+   exist" wurde so ein blankes "(500)".
+   ---------------------------------------------------------------- */
+const PG_FELDER = [
+  "code", "detail", "hint", "constraint", "table", "column", "dataType", "routine",
+];
+
+/** Fehler -> eine Zeile mit allem, was Postgres mitgeteilt hat. */
+export function fehlerBeschreibung(err) {
+  if (!err) return "unbekannter Fehler";
+  const teile = [err.message || String(err)];
+  for (const feld of PG_FELDER) {
+    const wert = err[feld];
+    if (wert !== null && wert !== undefined && wert !== "") teile.push(feld + "=" + wert);
+  }
+  return teile.join(" | ");
+}
+
+/**
+ * Fehler ins Log — mit allen Feldern und dem Stapel, damit in den
+ * Vercel-Logs die tatsaechliche Ursache steht und nicht nur, dass
+ * etwas schiefging.
+ */
+export function logFehler(kontext, err) {
+  console.error(kontext + ": " + fehlerBeschreibung(err));
+  if (err && err.stack) console.error(err.stack);
+}
 
 /* Film, Serie und Anime teilen sich dieselben Felder. Anime zeigt zwei
    davon nur anders beschriftet an ("Animation" statt "Inszenierung",
@@ -82,10 +156,71 @@ export function criteriaKeysFor(category) {
 
 let initPromise = null;
 
-/** Legt die Tabelle an (falls nötig) und befüllt sie einmalig. */
+/**
+ * Legt die Tabelle an (falls nötig) und befüllt sie einmalig.
+ *
+ * Scheitert der Durchlauf, wird das Versprechen wieder verworfen. Ohne
+ * das blieb ein einmal fehlgeschlagener Start fuer die gesamte
+ * Lebensdauer der Serverless-Instanz haengen: `initPromise` zeigte
+ * dauerhaft auf ein abgelehntes Versprechen, und jede weitere Anfrage
+ * an dieselbe Instanz bekam denselben Fehler zurueck, ohne es noch
+ * einmal zu versuchen. Ein kurzer Aussetzer der Datenbank — etwa das
+ * Aufwachen einer schlafenden Neon-Instanz — wurde so zu einem
+ * dauerhaften 500.
+ */
 export function ensureReady() {
-  if (!initPromise) initPromise = init();
+  if (!initPromise) {
+    initPromise = initMitWiederholung().catch((err) => {
+      initPromise = null;
+      throw err;
+    });
+  }
   return initPromise;
+}
+
+/* Fehlercodes, die entstehen, wenn zwei Instanzen gleichzeitig
+   migrieren.
+
+   Die Startseite laedt mehrere Endpunkte parallel (Bewertungen,
+   Kopfbilder, Duelle, Bestwerte, XP). Jeder davon ist eine eigene
+   Serverless-Instanz, und jede ruft `ensureReady()` auf. Solange die
+   Datenbank auf dem neuesten Stand ist, tun die Migrationen nichts und
+   das faellt nicht auf. Direkt nach einer Auslieferung mit neuer
+   Migration laufen sie aber wirklich — und dann sind sie nicht
+   gegeneinander abgesichert: `CREATE TABLE IF NOT EXISTS` und
+   `CREATE INDEX IF NOT EXISTS` pruefen und legen an, ohne das gegen
+   einen zweiten, gleichzeitigen Aufruf zu sperren. Der Verlierer des
+   Rennens bekommt einen Fehler aus dem Systemkatalog.
+
+   Die Migrationen sind allesamt wiederholbar. Beim zweiten Versuch ist
+   der andere Aufruf fertig, alle `IF NOT EXISTS` greifen ins Leere und
+   der Durchlauf geht durch. */
+const RENNEN_CODES = new Set([
+  "23505", // unique_violation — auf pg_type/pg_class beim gleichzeitigen Anlegen
+  "42P07", // duplicate_table
+  "42P06", // duplicate_schema
+  "42701", // duplicate_column
+  "42710", // duplicate_object
+  "42704", // undefined_object — der andere Aufruf hat den Constraint schon ersetzt
+  "40001", // serialization_failure
+  "40P01", // deadlock_detected
+]);
+
+const INIT_VERSUCHE = 3;
+
+async function initMitWiederholung() {
+  for (let versuch = 1; ; versuch++) {
+    try {
+      return await init();
+    } catch (err) {
+      if (versuch >= INIT_VERSUCHE || !RENNEN_CODES.has(err && err.code)) throw err;
+      console.warn(
+        "Migration lief gegen einen parallelen Aufruf (" + err.code + "), Versuch " +
+          versuch + " von " + INIT_VERSUCHE + ": " + err.message
+      );
+      await new Promise((r) => setTimeout(r, 250 * versuch));
+    }
+  }
 }
 
 async function init() {
@@ -193,7 +328,7 @@ async function migrateForGames() {
             AND c.contype = 'c'
             AND pg_get_constraintdef(c.oid) ILIKE '%category%'
         LOOP
-          EXECUTE 'ALTER TABLE media_items DROP CONSTRAINT ' || quote_ident(con_name);
+          EXECUTE 'ALTER TABLE media_items DROP CONSTRAINT IF EXISTS ' || quote_ident(con_name);
         END LOOP;
 
         ALTER TABLE media_items
@@ -322,7 +457,7 @@ async function ensureNeueKategorien() {
             AND c.contype = 'c'
             AND pg_get_constraintdef(c.oid) ILIKE '%category%'
         LOOP
-          EXECUTE 'ALTER TABLE media_items DROP CONSTRAINT ' || quote_ident(con_name);
+          EXECUTE 'ALTER TABLE media_items DROP CONSTRAINT IF EXISTS ' || quote_ident(con_name);
         END LOOP;
 
         ALTER TABLE media_items

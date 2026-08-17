@@ -1322,7 +1322,16 @@ function ScoreBadge({ score, size = "md" }) {
 const api = {
   async loadAll() {
     const res = await fetch("/api/items");
-    if (!res.ok) throw new Error("Laden fehlgeschlagen (" + res.status + ")");
+    /* Der Server schickt seine Begruendung im Rumpf mit ({ error: ... }),
+       genau wie beim Anlegen und Speichern. Bisher wurde sie hier
+       weggeworfen und nur der Status gemeldet — aus einem "relation
+       seasons does not exist" wurde dadurch ein blankes
+       "Laden fehlgeschlagen (500)". Fehlt der Rumpf (etwa bei einem
+       Absturz noch vor dem Handler), bleibt der Status als Notnagel. */
+    if (!res.ok) {
+      const grund = (await res.json().catch(() => ({}))).error;
+      throw new Error(grund || "Laden fehlgeschlagen (" + res.status + ")");
+    }
     return res.json();
   },
   async create(item) {

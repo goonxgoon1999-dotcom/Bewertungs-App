@@ -1,4 +1,6 @@
-import { sql, ensureReady, rowToHeaderImage } from "./_db.js";
+import {
+  sql, ensureReady, rowToHeaderImage, logFehler, fehlerBeschreibung,
+} from "./_db.js";
 
 /**
  * Bilder für den Kopfbereich — von Hand gepflegt, es gibt dafür keine
@@ -21,8 +23,8 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "GET, POST, DELETE");
     return res.status(405).json({ error: "Methode nicht erlaubt." });
   } catch (err) {
-    console.error("API-Fehler:", err);
-    return res.status(500).json({ error: "Serverfehler: " + (err.message || "unbekannt") });
+    logFehler("API-Fehler (/api/header-images)", err);
+    return res.status(500).json({ error: "Serverfehler: " + fehlerBeschreibung(err) });
   }
 }
 

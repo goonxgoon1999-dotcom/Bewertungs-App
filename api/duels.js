@@ -1,4 +1,6 @@
-import { sql, ensureReady, rowToDuelCount, CATEGORIES } from "./_db.js";
+import {
+  sql, ensureReady, rowToDuelCount, CATEGORIES, logFehler, fehlerBeschreibung,
+} from "./_db.js";
 
 /**
  * Gespielte Duelle je Kategorie — aus dem Minispiel "Head-to-Head"
@@ -21,8 +23,8 @@ export default async function handler(req, res) {
     res.setHeader("Allow", "GET, POST");
     return res.status(405).json({ error: "Methode nicht erlaubt." });
   } catch (err) {
-    console.error("API-Fehler:", err);
-    return res.status(500).json({ error: "Serverfehler: " + (err.message || "unbekannt") });
+    logFehler("API-Fehler (/api/duels)", err);
+    return res.status(500).json({ error: "Serverfehler: " + fehlerBeschreibung(err) });
   }
 }
 
