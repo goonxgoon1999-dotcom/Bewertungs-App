@@ -1249,11 +1249,15 @@ const api = {
      genau der Weg, auf dem dieser Abschnitt schon vorher lief. Geliefert
      werden Treffer in derselben Form wie bei der Titelsuche, ergaenzt um
      eine kurze Begruendung, sodass "+ Watchlist" unveraendert damit
-     arbeitet. */
+     arbeitet.
+
+     Seit die Titel der Bestbewerteten mitgehen, ist das Profil nicht
+     mehr zwangslaeufig winzig — `profilFuerUrl` haelt es unter der
+     Laenge, die eine URL sicher vertraegt. */
   async loadRecommendations(category, profil) {
     const res = await fetch(
       "/api/recommendations?category=" + encodeURIComponent(category) +
-        "&profil=" + encodeURIComponent(JSON.stringify(profil))
+        "&profil=" + encodeURIComponent(JSON.stringify(profilFuerUrl(profil)))
     );
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Empfehlungen fehlgeschlagen");
     const data = await res.json();
@@ -2200,24 +2204,40 @@ function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen }) {
 /* ============================================================
    EMPFEHLUNGEN — Vorschlaege aus dem eigenen Geschmacksprofil
 
-   Nicht mehr "aehnliche Titel zu X": Aus den bestbewerteten Eintraegen
+   Nicht mehr "aehnliche Titel zu X": Aus den bewerteten Eintraegen
    entsteht ein Profil — welche Genres, welche Regie/Studios und welche
    Jahrzehnte ueberdurchschnittlich gut abschneiden —, und mit diesem
    Profil werden die Entdecken-Endpunkte der Quellen abgefragt. Das
    ergibt einen viel groesseren und passenderen Kandidatenpool; bei
    Anime lief der alte Weg regelmaessig ganz leer.
 
-   Was das Profil gewichtet und wie die Kandidaten sortiert werden,
-   steht in api/recommendations.js. Hier wird es nur gebaut, angezeigt
+   Das Profil beruht auf ALLEN Bewertungen der Kategorie, gewichtet nach
+   Endnote. Dazu gehen die Titel der Bestbewerteten mit: Aus ihnen holt
+   der Server die Schlagworte, an denen er misst, wie gut ein Kandidat
+   zum Geschmack passt — Genres allein unterscheiden zu grob.
+
+   Was das Profil gewichtet, wie die Kandidaten sortiert werden und wie
+   Kinderserien von Adult Animation getrennt bleiben, steht in
+   api/recommendations.js. Hier wird das Profil nur gebaut, angezeigt
    und zwischengespeichert.
 
    Bei Spielen erscheint dieser Abschnitt gar nicht, deshalb steht hier
    nirgends "Backlog".
    ============================================================ */
 
-/* So viele Bestbewertete bilden die Grundlage des Profils — nach
-   Endnote sortiert. */
-const PROFIL_BASIS = { movie: 50, series: 20, anime: 20, kids: 20, adultanim: 20 };
+/* Das Profil selbst entsteht aus ALLEN bewerteten Eintraegen der
+   Kategorie — jeder zaehlt, gewichtet nach seiner Endnote (siehe
+   `profilTeil`). Eine Obergrenze gibt es dafuer nicht: Genres, Regie
+   und Jahrzehnte stehen ohnehin in der eigenen Datenbank und kosten
+   keinen einzigen externen Aufruf.
+
+   Etwas anderes gilt fuer die Schlagworte (TMDB-Keywords, bei Anime
+   Jikans Themes): Zu den eigenen Eintraegen ist keine Kennung bei TMDB
+   oder MyAnimeList gespeichert, der Server muss sie also ueber den
+   Titel suchen — zwei Aufrufe je Titel. Deshalb gehen nur die
+   Bestbewerteten als Titel mit. Bei Anime weniger, weil Jikan nur drei
+   Anfragen je Sekunde zulaesst. */
+const PROFIL_TITEL = { movie: 12, series: 12, anime: 8, kids: 12, adultanim: 12 };
 
 /* So viele Vorschlaege stehen am Ende in der Liste. Der Server liefert
    deutlich mehr (rund 40) — der Rest ist Vorrat und rueckt nach, sobald
@@ -2264,10 +2284,13 @@ function speichereEmpfehlungen(category, eintrag) {
 /* Fassung der gespeicherten Vorschlaege. Sie zaehlt hoch, wenn ein
    Stand aus einer aelteren Fassung nicht mehr taugt — hier, weil den
    damals gespeicherten Vorschlaegen die Schreibweisen fehlen, ohne die
-   sich bereits Bewertetes nicht zuverlaessig aussortieren laesst. Ein
-   alter Stand wird dadurch einmal verworfen; am Monatsrhythmus selbst
-   aendert das nichts. */
-const EMPFEHLUNGS_FASSUNG = 2;
+   sich bereits Bewertetes nicht zuverlaessig aussortieren laesst.
+   Zuletzt, weil die Vorschlaege nun aus einem Profil ueber alle
+   Bewertungen samt Schlagworten kommen und bei Kinderserien und Adult
+   Animation zusaetzlich eine Alterspruefung durchlaufen. Ein alter
+   Stand wird dadurch einmal verworfen; am Monatsrhythmus selbst aendert
+   das nichts. */
+const EMPFEHLUNGS_FASSUNG = 3;
 
 /**
  * Ist der gespeicherte Stand noch gueltig?
@@ -2305,9 +2328,14 @@ function empfehlungenFrisch(eintrag, profilHatGenres) {
    nichts aus — Genres wiederholen sich dagegen von selbst. */
 const PROFIL_MINDEST = { genres: 2, regie: 2, studios: 2, jahrzehnte: 3 };
 
-/* So viele Eigenschaften je Art gehen ins Profil. Jede kostet
-   serverseitig eigene Abfragen. */
-const PROFIL_MAX = { genres: 4, regie: 2, studios: 1, jahrzehnte: 2 };
+/* So viele Eigenschaften je Art gehen ins Profil.
+
+   Genres duerfen mehr sein als frueher: Sie bilden serverseitig den
+   Vektor, an dem die Aehnlichkeit der Kandidaten gemessen wird, und
+   dort kostet ein weiteres Genre nur Rechenzeit. Abgefragt werden bei
+   der Quelle weiterhin nur die staerksten — das entscheidet der
+   Server. Regie und Studio kosten dagegen je eine eigene Suche. */
+const PROFIL_MAX = { genres: 8, regie: 2, studios: 1, jahrzehnte: 2 };
 
 /**
  * Eine Art von Eigenschaft auswerten.
@@ -2354,17 +2382,44 @@ function profilTeil(eintraege, basis, mindestAnzahl, maxAnzahl) {
 }
 
 /**
+ * Die Titel, aus denen der Server die Schlagworte holt: die
+ * Bestbewerteten der Kategorie, gewichtet an der besten Note.
+ *
+ * `bewertet` ist nach Endnote absteigend sortiert, der erste Eintrag
+ * traegt damit das Gewicht 1. Die Titel gehen im Abfrageteil der URL
+ * mit — deshalb die Laengengrenze.
+ */
+const MAX_TITEL_LAENGE = 60;
+
+function profilTitel(bewertet, anzahl) {
+  const beste = bewertet.slice(0, anzahl).filter((f) => f.title);
+  if (!beste.length) return [];
+  const spitze = beste[0].score;
+  if (!(spitze > 0)) return [];
+
+  return beste.map((f) => ({
+    name: String(f.title).slice(0, MAX_TITEL_LAENGE),
+    gewicht: Math.max(0.05, Math.round((f.score / spitze) * 100) / 100),
+  }));
+}
+
+/**
  * Das Profil einer Kategorie.
  *
- * `bestbewertet` sind die Grundlage (die Besten nach Endnote),
- * `basisNote` der Durchschnitt ueber ALLE bewerteten Eintraege der
- * Kategorie — daran misst sich "ueberdurchschnittlich".
+ * `bewertet` sind ALLE bewerteten Eintraege der Kategorie, nach Endnote
+ * absteigend sortiert; `basisNote` ihr Durchschnitt — daran misst sich
+ * "ueberdurchschnittlich". Frueher gingen nur die Besten ein; seither
+ * traegt jeder Eintrag bei, aber nur so stark, wie er ueber dem
+ * Durchschnitt liegt. Was unterdurchschnittlich abschneidet, zieht sein
+ * Genre entsprechend nach unten — das ist der eigentliche Gewinn: Ein
+ * Genre, das man zwar oft, aber selten gern sieht, faellt jetzt heraus.
  */
-function geschmacksProfil(bestbewertet, basisNote, category) {
+function geschmacksProfil(bewertet, basisNote, category) {
   const mit = (auswahl) =>
-    bestbewertet.map((f) => ({ werte: auswahl(f), note: f.score }));
+    bewertet.map((f) => ({ werte: auswahl(f), note: f.score }));
 
   return {
+    titel: profilTitel(bewertet, PROFIL_TITEL[category] || 8),
     genres: profilTeil(
       mit((f) => f.genre || []),
       basisNote, PROFIL_MINDEST.genres, PROFIL_MAX.genres
@@ -2396,6 +2451,35 @@ function profilLeer(profil) {
     !profil ||
     (!profil.genres.length && !profil.regie.length && !profil.studios.length && !profil.jahrzehnte.length)
   );
+}
+
+/* Wie lang das Profil im Abfrageteil hoechstens werden darf. Zweitausend
+   Zeichen gelten seit jeher als die Laenge, die jede Zwischenstation
+   klaglos durchreicht; mit Pfad und Kategorie davor bleibt hier
+   reichlich Luft. */
+const MAX_PROFIL_LAENGE = 1500;
+
+/**
+ * Das Profil, gekuerzt auf eine Laenge, die sicher durch eine URL passt.
+ *
+ * Gekuerzt wird ausschliesslich bei den Titeln, und zwar von hinten:
+ * Sie sind der einzige Teil, der mit der Sammlung waechst, und der
+ * letzte in der Reihe ist der am schwaechsten gewichtete. Genres,
+ * Regie, Studio und Jahrzehnte bleiben in jedem Fall vollstaendig —
+ * ohne sie gaebe es gar keine Abfrage.
+ */
+function profilFuerUrl(profil) {
+  if (!profil) return profil;
+  const laenge = (p) => encodeURIComponent(JSON.stringify(p)).length;
+  if (laenge(profil) <= MAX_PROFIL_LAENGE) return profil;
+
+  const titel = [...(profil.titel || [])];
+  while (titel.length) {
+    titel.pop();
+    const gekuerzt = { ...profil, titel };
+    if (laenge(gekuerzt) <= MAX_PROFIL_LAENGE) return gekuerzt;
+  }
+  return { ...profil, titel: [] };
 }
 
 /* Titelvergleich fuers Aussortieren. Bewusst ohne Jahr: Die Quellen
@@ -6512,21 +6596,23 @@ export default function App() {
   }, [currentList, selectedId]);
 
   /* ---- Grundlage der Empfehlungen: das Geschmacksprofil ----
-     Die bestbewerteten Titel der Kategorie bilden die Grundlage —
-     `currentList` ist bereits nach Endnote sortiert. Unbewertetes
-     (Staffelgewichte auf 0) hat keine Note und faellt heraus.
+     ALLE bewerteten Eintraege der Kategorie bilden die Grundlage, nicht
+     nur die Besten — `currentList` ist bereits nach Endnote sortiert,
+     unbewertetes (Staffelgewichte auf 0) hat keine Note und faellt
+     heraus.
 
      Der Massstab fuer "ueberdurchschnittlich" ist der Durchschnitt
-     ueber ALLE bewerteten Eintraege der Kategorie, nicht nur ueber die
-     Besten — sonst waere die Haelfte der eigenen Favoriten
-     definitionsgemaess unterdurchschnittlich. */
+     ueber dieselben Eintraege: Jeder zaehlt mit dem Abstand zu diesem
+     Schnitt, hoch Bewertetes zieht sein Genre also nach oben,
+     schwach Bewertetes nach unten. Die Sortierung nach Note bleibt
+     wichtig — die vorderen Eintraege gehen zusaetzlich als Titel mit,
+     aus denen der Server die Schlagworte holt. */
   const empfehlungsProfil = useMemo(() => {
     const bewertet = currentList.filter((f) => typeof f.score === "number");
     if (!bewertet.length) return null;
 
     const basis = bewertet.reduce((s, f) => s + f.score, 0) / bewertet.length;
-    const grundlage = bewertet.slice(0, PROFIL_BASIS[category] || 20);
-    return geschmacksProfil(grundlage, basis, category);
+    return geschmacksProfil(bewertet, basis, category);
   }, [currentList, category]);
 
   /* Alles, was in dieser Kategorie schon bekannt ist — bewertet wie
