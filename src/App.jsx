@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 /* ============================================================
    KRITERIEN-DEFINITION — je Kategorie eigene Kriterien
@@ -1092,6 +1092,46 @@ function schreibeAnzeigeCache(daten) {
   } catch (e) {}
 }
 
+/* ------------------------------------------------------------
+   Wischgeste im Inhaltsbereich
+
+   Ausgeloest wird erst ab 60 px waagerecht, und die waagerechte
+   Strecke muss mindestens das 1,5-fache der senkrechten betragen —
+   sonst war es Scrollen und nicht Wischen.
+   ------------------------------------------------------------ */
+const WISCH_SCHWELLE_PX = 60;
+const WISCH_VERHAELTNIS = 1.5;
+
+/**
+ * Gehoert der Punkt, an dem der Finger aufsetzte, zu einem Bereich,
+ * der selbst waagerecht rollt (die Reiterleiste liegt ohnehin
+ * ausserhalb) oder zu einem Bedienelement, das eigene waagerechte
+ * Gesten kennt (Schieberegler, Eingabefelder, Auswahlfelder)? Dann
+ * gehoert die Geste dorthin und nicht zum Kategorie-Wechsel.
+ */
+function istEigenerQuerbereich(ziel, grenze) {
+  let knoten = ziel;
+  while (knoten && knoten !== grenze && knoten.nodeType === 1) {
+    const tag = knoten.tagName;
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return true;
+    let stil = null;
+    try {
+      stil = window.getComputedStyle(knoten);
+    } catch (e) {
+      stil = null;
+    }
+    if (
+      stil &&
+      (stil.overflowX === "auto" || stil.overflowX === "scroll") &&
+      knoten.scrollWidth > knoten.clientWidth
+    ) {
+      return true;
+    }
+    knoten = knoten.parentElement;
+  }
+  return false;
+}
+
 /* Angaben zum Werk gibt es nur bei Film, Serie und Anime. */
 function unterstuetztAngaben(category) {
   return category !== "game";
@@ -1233,6 +1273,12 @@ const ANGABEN_VERSION = 4;
 /** Wechselabstand der Kopfbilder. */
 const BACKDROP_INTERVAL = 8000;
 
+/* Die Dauern aus --bewegung-rein / --bewegung-raus, hier noch einmal
+   als Zahl: Wer sich hinausbewegt, muss so lange im Baum bleiben, wie
+   die Bewegung dauert. Bei Aenderung beides gemeinsam anpassen. */
+const BEWEGUNG_REIN_MS = 200;
+const BEWEGUNG_RAUS_MS = 160;
+
 /**
  * Zieht zufaellig eines der Bilder — nur nie das, das gerade zu sehen
  * ist. Gezogen wird aus den (anzahl - 1) uebrigen und der Index danach
@@ -1292,17 +1338,30 @@ function HeaderSlideshow({ urls }) {
     setPrevIndex(null);
   }, [urls.length]);
 
+  /* Gewechselt wird erst, wenn das naechste Bild wirklich da ist:
+     sonst blendet die Ueberblendung auf eine leere Flaeche und das
+     Bild ploppt mittendrin hinein. */
   useEffect(() => {
-    if (!mehrere || reducedMotion) return;
+    if (!mehrere || reducedMotion) return undefined;
+    let abgebrochen = false;
     const timer = setInterval(() => {
-      setIndex((i) => {
-        setPrevIndex(i);
-        return naechsterZufall(brauchbar.length, i);
-      });
-      setTick((t) => t + 1);
+      const naechster = naechsterZufall(brauchbar.length, index);
+      const url = brauchbar[naechster];
+      const zeigen = () => {
+        if (abgebrochen) return;
+        setPrevIndex(index);
+        setIndex(naechster);
+        setTick((t) => t + 1);
+      };
+      const vorlader = new Image();
+      // Auch bei einem Fehlschlag weiterschalten — die kaputte Adresse
+      // meldet das <img> selbst und faellt danach heraus.
+      vorlader.onload = zeigen;
+      vorlader.onerror = zeigen;
+      vorlader.src = url;
     }, BACKDROP_INTERVAL);
-    return () => clearInterval(timer);
-  }, [mehrere, reducedMotion, brauchbar.length]);
+    return () => { abgebrochen = true; clearInterval(timer); };
+  }, [mehrere, reducedMotion, brauchbar.length, index]);
 
   if (!brauchbar.length) return null;
 
@@ -1324,12 +1383,15 @@ function HeaderSlideshow({ urls }) {
 
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden" }} aria-hidden="true">
+      {/* Das scheidende Bild bleibt liegen; das neue blendet darueber
+          auf. Damit gibt es keinen Moment, in dem der Kopfbereich leer
+          waere. */}
       {vorher && vorher !== aktuell && !reducedMotion && (
         <img
           key={"weg" + tick}
           src={vorher}
           alt=""
-          className="backdrop-layer backdrop-out"
+          className="backdrop-layer"
           style={bild}
           onError={() => kaputtMerken(vorher)}
         />
@@ -1338,7 +1400,11 @@ function HeaderSlideshow({ urls }) {
         key={"da" + tick}
         src={aktuell}
         alt=""
-        className={"backdrop-layer" + (reducedMotion || !mehrere ? "" : " backdrop-in")}
+        /* Das erste Bild holt der Browser vorrangig — bisher erschien
+           es rund eine Sekunde nach dem Rest. */
+        fetchPriority={prevIndex === null ? "high" : undefined}
+        decoding="async"
+        className={"backdrop-layer" + (reducedMotion || prevIndex === null ? "" : " backdrop-blende")}
         style={bild}
         onError={() => kaputtMerken(aktuell)}
       />
@@ -1601,14 +1667,29 @@ function initialsOf(title) {
 }
 
 /* Poster: hier ganz normales <img>. Auf einer eigenen Domain gibt es
-   die Sandbox-Beschränkung der Artefakt-Umgebung nicht mehr. */
-function Poster({ url, title, size = 44 }) {
+   die Sandbox-Beschränkung der Artefakt-Umgebung nicht mehr.
+
+   `vorrang` ist fuer die ersten sichtbaren Zeilen gedacht: die holt der
+   Browser mit hoher Prioritaet und ohne Verzoegerung, alles darunter
+   erst beim Heranscrollen.
+
+   Beim Erscheinen blendet das Bild auf, statt hart aufzupoppen. Die
+   Platzhalter-Kachel mit den Initialen bleibt unveraendert der
+   Rueckfall. */
+function Poster({ url, title, size = 44, vorrang = false }) {
   const clean = typeof url === "string" ? url.trim() : "";
   const usable = clean && isLikelyUrl(clean);
   const [broken, setBroken] = useState(false);
+  const [geladen, setGeladen] = useState(false);
+  const bildRef = useRef(null);
 
   useEffect(() => {
     setBroken(false); // Zustand bei URL-Wechsel zurücksetzen
+    /* Steht das Bild schon im Cache, ist es beim ersten Rendern
+       womoeglich fertig, bevor onLoad ueberhaupt haengt — dann bliebe
+       es ohne diese Pruefung dauerhaft unsichtbar. */
+    const el = bildRef.current;
+    setGeladen(!!(el && el.complete && el.naturalWidth > 0));
   }, [clean]);
 
   const h = Math.round(size * 1.42);
@@ -1620,11 +1701,19 @@ function Poster({ url, title, size = 44 }) {
   if (usable && !broken) {
     return (
       <img
+        ref={bildRef}
         src={clean}
         alt={title}
-        loading="lazy"
+        loading={vorrang ? "eager" : "lazy"}
+        decoding="async"
+        fetchPriority={vorrang ? "high" : undefined}
+        onLoad={() => setGeladen(true)}
         onError={() => setBroken(true)}
-        style={{ ...base, objectFit: "cover", backgroundColor: "#141416", display: "block" }}
+        style={{
+          ...base, objectFit: "cover", backgroundColor: "#141416", display: "block",
+          opacity: geladen ? 1 : 0,
+          transition: "opacity var(--bewegung-rein)",
+        }}
       />
     );
   }
@@ -1904,20 +1993,41 @@ function KopfIconButton({ title, active, onClick, children }) {
 
    Beim ersten Aufbau traegt das Element die Klasse schon im Markup und
    spielt die Bewegung von allein. */
-function Uebergang({ trigger, children }) {
+/* `richtung` waehlt die Bewegung: 1 = der Inhalt kommt von rechts,
+   -1 = von links, 0 (oder gar nicht gesetzt) = das bisherige
+   Einblenden ohne Richtung. */
+const UEBERGANG_KLASSEN = ["uebergang", "kategorie-rechts", "kategorie-links"];
+
+function uebergangKlasse(richtung) {
+  if (richtung > 0) return "kategorie-rechts";
+  if (richtung < 0) return "kategorie-links";
+  return "uebergang";
+}
+
+function Uebergang({ trigger, richtung = 0, children }) {
   const ref = useRef(null);
   const ersterLauf = useRef(true);
+  const klasse = uebergangKlasse(richtung);
+  /* Die Klasse gehoert zum Ausloeser, nicht zum Rendern: laeuft der
+     Effekt wegen `trigger`, soll er genau die Klasse setzen, die zu
+     dieser Aenderung gehoert. */
+  const klasseRef = useRef(klasse);
+  klasseRef.current = klasse;
 
-  useEffect(() => {
+  /* useLayoutEffect und nicht useEffect: React hat die neue Klasse
+     beim Rendern schon gesetzt, die Bewegung also bereits gestartet.
+     Der Neustart muss deshalb vor dem naechsten Bild passieren, sonst
+     zuckt sie sichtbar. */
+  useLayoutEffect(() => {
     if (ersterLauf.current) { ersterLauf.current = false; return; }
     const el = ref.current;
     if (!el) return;
-    el.classList.remove("uebergang");
+    el.classList.remove(...UEBERGANG_KLASSEN);
     void el.offsetWidth;
-    el.classList.add("uebergang");
+    el.classList.add(klasseRef.current);
   }, [trigger]);
 
-  return <div ref={ref} className="uebergang">{children}</div>;
+  return <div ref={ref} className={klasse}>{children}</div>;
 }
 
 /* Versatz einer Listenzeile beim Erscheinen: 25ms je Zeile, ab der
@@ -1987,15 +2097,47 @@ function SkelettListe({ anzahl = 8 }) {
   );
 }
 
+/**
+ * Ein Blatt, das von unten hereinkommt.
+ *
+ * Die Abdunkelung liegt als eigene Ebene darunter, damit sich ihre
+ * Deckkraft unabhaengig vom Blatt bewegen laesst. Sie ist absolut
+ * positioniert — das Blatt braucht deshalb `position: relative`, sonst
+ * laege die Ebene darueber.
+ *
+ * `children` darf eine Funktion sein. Sie bekommt `schliessen`
+ * uebergeben: damit spielen auch die eigenen Knoepfe des Blattes die
+ * Aus-Bewegung, statt einfach zu verschwinden.
+ *
+ * Die Griffleiste oben bleibt wie sie ist; gezogen wird hier nichts.
+ */
 function BottomSheet({ title, onClose, children }) {
+  const reducedMotion = usePrefersReducedMotion();
+  const [geht, setGeht] = useState(false);
+
+  function schliessen(danach) {
+    const ende = typeof danach === "function" ? danach : onClose;
+    if (reducedMotion) { ende(); return; }
+    setGeht(true);
+    setTimeout(ende, BEWEGUNG_RAUS_MS);
+  }
+
   return (
     <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 100 }}
-      onClick={onClose}
+      style={{ position: "fixed", inset: 0, display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 100 }}
     >
+      {/* Tippen auf den abgedunkelten Bereich schliesst das Blatt. */}
+      <div
+        aria-hidden="true"
+        onClick={() => schliessen()}
+        className={geht ? "blende-raus" : "blende-rein"}
+        style={{ position: "absolute", inset: 0, background: "#000", opacity: 0.55 }}
+      />
       <div
         onClick={(e) => e.stopPropagation()}
+        className={geht ? "blatt-raus" : "blatt-rein"}
         style={{
+          position: "relative",
           background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: "14px 14px 0 0",
           padding: 22, width: "100%", maxWidth: 520, boxSizing: "border-box",
           maxHeight: "85vh", overflowY: "auto", WebkitOverflowScrolling: "touch",
@@ -2003,7 +2145,7 @@ function BottomSheet({ title, onClose, children }) {
       >
         <div style={{ width: 36, height: 4, background: "#33333a", borderRadius: 2, margin: "0 auto 16px" }} />
         {title && <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 16px" }}>{title}</h3>}
-        {children}
+        {typeof children === "function" ? children(schliessen) : children}
       </div>
     </div>
   );
@@ -2012,26 +2154,59 @@ function BottomSheet({ title, onClose, children }) {
 function ConfirmDialog({ title, text, confirmLabel, danger, onConfirm, onCancel }) {
   return (
     <BottomSheet title={title} onClose={onCancel}>
-      <p style={{ color: "#9A968C", fontSize: 14.5, lineHeight: 1.5, margin: "0 0 20px" }}>{text}</p>
-      <div style={{ display: "flex", gap: 10 }}>
-        <button
-          onClick={onCancel}
-          style={{ flex: 1, padding: "14px", background: "transparent", color: "#9A968C", border: "1px solid #33333a", borderRadius: 8, fontSize: 15, cursor: "pointer" }}
-        >
-          Abbrechen
-        </button>
-        <button
-          onClick={onConfirm}
-          style={{
-            flex: 1, padding: "14px", background: danger ? "#DC2626" : "var(--accent, #C9A227)",
-            color: danger ? "#faf7f0" : "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer",
-          }}
-        >
-          {confirmLabel}
-        </button>
-      </div>
+      {(schliessen) => (
+        <>
+          <p style={{ color: "#9A968C", fontSize: 14.5, lineHeight: 1.5, margin: "0 0 20px" }}>{text}</p>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button
+              onClick={() => schliessen(onCancel)}
+              style={{ flex: 1, padding: "14px", background: "transparent", color: "#9A968C", border: "1px solid #33333a", borderRadius: 8, fontSize: 15, cursor: "pointer" }}
+            >
+              Abbrechen
+            </button>
+            <button
+              onClick={() => schliessen(onConfirm)}
+              style={{
+                flex: 1, padding: "14px", background: danger ? "#DC2626" : "var(--accent, #C9A227)",
+                color: danger ? "#faf7f0" : "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer",
+              }}
+            >
+              {confirmLabel}
+            </button>
+          </div>
+        </>
+      )}
     </BottomSheet>
   );
+}
+
+/**
+ * Ein Bereich, der beim Oeffnen hereingleitet und beim Schliessen
+ * hinaus. Damit die Aus-Bewegung ueberhaupt zu sehen ist, bleibt der
+ * zuletzt gezeigte Inhalt fuer ihre Dauer stehen — sonst waere er
+ * schon weg, bevor die Bewegung beginnt.
+ *
+ * Nicht geeignet fuer Inhalte mit `position: fixed` darin: die
+ * laufende transform macht diesen Bereich zu deren Bezugsrahmen. Die
+ * Detailseite bringt ihre Bewegung deshalb selbst mit.
+ */
+function Seite({ offen, children }) {
+  const reducedMotion = usePrefersReducedMotion();
+  const [imBaum, setImBaum] = useState(offen);
+  const [geht, setGeht] = useState(false);
+  const letzte = useRef(children);
+  if (offen) letzte.current = children;
+
+  useEffect(() => {
+    if (offen) { setImBaum(true); setGeht(false); return undefined; }
+    if (reducedMotion) { setImBaum(false); setGeht(false); return undefined; }
+    setGeht(true);
+    const zeit = setTimeout(() => { setImBaum(false); setGeht(false); }, BEWEGUNG_RAUS_MS);
+    return () => clearTimeout(zeit);
+  }, [offen, reducedMotion]);
+
+  if (!offen && !imBaum) return null;
+  return <div className={geht ? "seite-raus" : "seite-rein"}>{letzte.current}</div>;
 }
 
 /* ============================================================
@@ -2154,6 +2329,11 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
 
   return (
     <BottomSheet title="Filter" onClose={onClose}>
+      {/* Als Funktion, damit auch "Anwenden" und "Zuruecksetzen" die
+          Aus-Bewegung des Blattes spielen statt einfach zu
+          verschwinden. */}
+      {(schliessen) => (
+      <>
       {/* Die Sortierung steht vor den Filtern — sie bestimmt die
           Reihenfolge der Liste, die die Filter danach kuerzen. */}
       <div style={filterAbschnitt}>SORTIEREN</div>
@@ -2293,18 +2473,20 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
 
       <div style={{ display: "flex", gap: 10 }}>
         <button
-          onClick={handleReset}
+          onClick={() => schliessen(handleReset)}
           style={{ flex: 1, padding: "14px", background: "transparent", color: "#9A968C", border: "1px solid #33333a", borderRadius: 8, fontSize: 15, cursor: "pointer" }}
         >
           Filter zurücksetzen
         </button>
         <button
-          onClick={handleApply}
+          onClick={() => schliessen(handleApply)}
           style={{ flex: 1, padding: "14px", background: "var(--accent, #C9A227)", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer" }}
         >
           Anwenden
         </button>
       </div>
+      </>
+      )}
     </BottomSheet>
   );
 }
@@ -2734,13 +2916,13 @@ function duplikatText(warnung, categoryLabel) {
 /* ============================================================
    WATCHLIST — vorgemerkt, noch ohne Note
    ============================================================ */
-function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen, reihe = 0 }) {
+function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen, reihe = 0, vorrang = false }) {
   /* Die eigene Laufzeit des Eintrags. Ist sie nicht bekannt — oder
      handelt es sich um ein Spiel —, bleibt sie einfach weg. */
   const laufzeit = eintragLaufzeit(eintrag);
   return (
     <div className="listen-eintrag" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326", animationDelay: listenVersatz(reihe) }}>
-      <Poster url={eintrag.poster} title={eintrag.title} size={34} />
+      <Poster url={eintrag.poster} title={eintrag.title} size={34} vorrang={vorrang} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {eintrag.title}
@@ -4043,6 +4225,22 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
   const [angabenOffen, setAngabenOffen] = useState(false);
 
+  /* Die Seite bringt ihre Bewegung selbst mit statt in einer Huelle zu
+     stecken: sie liegt mit position: fixed ueber der Liste, und eine
+     transform an einer Huelle darueber wuerde ihr genau diesen Bezug
+     zum Fenster nehmen.
+
+     Die Liste darunter wird nicht angefasst und behaelt damit ihre
+     Rollposition — daran aendert die Bewegung nichts. */
+  const reducedMotion = usePrefersReducedMotion();
+  const [geht, setGeht] = useState(false);
+
+  function zurueck() {
+    if (reducedMotion) { onBack(); return; }
+    setGeht(true);
+    setTimeout(onBack, BEWEGUNG_RAUS_MS);
+  }
+
   /* Jahr und Regie stehen unter dem Titel, die IMDb-Note neben der
      eigenen Endnote. Beides gibt es nur bei Film, Serie und Anime.
      Fehlt ein Wert, steht dort ein Platzhalter, der die Eingabe
@@ -4055,10 +4253,13 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
   const regieLabel = supportsSeasons(category) ? "Ersteller" : "Regie";
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#17171A", zIndex: 50, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+    <div
+      className={geht ? "seite-raus" : "seite-rein"}
+      style={{ position: "fixed", inset: 0, background: "#17171A", zIndex: 50, overflowY: "auto", WebkitOverflowScrolling: "touch" }}
+    >
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 40px" }}>
         <button
-          onClick={onBack}
+          onClick={zurueck}
           style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
         >
           ← Zurück
@@ -5100,7 +5301,11 @@ function DuellKarte({ eintrag, zustand, onClick }) {
         border: "1px solid " + (gewaehlt ? "var(--accent, #C9A227)" : "#2A2A2E"),
         borderRadius: 12, padding: 10, color: "#EDEAE3",
         opacity: unterlegen ? 0.38 : 1,
-        transition: "opacity 200ms ease, border-color 200ms ease",
+        /* transform gehoert mit in die eigene Angabe: sonst
+           ueberschriebe sie die Tipp-Rueckmeldung aus dem Stylesheet
+           und die Karte spraenge statt zu federn. Die GEWAEHLT-
+           Markierung bleibt davon unberuehrt. */
+        transition: "opacity 200ms ease, border-color 200ms ease, transform var(--bewegung-tippen)",
       }}
     >
       <Poster url={eintrag.poster} title={eintrag.title} size={100} />
@@ -7088,6 +7293,31 @@ export default function App() {
      heisst: steht er schon vollstaendig im Bild, passiert nichts, und
      die Seite springt vertikal nicht. */
   const tabLeisteRef = useRef(null);
+
+  /* Aus welcher Richtung der neue Kategorie-Inhalt hereingleitet:
+     1 = nach rechts gewechselt (Inhalt kommt von rechts), -1 = nach
+     links, 0 = ohne Richtung (dann bleibt es beim bisherigen
+     Einblenden, etwa beim Zurueckkommen aus der Statistik). */
+  const [wechselRichtung, setWechselRichtung] = useState(0);
+
+  /* Eine Kategorie waehlen — von der Reiterleiste wie von der
+     Wischgeste. Der Rumpf stammt unveraendert aus dem bisherigen
+     Klick-Handler; neu ist allein die Richtung. */
+  function waehleKategorie(key, richtung) {
+    setWechselRichtung(richtung);
+    setCategory(key);
+    setActiveTab(key);
+    setMode("list");
+    setUnterReiter("bewertet");
+    setSelectedId(null);
+    setSearch("");
+    /* Genre, Jahrzehnt, Regie und Reihe gehoeren zur Kategorie, aus
+       der sie stammen — ein Filmgenre in den Serien liesse die Liste
+       ohne ersichtlichen Grund leer aussehen. Notenbereich und
+       Sortierung bleiben wie bisher stehen. */
+    setFilterState((f) => ({ ...f, genre: "", jahrzehnt: "", regie: "", reihe: "" }));
+  }
+
   useEffect(() => {
     const leiste = tabLeisteRef.current;
     if (!leiste) return;
@@ -8443,21 +8673,94 @@ export default function App() {
 
   const editingEntry = mode === "edit" && selectedEntry ? selectedEntry : null;
 
+  /* ---- Wischen im Inhaltsbereich wechselt die Kategorie ----
+     Es wird nur die Geste erkannt; am Finger zieht nichts mit. Erkannt
+     heisst: derselbe Uebergang wie beim Antippen des Reiters, in
+     dieselbe Richtung. Am ersten bzw. letzten Reiter passiert nichts.
+
+     Die Reiterleiste selbst liegt im Kopfbereich und damit ausserhalb
+     dieses Bereichs; alles andere, was waagerecht rollt oder eigene
+     waagerechte Gesten hat, faengt istEigenerQuerbereich ab. */
+  const wischStart = useRef(null);
+  const inhaltRef = useRef(null);
+
+  function wischAnfang(e) {
+    wischStart.current = null;
+    if (mode !== "list") return;
+    if (!e.touches || e.touches.length !== 1) return;
+    if (istEigenerQuerbereich(e.target, inhaltRef.current)) return;
+    wischStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }
+
+  function wischEnde(e) {
+    const start = wischStart.current;
+    wischStart.current = null;
+    if (!start || mode !== "list") return;
+    if (!e.changedTouches || !e.changedTouches.length) return;
+    const dx = e.changedTouches[0].clientX - start.x;
+    const dy = e.changedTouches[0].clientY - start.y;
+    if (Math.abs(dx) < WISCH_SCHWELLE_PX) return;
+    if (Math.abs(dx) < WISCH_VERHAELTNIS * Math.abs(dy)) return;
+
+    // Nach links gewischt heisst: eine Kategorie weiter nach rechts.
+    const richtung = dx < 0 ? 1 : -1;
+    const jetzt = CATEGORY_KEYS.indexOf(category);
+    const ziel = jetzt + richtung;
+    if (jetzt < 0 || ziel < 0 || ziel >= CATEGORY_KEYS.length) return;
+    waehleKategorie(CATEGORY_KEYS[ziel], richtung);
+  }
+
   return (
-    <div style={{ "--accent": accent, minHeight: "100vh", background: "#17171A", color: "#EDEAE3", fontFamily: "'Inter', system-ui, sans-serif", padding: "0 0 60px 0" }}>
+    /* overflowX: "clip" faengt den Versatz der Kategorie-Bewegung ab —
+       ohne ihn zeigte die Seite fuer die 200 ms eine Querlaufleiste.
+       "clip" und nicht "hidden": es macht die Seite nicht zum
+       Rollbereich und laesst die Detailseite (position: fixed)
+       unberuehrt. */
+    <div style={{ "--accent": accent, minHeight: "100vh", background: "#17171A", color: "#EDEAE3", fontFamily: "'Inter', system-ui, sans-serif", padding: "0 0 60px 0", overflowX: "clip" }}>
       <style>{`
+        /* ----------------------------------------------------------
+           Grundwerte der Bewegung. Alles, was sich in der App bewegt,
+           nimmt seine Dauer und seine Kurve von hier — damit die App
+           ueberall im selben Takt laeuft.
+
+           Kurz, praezise, ohne Federn und ohne Ueberschwingen: die
+           Kurven laufen alle monoton auf ihren Endwert zu.
+
+           Bewegt werden ausschliesslich transform und opacity. Weder
+           width, height, top, left, margin noch padding — die kosten
+           einen Layout-Durchlauf und ruckeln auf dem Telefon.
+           ---------------------------------------------------------- */
+        :root {
+          --bewegung-rein:   200ms cubic-bezier(0.22, 1, 0.36, 1);
+          --bewegung-raus:   160ms cubic-bezier(0.4, 0, 1, 1);
+          --bewegung-tippen: 110ms cubic-bezier(0.4, 0, 0.2, 1);
+          --bewegung-blende: 600ms ease-in-out; /* nur Bild-Ueberblendungen */
+        }
+
+        /* Wer weniger Bewegung eingestellt hat, bekommt keine: alle
+           Dauern auf 0ms. Die Regeln weiter unten schalten zusaetzlich
+           die Keyframes ab, sodass nur noch Ein- und Ausblenden ohne
+           Bewegung uebrigbleibt. */
+        @media (prefers-reduced-motion: reduce) {
+          :root {
+            --bewegung-rein:   0ms linear;
+            --bewegung-raus:   0ms linear;
+            --bewegung-tippen: 0ms linear;
+            --bewegung-blende: 0ms linear;
+          }
+        }
+
         input[type=range] { -webkit-appearance: none; background: transparent; }
         input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: #2A2A2E; }
         input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; margin-top: -9px; width: 24px; height: 24px; border-radius: 50%; background: var(--accent, #C9A227); border: 3px solid #17171A; }
         input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: #2A2A2E; }
         input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: var(--accent, #C9A227); border: 3px solid #17171A; }
 
-        /* Bildwechsel im Kopfbereich: alt nach links hinaus,
-           neu von rechts herein. */
-        @keyframes backdropIn  { from { transform: translateX(100%); }  to { transform: translateX(0); } }
-        @keyframes backdropOut { from { transform: translateX(0); } to { transform: translateX(-100%); } }
-        .backdrop-in  { animation: backdropIn  850ms cubic-bezier(0.33, 0, 0.15, 1) both; }
-        .backdrop-out { animation: backdropOut 850ms cubic-bezier(0.33, 0, 0.15, 1) both; }
+        /* Bildwechsel im Kopfbereich: das neue Bild blendet ueber dem
+           liegengebliebenen alten auf. Der Zielwert 0.9 ist die
+           Deckkraft, mit der die Ebene ohnehin liegt. */
+        @keyframes backdropBlende { from { opacity: 0; } to { opacity: 0.9; } }
+        .backdrop-blende { animation: backdropBlende var(--bewegung-blende) backwards; }
 
         @media (prefers-reduced-motion: reduce) {
           .backdrop-layer { animation: none !important; transform: none !important; }
@@ -8499,15 +8802,74 @@ export default function App() {
         }
         .listen-eintrag { animation: zeileRein 190ms ease-out backwards; }
 
-        /* Tap-Rueckmeldung: der Knopf federt beim Antippen kurz ein
-           und kommt von selbst zurueck. */
-        button { transition: transform 100ms ease-out; }
-        button:active { transform: scale(0.96); }
+        /* Kategorie-Wechsel: der neue Inhalt gleitet richtungsabhaengig
+           herein — nach rechts gewechselt kommt er von rechts, nach
+           links von links. Der Weg ist kurz und die Deckkraft faellt
+           nur bis 0,4: es soll ein Ruck in die Richtung sein, kein
+           Auf- und Zublenden.
+
+           Der Versatz nach rechts wuerde fuer die Dauer der Bewegung
+           eine Querlaufleiste ausloesen — deshalb traegt die Seite
+           overflow-x: clip (siehe der Wurzel-Container). "clip" und
+           nicht "hidden": es macht die Seite nicht zum Rollbereich und
+           laesst position: fixed (Detailseite) unberuehrt. */
+        @keyframes kategorieVonRechts {
+          from { opacity: 0.4; transform: translateX(20px); }
+          to   { opacity: 1; transform: none; }
+        }
+        @keyframes kategorieVonLinks {
+          from { opacity: 0.4; transform: translateX(-20px); }
+          to   { opacity: 1; transform: none; }
+        }
+        .kategorie-rechts { animation: kategorieVonRechts var(--bewegung-rein) backwards; }
+        .kategorie-links  { animation: kategorieVonLinks  var(--bewegung-rein) backwards; }
+
+        /* Seitenwechsel: Detailseite, Minispiele, Statistik und
+           Daten-Panel. Hinein von rechts, zurueck nach rechts hinaus. */
+        @keyframes seiteRein {
+          from { opacity: 0; transform: translateX(16px); }
+          to   { opacity: 1; transform: none; }
+        }
+        @keyframes seiteRaus {
+          from { opacity: 1; transform: none; }
+          to   { opacity: 0; transform: translateX(12px); }
+        }
+        .seite-rein { animation: seiteRein var(--bewegung-rein) backwards; }
+        /* forwards, weil das Element unmittelbar danach aus dem Baum
+           faellt — es bleibt also nichts stehen. */
+        .seite-raus { animation: seiteRaus var(--bewegung-raus) forwards; }
+
+        /* Blatt von unten (Filter, Dialoge, Rangleiter) samt
+           Abdunkelung dahinter. */
+        @keyframes blattRein  { from { transform: translateY(100%); } to { transform: none; } }
+        @keyframes blattRaus  { from { transform: none; } to { transform: translateY(100%); } }
+        @keyframes blendeRein { from { opacity: 0; }    to { opacity: 0.55; } }
+        @keyframes blendeRaus { from { opacity: 0.55; } to { opacity: 0; } }
+        .blatt-rein  { animation: blattRein  var(--bewegung-rein) backwards; }
+        .blatt-raus  { animation: blattRaus  var(--bewegung-raus) forwards; }
+        .blende-rein { animation: blendeRein 160ms ease-out; }
+        .blende-raus { animation: blendeRaus 160ms ease-out forwards; }
+
+        /* Die Kategoriefarbe springt nicht um, sie blendet ueber. */
+        .tab-btn, .unter-reiter, .neu-knopf {
+          transition: background-color 200ms ease, border-color 200ms ease;
+        }
+
+        /* Tipp-Rueckmeldung: Knoepfe, Reiter, Karten und Listenzeilen
+           federn beim Antippen kurz ein und loesen beim Loslassen
+           wieder auf. */
+        button, .listen-eintrag { transition: transform var(--bewegung-tippen); }
+        button:active, .listen-eintrag:active { transform: scale(0.98); }
 
         @media (prefers-reduced-motion: reduce) {
-          .uebergang, .listen-eintrag { animation: none !important; }
-          button { transition: none !important; }
-          button:active { transform: none !important; }
+          .uebergang, .listen-eintrag, .kategorie-rechts, .kategorie-links,
+          .seite-rein, .seite-raus, .blatt-rein, .blatt-raus,
+          .blende-rein, .blende-raus {
+            animation: none !important;
+          }
+          .tab-btn, .unter-reiter, .neu-knopf { transition: none !important; }
+          button, .listen-eintrag { transition: none !important; }
+          button:active, .listen-eintrag:active { transform: none !important; }
         }
 
         /* Ladeskelett: gedimmte Flaechen in der vorhandenen Kartenfarbe,
@@ -8756,17 +9118,26 @@ export default function App() {
           }}
         >
           <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            {/* Minispiele und Statistik liegen neben den Kategorien,
+                nicht daneben in einer Reihe — hier gibt es also keine
+                Wechselrichtung, sie wird zurueckgesetzt. */}
             <KopfIconButton
               title="Minispiele"
               active={activeTab === "minigames"}
-              onClick={() => setActiveTab(activeTab === "minigames" ? category : "minigames")}
+              onClick={() => {
+                setWechselRichtung(0);
+                setActiveTab(activeTab === "minigames" ? category : "minigames");
+              }}
             >
               <IconSpiele />
             </KopfIconButton>
             <KopfIconButton
               title="Statistik"
               active={activeTab === "stats"}
-              onClick={() => setActiveTab(activeTab === "stats" ? category : "stats")}
+              onClick={() => {
+                setWechselRichtung(0);
+                setActiveTab(activeTab === "stats" ? category : "stats");
+              }}
             >
               <IconStatistik />
             </KopfIconButton>
@@ -8829,23 +9200,15 @@ export default function App() {
 
           {/* Tabs — seitlich wischbar, siehe .tab-leiste */}
           <div className="tab-leiste" ref={tabLeisteRef} style={{ marginBottom: 0 }}>
-            {CATEGORIES.map((c) => (
+            {CATEGORIES.map((c, i) => (
               <button
                 key={c.key}
                 data-tab={c.key}
                 onClick={() => {
-                  setCategory(c.key);
-                  setActiveTab(c.key);
-                  setMode("list");
-                  setUnterReiter("bewertet");
-                  setSelectedId(null);
-                  setSearch("");
-                  /* Genre, Jahrzehnt, Regie und Reihe gehoeren zur
-                     Kategorie, aus der sie stammen — ein Filmgenre in
-                     den Serien liesse die Liste ohne ersichtlichen
-                     Grund leer aussehen. Notenbereich und Sortierung
-                     bleiben wie bisher stehen. */
-                  setFilterState((f) => ({ ...f, genre: "", jahrzehnt: "", regie: "", reihe: "" }));
+                  /* Richtung aus der Position in der Leiste: weiter
+                     rechts heisst, der Inhalt kommt von rechts. */
+                  const jetzt = CATEGORY_KEYS.indexOf(category);
+                  waehleKategorie(c.key, i === jetzt ? 0 : i > jetzt ? 1 : -1);
                 }}
                 className="tab-btn"
                 style={{
@@ -8866,7 +9229,7 @@ export default function App() {
 
       {/* Daten-Panel — ueber das Zahnrad im Kopfbereich erreichbar und
           deshalb nicht mehr an eine Kategorie gebunden. */}
-      {showExport && (
+      <Seite offen={showExport}>
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 0" }}>
           <div style={{ background: "#141416", border: "1px solid var(--accent, #C9A227)", borderRadius: 8, padding: 16, marginBottom: 18 }}>
             <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
@@ -9021,11 +9384,21 @@ export default function App() {
             </div>
           </div>
         </div>
-      )}
+      </Seite>
 
+      {/* Statistik und Minispiele treten an die Stelle des
+          Kategorie-Inhalts. Sie gleiten beim Oeffnen mit derselben
+          Bewegung herein wie die Detailseite; beim Verlassen uebernimmt
+          der Kategorie-Inhalt, der seinerseits hereingleitet — beide
+          gleichzeitig im Baum zu halten wuerde die Seite fuer den
+          Moment doppelt so hoch machen. `key` sorgt dafuer, dass die
+          Bewegung bei jedem Oeffnen neu laeuft. */}
       {activeTab === "stats" ? (
+        <div key="seite-stats" className="seite-rein">
         <StatsPage ranked={rankedByCategory} watchlist={watchlistByCategory} />
+        </div>
       ) : activeTab === "minigames" ? (
+        <div key="seite-minigames" className="seite-rein">
         <MinispielePage
           ranked={rankedByCategory}
           watchlist={watchlistByCategory}
@@ -9036,12 +9409,21 @@ export default function App() {
           onTurnier={() => xpGeben("turnier")}
           fehler={duellFehler}
         />
+        </div>
       ) : (
-        <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px" }}>
+        <div
+          ref={inhaltRef}
+          onTouchStart={wischAnfang}
+          onTouchEnd={wischEnde}
+          onTouchCancel={() => { wischStart.current = null; }}
+          style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px" }}
+        >
           {/* Der Tabwechsel blendet den neuen Kategorie-Inhalt ein.
               Der Zustand darunter bleibt erhalten — die Huelle tauscht
-              nichts aus, sie startet nur die Bewegung neu. */}
-          <Uebergang trigger={activeTab}>
+              nichts aus, sie startet nur die Bewegung neu. Mit Richtung
+              gleitet er zusaetzlich von der Seite herein, aus der
+              gewechselt wurde. */}
+          <Uebergang trigger={activeTab} richtung={wechselRichtung}>
           {saveError && (
             <div style={{ background: "#2a1616", border: "1px solid #d9736a", color: "#d9736a", borderRadius: 8, padding: 12, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
               {saveError}
@@ -9124,6 +9506,7 @@ export default function App() {
                     key={r.key}
                     onClick={() => setUnterReiter(r.key)}
                     aria-pressed={unterReiter === r.key}
+                    className="unter-reiter"
                     style={{
                       padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
                       background: unterReiter === r.key ? "var(--accent, #C9A227)" : "transparent",
@@ -9139,6 +9522,7 @@ export default function App() {
 
               <button
                 onClick={() => setMode("suche")}
+                className="neu-knopf"
                 style={{ width: "100%", padding: "16px", background: "var(--accent, #C9A227)", color: "#17171A", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15.5, cursor: "pointer", marginBottom: 20 }}
               >
                 + Neu hinzufügen
@@ -9184,6 +9568,7 @@ export default function App() {
                     key={f.id}
                     eintrag={f}
                     reihe={i}
+                    vorrang={i < 10}
                     /* Gecachte Zeilen sind reine Anzeige: aus ihnen darf
                        weder eine Bewertung noch ein Loeschen entstehen. */
                     busy={busy || zeigtCache}
@@ -9292,7 +9677,10 @@ export default function App() {
                       <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#55524c", width: 22, textAlign: "right", flexShrink: 0, ...rang.zahl }}>
                         {i + 1}
                       </span>
-                      <Poster url={f.poster} title={f.title} size={34} />
+                      {/* Die ersten sichtbaren Zeilen holt der Browser
+                          vorrangig, alles darunter erst beim
+                          Heranscrollen. */}
+                      <Poster url={f.poster} title={f.title} size={34} vorrang={i < 10} />
                       <div style={{ minWidth: 0 }}>
                         {/* Titel und — falls es etwas nachzutragen gibt —
                             der Hinweis auf die neue Staffel. Beides in
