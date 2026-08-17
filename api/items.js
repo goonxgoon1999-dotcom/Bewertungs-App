@@ -5,6 +5,19 @@ import {
   episodenZuText, positiveZahl,
 } from "./_db.js";
 
+/**
+ * Ein mitgeschicktes Bewertungsdatum — oder null.
+ *
+ * Regulaer schickt die App keines: Das Datum entsteht auf dem Server in
+ * dem Moment, in dem aus einem Eintrag ein bewerteter wird. Nur das
+ * Einspielen eines Backups bringt es mit, damit ein zurueckgespieltes
+ * Jahr nicht auf den Tag des Imports rutscht.
+ */
+function bewertetAm(body) {
+  const wert = body && body.ratedAt;
+  return typeof wert === "number" && Number.isFinite(wert) && wert > 0 ? Math.round(wert) : null;
+}
+
 /** Die Staffelzeilen eines Eintrags, so wie sie gerade gespeichert sind. */
 async function currentSeasonRows(itemId) {
   return await sql`
@@ -288,7 +301,7 @@ async function create(req, res) {
          personal, release_year, director, imdb_rating, genres, collection, studio,
          runtime_minutes, episode_runtime, episode_count, episodes_per_season,
          watchlist, watch_count,
-         created_at, updated_at)
+         created_at, updated_at, rated_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
          ${body.backdrop || ""},
@@ -304,7 +317,12 @@ async function create(req, res) {
          ${l.mitgeschickt ? l.episodesPerSeason : null},
          ${merkliste},
          ${normalizeWatchCount(body.watchCount) ?? WATCH_COUNT_DEFAULT},
-         ${body.createdAt || now}, ${now})
+         ${body.createdAt || now}, ${now},
+         -- Wann bewertet wurde. Vorgemerktes hat noch kein Datum; es
+         -- kommt erst, wenn daraus ein bewerteter Eintrag wird (siehe
+         -- update). `ratedAt` aus der Anfrage gibt es nur beim
+         -- Einspielen eines Backups.
+         ${merkliste ? null : bewertetAm(body) || now})
       RETURNING *
     `,
     ...seasonQueries(id, body.category, body.seasons, []),
@@ -380,6 +398,17 @@ async function update(req, res) {
         -- automatische Nachladen von Postern und Angaben etwa) — ohne
         -- COALESCE wuerde jeder dieser Aufrufe ihn auf 1 zuruecksetzen.
         watch_count     = COALESCE(${normalizeWatchCount(body.watchCount)}::integer, watch_count),
+        -- Das Bewertungsdatum wird genau einmal gesetzt und danach nie
+        -- wieder angefasst: COALESCE nimmt zuerst den gespeicherten
+        -- Wert. Erst wenn dort nichts steht — der Eintrag also gerade
+        -- von vorgemerkt zu bewertet wird — kommt das heutige Datum
+        -- hinein. Wandert er zurueck auf die Watchlist, faellt es weg.
+        -- Ohne diese Regel wuerde jedes automatische Nachladen von
+        -- Poster oder Genres den Eintrag ins laufende Jahr schieben.
+        rated_at        = CASE
+                            WHEN ${merkliste}::boolean THEN NULL
+                            ELSE COALESCE(rated_at, ${bewertetAm(body)}::bigint, ${Date.now()}::bigint)
+                          END,
         updated_at      = ${Date.now()}
       WHERE id = ${id}
       RETURNING *
