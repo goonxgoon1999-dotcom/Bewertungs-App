@@ -574,6 +574,8 @@ const DEFAULT_FILTER = {
   jahrzehnt: "",
   regie: "",
   reihe: "",
+  // "kurz" oder "episch" — siehe Stimmungsfilter weiter unten.
+  stimmung: "",
 };
 
 /* ------------------------------------------------------------
@@ -642,8 +644,129 @@ function filterOptionen(liste, category) {
   };
 }
 
+/* ------------------------------------------------------------
+   Stimmungsfilter — "kurz & leicht" oder "episch & lang"
+
+   Die Einstufung entsteht aus zwei Signalen, die je einen Punkt
+   beisteuern:
+
+     Laenge  -1 kurz, 0 mittel, +1 lang   (aus der vorhandenen Laufzeit)
+     Ton     -1 leicht, 0 gemischt, +1 schwer (aus den Genres)
+
+   Die Summe entscheidet: -2 oder -1 heisst "kurz & leicht", +1 oder +2
+   "episch & lang", 0 heisst keins von beidem. Ein 100-Minuten-Drama
+   faellt damit aus beiden Optionen — kurz ja, leicht nein —, eine
+   100-Minuten-Komoedie landet bei "kurz & leicht", und ein
+   170-Minuten-Fantasyfilm bei "episch & lang".
+
+   Zwei Signale statt einem, weil die Laufzeit allein den Unterschied
+   zwischen "lang und schwer" und "lang und leicht" verliert — und
+   genau der ist gemeint, wenn man abends etwas sucht.
+
+   Eintraege ohne bekannte Laufzeit lassen sich nicht einstufen und
+   erscheinen in keiner der beiden Optionen. Spiele auch nicht: fuer
+   sie gibt es keine abrufbare Dauer.
+   ------------------------------------------------------------ */
+const STIMMUNG_KURZ = "kurz";
+const STIMMUNG_EPISCH = "episch";
+
+const STIMMUNG_OPTIONEN = [
+  { wert: STIMMUNG_KURZ, label: "kurz & leicht" },
+  { wert: STIMMUNG_EPISCH, label: "episch & lang" },
+];
+
+/* Schwellen fuer die Laenge. Filme in Minuten, Serienarten in Stunden
+   ueber die ganze Laufzeit — eine Serie mit zehn Stunden ist ein
+   langer Abend, ein Film mit zehn Stunden gibt es nicht.
+
+   Die Werte sind gesetzt, nicht gemessen: Die Sammlung liegt in der
+   Datenbank und nicht im Quelltext. 110 Minuten ist die uebliche
+   Laenge einer Komoedie, 150 die Schwelle, ab der ein Film als lang
+   gilt; bei Serien sind zehn Stunden ein Wochenende und dreissig eine
+   Verpflichtung. */
+const FILM_KURZ_MIN = 110;
+const FILM_LANG_MIN = 150;
+const SERIE_KURZ_MIN = 10 * 60;
+const SERIE_LANG_MIN = 30 * 60;
+
+/* Eine kurze Episodenlaenge macht auch eine laengere Serie leicht
+   wegzuschauen — solange die Gesamtlaufzeit nicht ohnehin ins Epische
+   geht. */
+const EPISODE_KURZ_MIN = 30;
+
+/* Genres, die den Ton angeben. Beide Sprachen, weil TMDB auf Deutsch
+   antwortet und Jikan auf Englisch. Was in keiner der Listen steht —
+   Krimi, Horror, Action — bleibt ohne Wirkung: Es sagt ueber "leicht
+   oder schwer" nichts Eindeutiges. */
+const GENRES_LEICHT = new Set(
+  [
+    "Komödie", "Comedy", "Familie", "Family", "Animation", "Kinder", "Kids",
+    "Musik", "Music", "Slice of Life", "Gag Humor", "Dokumentarfilm",
+  ].map(titelSchluessel)
+);
+const GENRES_EPISCH = new Set(
+  [
+    "Drama", "Fantasy", "Abenteuer", "Adventure", "Science Fiction", "Sci-Fi",
+    "Sci-Fi & Fantasy", "Historie", "History", "Kriegsfilm", "War",
+    "Krieg & Politik", "War & Politics", "Western", "Mystery", "Award Winning",
+  ].map(titelSchluessel)
+);
+
+/** -1 kurz, 0 mittel, +1 lang — oder null, wenn die Laufzeit fehlt. */
+function laengenPunkt(entry, category) {
+  const dauer = eintragLaufzeit(entry);
+  if (dauer === null) return null;
+
+  if (category === "movie") {
+    if (dauer <= FILM_KURZ_MIN) return -1;
+    if (dauer >= FILM_LANG_MIN) return 1;
+    return 0;
+  }
+
+  // Serienarten: Die Gesamtlaufzeit hat Vorrang. Eine Serie mit 300
+  // kurzen Folgen ist kein kurzer Abend, auch wenn jede Folge es waere.
+  if (dauer >= SERIE_LANG_MIN) return 1;
+  if (dauer <= SERIE_KURZ_MIN) return -1;
+  const folge = entry && entry.episodeRuntime;
+  if (typeof folge === "number" && folge > 0 && folge <= EPISODE_KURZ_MIN) return -1;
+  return 0;
+}
+
+/** -1 leicht, 0 gemischt, +1 schwer. */
+function tonPunkt(entry) {
+  let leicht = 0;
+  let schwer = 0;
+  for (const genre of entry.genre || []) {
+    const key = titelSchluessel(genre);
+    if (GENRES_LEICHT.has(key)) leicht++;
+    if (GENRES_EPISCH.has(key)) schwer++;
+  }
+  if (schwer > leicht) return 1;
+  if (leicht > schwer) return -1;
+  return 0;
+}
+
+/**
+ * Die Stimmung eines Eintrags: "kurz", "episch" oder null.
+ *
+ * `category` darf fehlen — dann entscheidet die Kategorie am Eintrag
+ * selbst, die aus der Datenbank ohnehin mitkommt.
+ */
+function stimmungVon(entry, category) {
+  const kategorie = category || (entry && entry.category);
+  if (!entry || !unterstuetztLaufzeit(kategorie)) return null;
+
+  const laenge = laengenPunkt(entry, kategorie);
+  if (laenge === null) return null;
+
+  const summe = laenge + tonPunkt(entry);
+  if (summe <= -1) return STIMMUNG_KURZ;
+  if (summe >= 1) return STIMMUNG_EPISCH;
+  return null;
+}
+
 /** Passt ein Eintrag zu den gesetzten Zusatzfiltern? */
-function passtZuFiltern(eintrag, filter) {
+function passtZuFiltern(eintrag, filter, category) {
   if (filter.genre && !(eintrag.genre || []).includes(filter.genre)) return false;
   if (filter.jahrzehnt && String(jahrzehntVon(eintrag)) !== filter.jahrzehnt) return false;
   if (filter.regie && eintrag.director !== filter.regie) return false;
@@ -652,6 +775,7 @@ function passtZuFiltern(eintrag, filter) {
     const feld = filter.reihe.startsWith(REIHE_STUDIO) ? eintrag.studio : eintrag.collection;
     if (feld !== wert) return false;
   }
+  if (filter.stimmung && stimmungVon(eintrag, category) !== filter.stimmung) return false;
   return true;
 }
 
@@ -663,7 +787,8 @@ function filterAktiv(filter) {
     !!filter.genre ||
     !!filter.jahrzehnt ||
     !!filter.regie ||
-    !!filter.reihe
+    !!filter.reihe ||
+    !!filter.stimmung
   );
 }
 
@@ -1266,6 +1391,25 @@ const api = {
       hinweis: typeof data.hinweis === "string" ? data.hinweis : "",
     };
   },
+  /* Gibt es zu bewerteten Serien eine neue Staffel? Die Liste kann lang
+     werden und geht deshalb im Rumpf mit, nicht im Abfrageteil. Was ein
+     Aufruf nicht mehr geschafft hat, steht in `offen` — der Aufrufer
+     fragt damit nach. */
+  async pruefeFortsetzungen(eintraege) {
+    const res = await fetch("/api/fortsetzungen", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ eintraege }),
+    });
+    if (!res.ok) {
+      throw new Error((await res.json().catch(() => ({}))).error || "Abgleich fehlgeschlagen");
+    }
+    const data = await res.json();
+    return {
+      treffer: data && typeof data.treffer === "object" && data.treffer ? data.treffer : {},
+      offen: Array.isArray(data && data.offen) ? data.offen : [],
+    };
+  },
   async loadHeaderImages() {
     const res = await fetch("/api/header-images");
     if (!res.ok) throw new Error("Kopfbilder konnten nicht geladen werden (" + res.status + ")");
@@ -1767,21 +1911,26 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
   const [jahrzehnt, setJahrzehnt] = useState(initial.jahrzehnt);
   const [regie, setRegie] = useState(initial.regie);
   const [reihe, setReihe] = useState(initial.reihe);
+  const [stimmung, setStimmung] = useState(initial.stimmung);
 
   const optionen = useMemo(
     () => filterOptionen(allInCategory, category),
     [allInCategory, category]
   );
 
-  const entwurf = { genre, jahrzehnt, regie, reihe };
+  const entwurf = { genre, jahrzehnt, regie, reihe, stimmung };
 
   const previewCount = useMemo(() => {
     const lo = Math.min(min, max);
     const hi = Math.max(min, max);
     return allInCategory.filter(
-      (f) => typeof f.score === "number" && f.score >= lo && f.score <= hi && passtZuFiltern(f, entwurf)
+      (f) =>
+        typeof f.score === "number" &&
+        f.score >= lo &&
+        f.score <= hi &&
+        passtZuFiltern(f, entwurf, category)
     ).length;
-  }, [min, max, allInCategory, genre, jahrzehnt, regie, reihe]);
+  }, [min, max, allInCategory, category, genre, jahrzehnt, regie, reihe, stimmung]);
 
   function applyPreset(p) {
     setMin(p.min);
@@ -1797,7 +1946,7 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
       sort,
       min: Math.min(min, max),
       max: Math.max(min, max),
-      genre, jahrzehnt, regie, reihe,
+      genre, jahrzehnt, regie, reihe, stimmung,
     });
   }
 
@@ -1810,6 +1959,7 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
     setJahrzehnt("");
     setRegie("");
     setReihe("");
+    setStimmung("");
     onApply({ ...DEFAULT_FILTER, sort });
   }
 
@@ -1880,6 +2030,29 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
                 onClick={() => umschalten(setGenre, genre)(g.wert)}
               />
             ))}
+          </div>
+        </>
+      )}
+
+      {/* Stimmung: kein Filter ueber ein gespeichertes Feld, sondern
+          ueber Laufzeit und Genre zusammen. Bei Spielen fehlt beides,
+          deshalb steht der Abschnitt dort gar nicht erst. */}
+      {unterstuetztLaufzeit(category) && (
+        <>
+          <div style={filterAbschnitt}>STIMMUNG</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            {STIMMUNG_OPTIONEN.map((s) => (
+              <FilterChip
+                key={s.wert}
+                label={s.label}
+                active={stimmung === s.wert}
+                onClick={() => umschalten(setStimmung, stimmung)(s.wert)}
+              />
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: "#77746c", lineHeight: 1.5, marginBottom: 16 }}>
+            Aus Laufzeit und Genre zusammen. Einträge, deren Laufzeit noch
+            nicht bekannt ist, erscheinen in keiner der beiden Auswahlen.
           </div>
         </>
       )}
@@ -1971,6 +2144,60 @@ function kandidatSchluessel(kandidat) {
   return name + "::" + jahr;
 }
 
+/* ------------------------------------------------------------
+   Duplikat-Warnung
+
+   Steht der Titel schon in der Sammlung? Verglichen wird ueber ALLE
+   Schreibweisen, die die Quelle zum Treffer kennt — nicht nur ueber den
+   angezeigten Namen. Die Suche liefert sie seit dieser Erweiterung mit
+   (siehe api/search.js): deutscher und Originaltitel bei TMDB, dazu
+   romanisierte, englische und japanische Schreibweise samt Synonymen
+   bei Jikan.
+
+   Ohne das ginge die Warnung genau dort daneben, wo sie gebraucht wird:
+   "The Loud House" und "Willkommen bei den Louds" sind dieselbe Serie,
+   und wer den einen Namen sucht, hat womoeglich den anderen bereits
+   eingetragen.
+
+   Bei Spielen bleibt es beim Vergleich der Namen selbst — SteamGridDB
+   fuehrt keine Alternativtitel. Dafuer braucht es keinen eigenen Zweig:
+   Ein Treffer ohne weitere Schreibweisen traegt eben nur eine.
+
+   Der Vergleich laeuft ueber `titelSchluessel`, also ohne Ruecksicht auf
+   Gross- und Kleinschreibung, Akzente und ein angehaengtes Jahr in
+   Klammern. Gewarnt wird, nicht blockiert: Wer ein Remake bewusst
+   getrennt fuehren will, kommt mit einem Klick weiter.
+   ------------------------------------------------------------ */
+
+/** Alle Vergleichsformen eines Suchtreffers. */
+function trefferSchluessel(treffer) {
+  const namen =
+    Array.isArray(treffer && treffer.titel) && treffer.titel.length
+      ? treffer.titel
+      : [treffer && treffer.title];
+  const raus = [];
+  for (const name of namen) {
+    const key = titelSchluessel(name);
+    if (key && !raus.includes(key)) raus.push(key);
+  }
+  return raus;
+}
+
+/**
+ * Der bereits vorhandene Eintrag zu einem Treffer — oder null.
+ *
+ * `bekannt` ist eine Map von Vergleichsform auf den Eintrag, die der
+ * Aufrufer einmal je Kategorie aufbaut.
+ */
+function findeDuplikat(treffer, bekannt) {
+  if (!bekannt || !bekannt.size) return null;
+  for (const key of trefferSchluessel(treffer)) {
+    const vorhanden = bekannt.get(key);
+    if (vorhanden) return vorhanden;
+  }
+  return null;
+}
+
 function TrefferZeile({ treffer, busy, vorgemerkt, onWatchlist, onBewerten }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}>
@@ -2017,7 +2244,7 @@ function TrefferZeile({ treffer, busy, vorgemerkt, onWatchlist, onBewerten }) {
   );
 }
 
-function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, onCancel }) {
+function NeuerEintrag({ category, categoryLabel, busy, bekannt, onWatchlist, onBewerten, onCancel }) {
   const [text, setText] = useState("");
   const [treffer, setTreffer] = useState(null); // null = noch nicht gesucht
   const [gesuchtNach, setGesuchtNach] = useState("");
@@ -2028,6 +2255,10 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
   // Gemerkt wird der Kandidat selbst (Titel + Jahr), nicht seine Position:
   // eine zweite Suche stellt die Liste komplett neu zusammen.
   const [vorgemerkt, setVorgemerkt] = useState(() => new Set());
+  /* Ein Treffer, der schon in der Sammlung steht, und was mit ihm
+     geschehen sollte. Solange das hier gesetzt ist, steht die Rueckfrage
+     offen — bestaetigt wird sie mit `trotzdem`. */
+  const [warnung, setWarnung] = useState(null);
 
   async function suchen() {
     const frage = text.trim();
@@ -2050,6 +2281,29 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
   async function vormerken(kandidat) {
     const ok = await onWatchlist(kandidat);
     if (ok) setVorgemerkt((alt) => new Set(alt).add(kandidatSchluessel(kandidat)));
+  }
+
+  /* Beide Wege — vormerken und direkt bewerten — laufen durch dieselbe
+     Pruefung. Gibt es den Titel schon, wird erst gefragt; sonst geht es
+     unveraendert weiter wie bisher. */
+  function anstossen(kandidat, aktion) {
+    const treffer = findeDuplikat(kandidat, bekannt);
+    if (treffer) {
+      setWarnung({ kandidat, aktion, treffer });
+      return;
+    }
+    ausfuehren(kandidat, aktion);
+  }
+
+  function ausfuehren(kandidat, aktion) {
+    if (aktion === "watchlist") vormerken(kandidat);
+    else onBewerten(kandidat);
+  }
+
+  function trotzdem() {
+    const offen = warnung;
+    setWarnung(null);
+    if (offen) ausfuehren(offen.kandidat, offen.aktion);
   }
 
   const eigener = { title: text.trim(), year: null, poster: "" };
@@ -2108,8 +2362,8 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
                 treffer={t}
                 busy={busy}
                 vorgemerkt={vorgemerkt.has(kandidatSchluessel(t))}
-                onWatchlist={() => vormerken(t)}
-                onBewerten={() => onBewerten(t)}
+                onWatchlist={() => anstossen(t, "watchlist")}
+                onBewerten={() => anstossen(t, "bewerten")}
               />
             ))
           )}
@@ -2125,8 +2379,8 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
                 treffer={eigener}
                 busy={busy}
                 vorgemerkt={vorgemerkt.has(kandidatSchluessel(eigener))}
-                onWatchlist={() => vormerken(eigener)}
-                onBewerten={() => onBewerten(eigener)}
+                onWatchlist={() => anstossen(eigener, "watchlist")}
+                onBewerten={() => anstossen(eigener, "bewerten")}
               />
             </div>
           )}
@@ -2143,7 +2397,42 @@ function NeuerEintrag({ category, categoryLabel, busy, onWatchlist, onBewerten, 
       >
         {vorgemerkt.size ? "Fertig" : "Abbrechen"}
       </button>
+
+      {/* Schon vorhanden? Dann erst fragen. Derselbe Dialog wie beim
+          Loeschen, nur ohne die rote Warnfarbe — hier geht nichts
+          verloren, es wird nur womoeglich etwas doppelt angelegt. */}
+      {warnung && (
+        <ConfirmDialog
+          title="Steht schon in der Liste"
+          text={duplikatText(warnung, categoryLabel)}
+          confirmLabel="Trotzdem hinzufügen"
+          onConfirm={trotzdem}
+          onCancel={() => setWarnung(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Der Satz in der Rueckfrage. Er nennt den Namen, unter dem der Titel
+ * schon gespeichert ist — der weicht ja womoeglich genau von dem ab,
+ * nach dem gerade gesucht wurde, und ohne diese Angabe waere die
+ * Warnung ein Raetsel.
+ */
+function duplikatText(warnung, categoryLabel) {
+  const gefunden = warnung.treffer.title;
+  const gesucht = warnung.kandidat.title;
+  const wo = warnung.treffer.watchlist ? "ist bereits vorgemerkt" : "ist bereits bewertet";
+
+  const anders =
+    titelSchluessel(gefunden) === titelSchluessel(gesucht)
+      ? ""
+      : " Gesucht hast du nach „" + gesucht + "“ — das ist derselbe Titel unter anderem Namen.";
+
+  return (
+    "„" + gefunden + "“ " + wo + " (" + categoryLabel + ")." + anders +
+    " Trotzdem hinzufügen? Sinnvoll ist das etwa bei einem Remake, das du getrennt führen willst."
   );
 }
 
@@ -2724,6 +3013,204 @@ function EmpfehlungsRahmen({ children }) {
       </div>
       {children}
     </div>
+  );
+}
+
+/* ============================================================
+   FORTSETZUNGS-ERINNERUNG
+
+   Gibt es zu einer bewerteten Serie inzwischen eine Staffel mehr, als
+   hier erfasst ist? Der Abgleich laeuft ueber api/fortsetzungen.js:
+   TMDB fuer Serien, Kinderserien und Adult Animation, Jikan fuer Anime.
+
+   Nachgefragt wird einmal die Woche, nicht bei jedem Oeffnen — ein
+   Durchgang kostet je Serie einen bis zwei externe Aufrufe. Der Stand
+   liegt wie die Empfehlungen im localStorage und ueberdauert damit auch
+   das Schliessen der Seite.
+
+   Die gefundenen Kennungen wandern mit in den Speicher: Beim naechsten
+   Durchgang gehen sie mit, dann entfaellt die Suche und es bleibt ein
+   Aufruf je Serie.
+
+   Hinzugefuegt wird nichts — der Hinweis sagt nur, dass es etwas
+   nachzutragen gibt.
+   ============================================================ */
+
+const FORTSETZUNGS_SPEICHER = "bewertungsapp.fortsetzungen";
+const FORTSETZUNGS_TTL_MS = 7 * 24 * 60 * 60 * 1000; // eine Woche
+/* Ein fehlgeschlagener Durchgang haelt nur einen Tag. Sonst wuerde eine
+   Stoerung eine Woche lang nachwirken. */
+const FORTSETZUNGS_TTL_FEHLER_MS = 24 * 60 * 60 * 1000;
+const FORTSETZUNGS_FASSUNG = 1;
+
+/* So oft fragt die App hoechstens nach. Ein Aufruf schafft, was in
+   seine Frist passt; der Rest kommt in weiteren Runden. Die Grenze
+   verhindert, dass eine Quelle, die dauerhaft nichts liefert, die App
+   in eine Endlosschleife schickt. */
+const FORTSETZUNGS_RUNDEN = 12;
+
+const FORTSETZUNGS_KATEGORIEN = ["series", "kids", "adultanim", "anime"];
+
+function ladeFortsetzungen() {
+  try {
+    const roh = window.localStorage.getItem(FORTSETZUNGS_SPEICHER);
+    const eintrag = roh ? JSON.parse(roh) : null;
+    if (!eintrag || typeof eintrag.zeit !== "number" || !eintrag.stand) return null;
+    return eintrag;
+  } catch (e) {
+    return null;
+  }
+}
+
+function speichereFortsetzungen(eintrag) {
+  try {
+    window.localStorage.setItem(FORTSETZUNGS_SPEICHER, JSON.stringify(eintrag));
+  } catch (e) {
+    // Ohne localStorage laeuft alles weiter, nur ohne Wochengedaechtnis.
+  }
+}
+
+function fortsetzungenFrisch(eintrag) {
+  if (!eintrag || eintrag.fassung !== FORTSETZUNGS_FASSUNG) return false;
+  const frist = eintrag.fehler ? FORTSETZUNGS_TTL_FEHLER_MS : FORTSETZUNGS_TTL_MS;
+  return Date.now() - eintrag.zeit < frist;
+}
+
+/**
+ * Wie viele Staffeln die App zu einem Eintrag kennt.
+ *
+ * Zwei Quellen, und es zaehlt die groessere: die selbst bewerteten
+ * Staffeln und die Staffelliste, die beim Anlegen von der Quelle kam.
+ * Die groessere ist die vorsichtigere Wahl — wer drei von fuenf
+ * Staffeln bewertet hat, weiss von fuenfen und braucht wegen der
+ * vierten keinen Hinweis.
+ */
+function erfassteStaffeln(entry) {
+  const bewertet = Array.isArray(entry.seasons) ? entry.seasons.length : 0;
+  const bekannt = Array.isArray(entry.episodesPerSeason) ? entry.episodesPerSeason.length : 0;
+  return Math.max(bewertet, bekannt, 1);
+}
+
+/**
+ * Die Anfrage an den Endpunkt: alle bewerteten Serien, dazu die
+ * Kennungen aus dem letzten Durchgang.
+ */
+function fortsetzungsAnfrage(items, alt) {
+  const bekannt = (alt && alt.stand) || {};
+  const raus = [];
+
+  for (const key of FORTSETZUNGS_KATEGORIEN) {
+    for (const eintrag of items[key] || []) {
+      if (istVorgemerkt(eintrag)) continue;
+      const frueher = bekannt[eintrag.id];
+      raus.push({
+        id: eintrag.id,
+        category: key,
+        title: eintrag.title,
+        year: typeof eintrag.releaseYear === "number" ? eintrag.releaseYear : null,
+        staffeln: erfassteStaffeln(eintrag),
+        quelle: (frueher && frueher.quelle) || null,
+        quellId: (frueher && frueher.quellId) || null,
+      });
+    }
+  }
+  return raus;
+}
+
+/**
+ * Vergleichsform eines Anime-Titels, die die Staffelzaehlung mit
+ * aufnimmt: "Shingeki no Kyojin Season 2" und "Shingeki no Kyojin
+ * Staffel 2" werden dasselbe.
+ *
+ * Noetig, weil Jikan Fortsetzungen als eigene Eintraege fuehrt und
+ * deren Titel selten genau so lauten wie der, unter dem die Staffel
+ * hier gespeichert ist. Ueber Sprachgrenzen hinweg hilft das nicht —
+ * dafuer steht darunter der Vergleich ueber die Kennungen.
+ */
+function animeStaffelSchluessel(title) {
+  const key = titelSchluessel(title);
+  if (!key) return "";
+  const treffer = /^(.*?)\s*(?:season|staffel|part|teil|cour)\s*(\d+)$/.exec(key);
+  if (treffer) return treffer[1].trim() + "#" + Number(treffer[2]);
+  const nurZahl = /^(.*?)\s+(\d+)$/.exec(key);
+  if (nurZahl) return nurZahl[1].trim() + "#" + Number(nurZahl[2]);
+  return key + "#1";
+}
+
+/**
+ * Zu welchen Eintraegen gibt es einen Hinweis?
+ *
+ * Bei TMDB ist die Antwort eindeutig: Die Quelle fuehrt mehr Staffeln
+ * als die App. Bei Jikan gibt es keine Staffelzaehlung — dort meldet
+ * der Endpunkt die Fortsetzungen, und hier faellt die Entscheidung, ob
+ * davon eine noch fehlt. Verglichen wird ueber die MAL-Kennungen der
+ * eigenen Anime (genau) und zusaetzlich ueber die Titel (fuer alles,
+ * wozu keine Kennung vorliegt — Vorgemerktes etwa).
+ */
+function neueStaffeln(gespeichert, items) {
+  const treffer = new Set();
+  const stand = (gespeichert && gespeichert.stand) || null;
+  if (!stand) return treffer;
+
+  /* Die Eintraege selbst, um an die aktuelle Staffelzahl zu kommen. Sie
+     entscheidet, nicht die vom Zeitpunkt des Abgleichs: Wer die neue
+     Staffel nachtraegt, ist das Badge sofort los und wartet nicht eine
+     Woche auf den naechsten Durchgang. */
+  const nachId = new Map();
+  for (const key of FORTSETZUNGS_KATEGORIEN) {
+    for (const eintrag of items[key] || []) nachId.set(eintrag.id, eintrag);
+  }
+
+  const eigeneKennungen = new Set();
+  for (const wert of Object.values(stand)) {
+    if (wert && wert.quelle === "jikan" && wert.quellId) eigeneKennungen.add(String(wert.quellId));
+  }
+
+  const eigeneTitel = new Set();
+  for (const eintrag of items.anime || []) {
+    eigeneTitel.add(animeStaffelSchluessel(eintrag.title));
+  }
+
+  for (const [id, wert] of Object.entries(stand)) {
+    if (!wert || !wert.neu) continue;
+    const eintrag = nachId.get(id);
+    // Geloescht oder zurueck auf die Watchlist — dann gibt es nichts,
+    // woran ein Hinweis haengen koennte.
+    if (!eintrag) continue;
+
+    if (wert.quelle === "jikan") {
+      const fehlt = (wert.fortsetzungen || []).some(
+        (f) =>
+          f &&
+          f.titel &&
+          !(f.malId && eigeneKennungen.has(String(f.malId))) &&
+          !eigeneTitel.has(animeStaffelSchluessel(f.titel))
+      );
+      if (!fehlt) continue;
+    } else if (typeof wert.staffeln === "number") {
+      if (wert.staffeln <= erfassteStaffeln(eintrag)) continue;
+    }
+
+    treffer.add(id);
+  }
+  return treffer;
+}
+
+/* Das Hinweis-Badge selbst. Es nimmt die Kategoriefarbe auf wie der
+   "+ Watchlist"-Knopf und bleibt bewusst klein — es ist eine Notiz am
+   Rand, keine Meldung. */
+function NeueStaffelBadge() {
+  return (
+    <span
+      style={{
+        fontFamily: "'JetBrains Mono', monospace", fontSize: 9.5, letterSpacing: 0.5,
+        color: "var(--accent, #C9A227)", border: "1px solid var(--accent, #C9A227)",
+        borderRadius: 4, padding: "1px 5px", flexShrink: 0, whiteSpace: "nowrap",
+      }}
+      title="Die Quelle führt mehr Staffeln, als hier erfasst sind."
+    >
+      NEUE STAFFEL
+    </span>
   );
 }
 
@@ -3739,6 +4226,273 @@ function ZeitaufwandWatchlist({ watchlist }) {
   );
 }
 
+/* ============================================================
+   JAHRESRÜCKBLICK
+
+   Was ist in einem Jahr zusammengekommen? Gezaehlt wird nach dem Tag,
+   an dem aus einem Eintrag ein bewerteter wurde — nicht nach dem Tag,
+   an dem er angelegt oder zuletzt angefasst wurde.
+
+   Das Datum steht seit dieser Erweiterung in einer eigenen Spalte
+   (`ratedAt`, siehe api/_db.js). Es wird genau einmal gesetzt und
+   danach nie wieder verschoben; das automatische Nachladen von Poster,
+   Genres und Laufzeit laesst es unberuehrt.
+
+   Bei Serien mit einzeln bewerteten Staffeln zaehlt die zuletzt
+   nachgetragene Staffel: Wer 2024 die ersten drei Staffeln bewertet
+   und 2026 die vierte nachtraegt, hat die Serie 2026 zuletzt bewertet.
+
+   Eintraege ohne Datum — der Altbestand aus der Zeit vor dieser Spalte
+   — bleiben aussen vor und werden am Fuss des Abschnitts als Zahl
+   genannt. Sie einem Jahr zuzuschlagen hiesse, es zu erfinden.
+   ============================================================ */
+
+/** Wann wurde zuletzt bewertet? Zeitstempel oder null. */
+function bewertetAm(entry) {
+  let zeit = typeof entry.ratedAt === "number" && entry.ratedAt > 0 ? entry.ratedAt : 0;
+  for (const staffel of entry.seasons || []) {
+    if (typeof staffel.createdAt === "number" && staffel.createdAt > zeit) zeit = staffel.createdAt;
+  }
+  return zeit > 0 ? zeit : null;
+}
+
+function jahrDerBewertung(entry) {
+  const zeit = bewertetAm(entry);
+  return zeit ? new Date(zeit).getFullYear() : null;
+}
+
+function Jahresrueckblick({ ranked }) {
+  const [gewaehlt, setGewaehlt] = useState(() => new Date().getFullYear());
+
+  const daten = useMemo(() => {
+    const nachJahr = new Map();
+    let ohneDatum = 0;
+
+    for (const cat of CATEGORIES) {
+      for (const eintrag of ranked[cat.key] || []) {
+        const jahr = jahrDerBewertung(eintrag);
+        if (!jahr) {
+          ohneDatum++;
+          continue;
+        }
+        if (!nachJahr.has(jahr)) nachJahr.set(jahr, []);
+        nachJahr.get(jahr).push({ eintrag, category: cat.key });
+      }
+    }
+
+    return {
+      nachJahr,
+      ohneDatum,
+      jahre: [...nachJahr.keys()].sort((a, b) => b - a),
+    };
+  }, [ranked]);
+
+  /* Das laufende Jahr, solange darin etwas steht — sonst das neueste
+     Jahr, zu dem es ueberhaupt etwas zu zeigen gibt. */
+  const jahr = daten.nachJahr.has(gewaehlt) ? gewaehlt : daten.jahre[0] ?? null;
+
+  const rueckblick = useMemo(() => {
+    const liste = (jahr && daten.nachJahr.get(jahr)) || [];
+    if (!liste.length) return null;
+
+    const zaehler = Object.fromEntries(CATEGORY_KEYS.map((k) => [k, 0]));
+    const genres = new Map();
+    let bester = null;
+    let minuten = 0;
+    let ohneLaufzeit = 0;
+
+    for (const { eintrag, category } of liste) {
+      zaehler[category]++;
+
+      // Genres zaehlen ueber alle Eintraege des Jahres, jedes Genre je
+      // Eintrag genau einmal — sonst zaehlte eine doppelt gepflegte
+      // Liste doppelt.
+      for (const genre of new Set(eintrag.genre || [])) {
+        genres.set(genre, (genres.get(genre) || 0) + 1);
+      }
+
+      if (typeof eintrag.score === "number" && (!bester || eintrag.score > bester.score)) {
+        bester = eintrag;
+      }
+
+      if (unterstuetztLaufzeit(category)) {
+        const dauer = eintragLaufzeit(eintrag);
+        if (dauer === null) ohneLaufzeit++;
+        else minuten += dauer;
+      }
+    }
+
+    const staerksteKategorie = CATEGORIES.map((c) => ({ label: c.label, anzahl: zaehler[c.key] }))
+      .filter((k) => k.anzahl > 0)
+      .sort((a, b) => b.anzahl - a.anzahl)[0] || null;
+
+    const haeufigstesGenre = [...genres.entries()]
+      .map(([name, anzahl]) => ({ name, anzahl }))
+      .sort((a, b) => b.anzahl - a.anzahl || a.name.localeCompare(b.name, "de"))[0] || null;
+
+    return {
+      anzahl: liste.length,
+      zaehler,
+      staerksteKategorie,
+      haeufigstesGenre,
+      bester,
+      minuten,
+      ohneLaufzeit,
+    };
+  }, [jahr, daten]);
+
+  if (!daten.jahre.length) {
+    return (
+      <div style={{ marginBottom: 28 }}>
+        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>
+          Jahresrückblick
+        </h2>
+        <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.6 }}>
+          Noch nichts zu zeigen. Sobald du etwas bewertest, sammelt sich
+          hier das Jahr — der Bestand aus der Zeit davor trägt kein
+          Bewertungsdatum und bleibt deshalb außen vor.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>
+        Jahresrückblick
+      </h2>
+
+      {/* Jahresauswahl — dieselben Knoepfe wie beim Zeitaufwand. */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        {daten.jahre.map((j) => (
+          <ZeitaufwandBereich
+            key={j}
+            label={String(j)}
+            aktiv={jahr === j}
+            onClick={() => setGewaehlt(j)}
+          />
+        ))}
+      </div>
+
+      {rueckblick && (
+        <>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+            {CATEGORIES.filter((c) => rueckblick.zaehler[c.key] > 0).map((c) => (
+              <StatCard
+                key={c.key}
+                label={c.label.toUpperCase()}
+                value={rueckblick.zaehler[c.key]}
+              />
+            ))}
+            <StatCard label="GESAMT" value={rueckblick.anzahl} />
+          </div>
+
+          <div
+            style={{
+              background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12,
+              padding: "14px 16px", marginBottom: 10,
+            }}
+          >
+            <RueckblickZeile
+              label="Meiste Bewertungen"
+              wert={
+                rueckblick.staerksteKategorie
+                  ? rueckblick.staerksteKategorie.label +
+                    " (" + rueckblick.staerksteKategorie.anzahl + ")"
+                  : "—"
+              }
+            />
+            <RueckblickZeile
+              label="Häufigstes Genre"
+              wert={
+                rueckblick.haeufigstesGenre
+                  ? rueckblick.haeufigstesGenre.name +
+                    " (" + rueckblick.haeufigstesGenre.anzahl + "×)"
+                  : "noch keine Genres geladen"
+              }
+            />
+            <RueckblickZeile
+              label="Bester Neuzugang"
+              wert={rueckblick.bester ? rueckblick.bester.title : "—"}
+              zusatz={
+                rueckblick.bester && typeof rueckblick.bester.score === "number"
+                  ? rueckblick.bester.score.toFixed(2)
+                  : null
+              }
+              zusatzFarbe={
+                rueckblick.bester && typeof rueckblick.bester.score === "number"
+                  ? scoreToColor(rueckblick.bester.score)
+                  : null
+              }
+            />
+            <RueckblickZeile
+              label="Gesehene Zeit"
+              wert={
+                rueckblick.minuten > 0
+                  ? stundenText(rueckblick.minuten) +
+                    (tageText(rueckblick.minuten) ? " · " + tageText(rueckblick.minuten) : "")
+                  : "noch keine Laufzeiten bekannt"
+              }
+              letzte
+            />
+          </div>
+
+          <div style={{ fontSize: 11, color: "#77746c", lineHeight: 1.6 }}>
+            Gezählt wird nach dem Datum der Bewertung; bei Serien nach der
+            zuletzt nachgetragenen Staffel. Spiele haben keine abrufbare
+            Laufzeit und gehen in die gesehene Zeit nicht ein.
+            {rueckblick.ohneLaufzeit > 0 &&
+              " " + rueckblick.ohneLaufzeit + " Einträge ohne bekannte Laufzeit fehlen in der Summe."}
+            {daten.ohneDatum > 0 &&
+              " " + daten.ohneDatum + " ältere Einträge tragen kein Bewertungsdatum und stehen in keinem Jahr."}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* Eine Zeile im Rueckblick: Beschriftung links, Wert rechts — dieselbe
+   Aufteilung wie in der Detailansicht eines Eintrags. */
+function RueckblickZeile({ label, wert, zusatz, zusatzFarbe, letzte }) {
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12,
+        padding: "9px 0",
+        borderBottom: letzte ? "none" : "1px solid #232326",
+      }}
+    >
+      <span
+        style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: 0.5,
+          color: "#9A968C", flexShrink: 0,
+        }}
+      >
+        {label.toUpperCase()}
+      </span>
+      <span
+        style={{
+          fontSize: 14, color: "#EDEAE3", textAlign: "right", minWidth: 0,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}
+      >
+        {wert}
+        {zusatz && (
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 13,
+              color: zusatzFarbe || "#9A968C", marginLeft: 8,
+            }}
+          >
+            {zusatz}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
 function StatsPage({ ranked, watchlist }) {
   const [scope, setScope] = useState("all");
 
@@ -3807,6 +4561,10 @@ function StatsPage({ ranked, watchlist }) {
         <StatCard label="HÖCHSTE" value={overall.max.toFixed(2)} color={scoreToColor(overall.max)} />
         <StatCard label="NIEDRIGSTE" value={overall.min.toFixed(2)} color={scoreToColor(overall.min)} />
       </div>
+
+      {/* Was in einem Jahr zusammenkam. Steht vor der Watchlist, weil
+          es zurueckblickt, wo diese nach vorn schaut. */}
+      <Jahresrueckblick ranked={ranked} />
 
       {/* Was noch vor einem liegt — die Watchlist in Stunden. Sie hat
           mit den Noten darueber nichts zu tun und steht deshalb als
@@ -6061,6 +6819,11 @@ export default function App() {
             personal: sn.personal,
             // Ohne Gewichtung gilt der Faktor 1.0 (= 100 %).
             weight: typeof sn.weight === "number" ? sn.weight : SEASON_WEIGHT_DEFAULT,
+            // Wann die Staffel angelegt wurde. Anders als beim Eintrag
+            // bleibt dieser Wert beim Speichern stehen — er ist damit
+            // das Datum der letzten Staffel-Bewertung, das der
+            // Jahresrueckblick braucht.
+            createdAt: typeof sn.createdAt === "number" ? sn.createdAt : 0,
           }))
         : [],
       // Zusatzdaten zum Werk. Wie die Angaben werden sie automatisch
@@ -6082,6 +6845,12 @@ export default function App() {
       personal: e.personal,
       createdAt: e.createdAt || 0,
       updatedAt: e.updatedAt || 0,
+      /* Wann aus dem Eintrag ein bewerteter wurde. Der Server setzt das
+         Datum genau einmal und laesst es danach stehen — anders als
+         `updatedAt`, das bei jedem Nachladen von Poster oder Genres
+         mitwandert. null heisst "nicht bekannt": bei Vorgemerktem und
+         bei Altbestand aus der Zeit vor dieser Spalte. */
+      ratedAt: typeof e.ratedAt === "number" && e.ratedAt > 0 ? e.ratedAt : null,
     };
   }
 
@@ -6520,6 +7289,68 @@ export default function App() {
     xpGeben("bewertung", { once: "bestand", count: anzahl });
   }, [loaded, xpGeladen, saveError]);
 
+  /* ---- Fortsetzungs-Erinnerung ----
+     Einmal die Woche wird abgeglichen, ob es zu einer bewerteten Serie
+     inzwischen mehr Staffeln gibt. Das laeuft im Hintergrund und darf
+     ruhig scheitern: Es ist ein Hinweis am Rand, keine Funktion, an der
+     etwas haengt. Deshalb faengt der Aufruf seine Fehler selbst ab und
+     der Nutzer sieht davon nichts. */
+  const [fortsetzungen, setFortsetzungen] = useState(() => ladeFortsetzungen());
+  const fortsetzungenGeprueft = useRef(false);
+
+  useEffect(() => {
+    if (!loaded || fortsetzungenGeprueft.current) return;
+    fortsetzungenGeprueft.current = true;
+
+    const alt = ladeFortsetzungen();
+    if (fortsetzungenFrisch(alt)) return;
+
+    const anfrage = fortsetzungsAnfrage(items, alt);
+    if (!anfrage.length) return;
+
+    let abgebrochen = false;
+    (async () => {
+      const stand = {};
+      let offen = anfrage;
+
+      for (let runde = 0; runde < FORTSETZUNGS_RUNDEN && offen.length; runde++) {
+        const antwort = await api.pruefeFortsetzungen(offen);
+        Object.assign(stand, antwort.treffer);
+
+        const offeneIds = new Set(antwort.offen);
+        const rest = offen.filter((e) => offeneIds.has(e.id));
+        // Kommt eine Runde ohne Fortschritt zurueck, bringt die
+        // naechste auch keinen — dann lieber mit dem aufhoeren, was da
+        // ist, als es zwoelfmal zu wiederholen.
+        if (rest.length >= offen.length) break;
+        offen = rest;
+      }
+
+      if (abgebrochen) return;
+      const eintrag = { zeit: Date.now(), fassung: FORTSETZUNGS_FASSUNG, stand };
+      speichereFortsetzungen(eintrag);
+      setFortsetzungen(eintrag);
+    })().catch(() => {
+      if (abgebrochen) return;
+      /* Gescheitert — der Stand wird trotzdem vermerkt, damit es nicht
+         bei jedem Neuladen der Seite erneut versucht wird. Er haelt nur
+         einen Tag statt einer Woche. */
+      const eintrag = { zeit: Date.now(), fassung: FORTSETZUNGS_FASSUNG, stand: {}, fehler: true };
+      speichereFortsetzungen(eintrag);
+      setFortsetzungen(eintrag);
+    });
+
+    return () => {
+      abgebrochen = true;
+    };
+  }, [loaded]);
+
+  /* Zu welchen Eintraegen gehoert ein Hinweis? Die Auswertung haengt am
+     gespeicherten Stand UND an der Sammlung: Wer die neue Staffel
+     nachtraegt, soll das Badge sofort los sein, ohne eine Woche auf den
+     naechsten Abgleich zu warten. */
+  const neueStaffelIds = useMemo(() => neueStaffeln(fortsetzungen, items), [fortsetzungen, items]);
+
   /* ---- Gespielte Duelle je Kategorie ----
      Geholt wird der Stand erst, wenn die Minispiele zum ersten Mal
      geoeffnet werden — wer nie spielt, laedt ihn nie. Danach haelt ihn
@@ -6561,7 +7392,7 @@ export default function App() {
 
     // Genre, Jahrzehnt, Regie und Filmreihe. Was nicht gesetzt ist,
     // laesst alles durch.
-    list = list.filter((f) => passtZuFiltern(f, filterState));
+    list = list.filter((f) => passtZuFiltern(f, filterState, category));
 
     const sorted = [...list];
     switch (filterState.sort) {
@@ -6621,6 +7452,25 @@ export default function App() {
     () => new Set((items[category] || []).map((f) => titelSchluessel(f.title))),
     [items, category]
   );
+
+  /* Dieselbe Sammlung noch einmal, aber als Nachschlagewerk: Von der
+     Vergleichsform des Titels auf den Eintrag selbst. Daran erkennt das
+     Hinzufuegen, dass ein Titel schon da ist — und kann sagen, unter
+     welchem Namen und ob er bewertet oder vorgemerkt ist.
+
+     Steht derselbe Schluessel mehrfach (zwei Eintraege mit gleichem
+     Titel — genau das, was die Warnung kuenftig verhindern soll), gilt
+     der erste. */
+  const bekannteEintraege = useMemo(() => {
+    const map = new Map();
+    for (const f of items[category] || []) {
+      const key = titelSchluessel(f.title);
+      if (key && !map.has(key)) {
+        map.set(key, { id: f.id, title: f.title, watchlist: istVorgemerkt(f) });
+      }
+    }
+    return map;
+  }, [items, category]);
 
   // ---- CRUD ----
   async function addEntry({ title, poster, values, personal, seasons }) {
@@ -7065,6 +7915,9 @@ export default function App() {
           kriterienNote: entryCriteriaScore(f, catKey),
           bauchgefuehl: f.personal,
           erstelltAm: f.createdAt ? new Date(f.createdAt).toISOString() : "",
+          // Wann bewertet wurde — bei Serien die zuletzt nachgetragene
+          // Staffel. Leer, wo kein Datum vorliegt (Altbestand).
+          bewertetAm: bewertetAm(f) ? new Date(bewertetAm(f)).toISOString() : "",
           ...Object.fromEntries(criteriaFor(catKey).map((c) => [c.key, f.values[c.key]])),
         });
       });
@@ -7167,6 +8020,12 @@ export default function App() {
                 personal: vorgemerkt ? null : entry.personal,
                 createdAt: entry.createdAt || Date.now(),
                 updatedAt: entry.updatedAt || Date.now(),
+                /* Das Bewertungsdatum aus der Sicherung. Ohne diese
+                   Zeile stuende nach dem Einspielen die ganze Sammlung
+                   im Jahr des Imports — der Jahresrueckblick waere
+                   damit hinueber. Aeltere Sicherungen haben das Feld
+                   nicht; dann setzt der Server das heutige Datum. */
+                ratedAt: typeof entry.ratedAt === "number" && entry.ratedAt > 0 ? entry.ratedAt : undefined,
               });
               totalValid++;
             }
@@ -7739,6 +8598,7 @@ export default function App() {
               category={category}
               categoryLabel={catInfo.singular}
               busy={busy}
+              bekannt={bekannteEintraege}
               onWatchlist={(t) => watchlistHinzufuegen({ title: t.title, poster: t.poster, year: t.year })}
               onBewerten={(t) => { setGewaehlterTreffer(t); setMode("form"); }}
               onCancel={() => setMode("list")}
@@ -7940,7 +8800,14 @@ export default function App() {
                       </span>
                       <Poster url={f.poster} title={f.title} size={34} />
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</div>
+                        {/* Titel und — falls es etwas nachzutragen gibt —
+                            der Hinweis auf die neue Staffel. Beides in
+                            einer Zeile: Das Badge gehoert an den Titel,
+                            nicht in die Angabenzeile darunter. */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                          <span style={{ fontSize: 15, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</span>
+                          {neueStaffelIds.has(f.id) && <NeueStaffelBadge />}
+                        </div>
                         <AngabenZeile eintrag={f} />
                       </div>
                     </div>

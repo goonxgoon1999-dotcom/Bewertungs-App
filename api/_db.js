@@ -118,6 +118,7 @@ async function init() {
   await ensureHeaderImages();
   await ensureZusatzdaten();
   await ensureLaufzeit();
+  await ensureBewertetAm();
   await ensureNeueKategorien();
   await ensureDuelle();
   await ensureHighscores();
@@ -613,6 +614,41 @@ async function ensureLaufzeit() {
   await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS episodes_per_season TEXT`;
 }
 
+/* ----------------------------------------------------------------
+   Wann wurde bewertet?
+
+   `created_at` und `updated_at` gab es schon, aber beide beantworten
+   die Frage nicht:
+
+   - `updated_at` wandert bei JEDEM Speichervorgang mit, auch beim
+     automatischen Nachladen von Poster, Genres und Laufzeit. Nach
+     einem solchen Durchlauf waere jeder Eintrag "heute bewertet".
+   - `created_at` ist bei direkt bewerteten Eintraegen richtig, bei
+     vorgemerkten aber der Tag der Vormerkung — ein Titel, der zwei
+     Jahre auf der Watchlist lag, zaehlte ins falsche Jahr.
+
+   Deshalb eine eigene Spalte. Sie wird genau einmal gesetzt: wenn aus
+   einem Eintrag ein bewerteter wird. Spaetere Aenderungen an Poster,
+   Angaben oder Noten lassen sie unberuehrt (siehe COALESCE in
+   api/items.js).
+
+   Der Backfill fuellt sie einmalig aus `created_at` — die beste
+   Naeherung, die es rueckwirkend gibt. Er fasst nur Zeilen an, die
+   noch gar keinen Wert haben, und laesst die Seeding-Zeilen
+   (created_at = 0) bewusst leer: Ein Rueckblick auf das Jahr 1970
+   waere schlechter als gar keine Angabe.
+   ---------------------------------------------------------------- */
+async function ensureBewertetAm() {
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS rated_at BIGINT`;
+  await sql`
+    UPDATE media_items
+       SET rated_at = created_at
+     WHERE rated_at IS NULL
+       AND created_at > 0
+       AND watchlist = FALSE
+  `;
+}
+
 /* Die Episodenanzahl je Staffel steht — wie die Genres — als eine
    Zeichenkette in der Spalte: "12|12|24" heisst drei Staffeln mit 12,
    12 und 24 Folgen. Eine eigene Tabelle waere sauberer, brachte hier
@@ -803,6 +839,10 @@ export function rowToItem(r) {
     personal: r.personal === null || r.personal === undefined ? null : Number(r.personal),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
+    // Wann aus dem Eintrag ein bewerteter wurde. null heisst "nicht
+    // bekannt" — bei vorgemerkten Eintraegen und bei Altbestand ohne
+    // brauchbares Datum. Der Jahresrueckblick laesst beide aus.
+    ratedAt: r.rated_at === null || r.rated_at === undefined ? null : Number(r.rated_at),
   };
 }
 
@@ -907,6 +947,15 @@ function angabenFehler(body) {
   }
   if (body.studio != null && typeof body.studio !== "string") {
     errors.push("Ungültiges Studio.");
+  }
+
+  // Das Bewertungsdatum schickt regulaer nur das Einspielen eines
+  // Backups mit; sonst entsteht es auf dem Server.
+  if (
+    body.ratedAt != null &&
+    (typeof body.ratedAt !== "number" || !Number.isFinite(body.ratedAt) || body.ratedAt < 0)
+  ) {
+    errors.push("Ungültiges Bewertungsdatum.");
   }
 
   errors.push(...laufzeitFehler(body));
