@@ -2387,7 +2387,20 @@ function findeDuplikat(treffer, bekannt) {
   return null;
 }
 
-function TrefferZeile({ treffer, busy, vorgemerkt, onWatchlist, onBewerten }) {
+/**
+ * Eine Zeile der Trefferliste.
+ *
+ * Der Zustand haengt ausschliesslich an dieser Zeile: `vorgemerkt`
+ * wird schon gesetzt, bevor der Server geantwortet hat (siehe
+ * `vormerken` in NeuerEintrag). Zieht sich die Antwort ueber 400 ms
+ * hin, sagt `langsam` das an — dann wird der Haken gedimmt, sonst
+ * merkt niemand etwas von der Wartezeit. Geht es schief, verschwindet
+ * der Haken wieder und `fehler` steht an der Zeile.
+ *
+ * Ein globales `busy` gibt es hier bewusst nicht mehr: ein laufender
+ * Vorgang in einer Zeile darf die anderen nicht sperren.
+ */
+function TrefferZeile({ treffer, vorgemerkt, langsam, fehler, onWatchlist, onBewerten }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}>
       <Poster url={treffer.poster} title={treffer.title} size={40} />
@@ -2400,29 +2413,35 @@ function TrefferZeile({ treffer, busy, vorgemerkt, onWatchlist, onBewerten }) {
             {treffer.year}
           </div>
         )}
+        {/* Fehlermeldung an der Zeile, nicht oben am Bildschirmrand. */}
+        {fehler && (
+          <div style={{ color: "#d9736a", fontSize: 11.5, marginTop: 2, lineHeight: 1.4 }}>{fehler}</div>
+        )}
       </div>
       {vorgemerkt ? (
-        <span style={{ fontSize: 12.5, color: "#77746c", flexShrink: 0 }}>✓ vorgemerkt</span>
+        <span
+          style={{ fontSize: 12.5, color: "#77746c", flexShrink: 0, opacity: langsam ? 0.5 : 1 }}
+        >
+          ✓ vorgemerkt
+        </span>
       ) : (
         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
           <button
             onClick={onWatchlist}
-            disabled={busy}
             style={{
               padding: "8px 10px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
               background: "transparent", color: "var(--accent, #C9A227)",
-              border: "1px solid var(--accent, #C9A227)", fontWeight: 600, opacity: busy ? 0.5 : 1,
+              border: "1px solid var(--accent, #C9A227)", fontWeight: 600,
             }}
           >
             + Watchlist
           </button>
           <button
             onClick={onBewerten}
-            disabled={busy}
             style={{
               padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
               background: "var(--accent, #C9A227)", color: "#17171A",
-              border: "1px solid var(--accent, #C9A227)", fontWeight: 700, opacity: busy ? 0.5 : 1,
+              border: "1px solid var(--accent, #C9A227)", fontWeight: 700,
             }}
           >
             Bewerten
@@ -2433,7 +2452,31 @@ function TrefferZeile({ treffer, busy, vorgemerkt, onWatchlist, onBewerten }) {
   );
 }
 
-function NeuerEintrag({ category, categoryLabel, busy, bekannt, onWatchlist, onBewerten, onCancel }) {
+/* Platzhalterzeile der Trefferliste — dieselben Masse wie oben:
+   Innenabstand 10px oben/unten, Poster 40 x 57, dieselbe Trennlinie.
+   Sie gibt dem Dokument sofort Hoehe, damit die Seite beim Schliessen
+   der Tastatur nicht nach oben klappt. */
+function SkelettTrefferZeile() {
+  return (
+    <div
+      aria-hidden="true"
+      style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}
+    >
+      <SkelettFlaeche breite={40} hoehe={57} style={{ flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <SkelettFlaeche breite="58%" hoehe={13} rund={3} />
+        <SkelettFlaeche breite="22%" hoehe={9} rund={3} style={{ marginTop: 6 }} />
+      </div>
+      <SkelettFlaeche breite={86} hoehe={31} rund={6} style={{ flexShrink: 0 }} />
+    </div>
+  );
+}
+
+/* Ab hier gilt eine Antwort als "zieht sich" und die Zeile zeigt einen
+   Ladezustand. Darunter waere das Aufblitzen stoerender als hilfreich. */
+const ZEILEN_LADEN_AB_MS = 400;
+
+function NeuerEintrag({ category, categoryLabel, bekannt, onWatchlist, onBewerten, onCancel }) {
   const [text, setText] = useState("");
   const [treffer, setTreffer] = useState(null); // null = noch nicht gesucht
   const [gesuchtNach, setGesuchtNach] = useState("");
@@ -2444,6 +2487,16 @@ function NeuerEintrag({ category, categoryLabel, busy, bekannt, onWatchlist, onB
   // Gemerkt wird der Kandidat selbst (Titel + Jahr), nicht seine Position:
   // eine zweite Suche stellt die Liste komplett neu zusammen.
   const [vorgemerkt, setVorgemerkt] = useState(() => new Set());
+  /* Zeilen, deren Antwort sich ueber 400 ms hinzieht, und Zeilen, bei
+     denen etwas schiefging. Beides haengt an der einzelnen Zeile — es
+     gibt keinen globalen Ladezustand und keine globale Meldung mehr. */
+  const [langsam, setLangsam] = useState(() => new Set());
+  const [zeilenFehler, setZeilenFehler] = useState({});
+  /* Doppelklick-Schutz: derselbe Eintrag kann waehrend eines laufenden
+     Vorgangs nicht erneut abgeschickt werden. Als Ref, damit der
+     zweite Klick den ersten auch dann sieht, wenn React die
+     Zustandsaenderung noch nicht gerendert hat. */
+  const laufend = useRef(new Set());
   /* Ein Treffer, der schon in der Sammlung steht, und was mit ihm
      geschehen sollte. Solange das hier gesetzt ist, steht die Rueckfrage
      offen — bestaetigt wird sie mit `trotzdem`. */
@@ -2467,9 +2520,46 @@ function NeuerEintrag({ category, categoryLabel, busy, bekannt, onWatchlist, onB
     }
   }
 
+  /* Vormerken laeuft optimistisch: die Zeile steht sofort auf
+     "✓ vorgemerkt", ohne auf den Server zu warten. Geht es schief,
+     springt sie zurueck und sagt an Ort und Stelle, warum. */
   async function vormerken(kandidat) {
-    const ok = await onWatchlist(kandidat);
-    if (ok) setVorgemerkt((alt) => new Set(alt).add(kandidatSchluessel(kandidat)));
+    const key = kandidatSchluessel(kandidat);
+    if (laufend.current.has(key)) return;
+    laufend.current.add(key);
+
+    setZeilenFehler((alt) => {
+      if (!(key in alt)) return alt;
+      const neu = { ...alt };
+      delete neu[key];
+      return neu;
+    });
+    setVorgemerkt((alt) => new Set(alt).add(key));
+
+    const langsamTimer = setTimeout(
+      () => setLangsam((alt) => new Set(alt).add(key)),
+      ZEILEN_LADEN_AB_MS
+    );
+
+    const { ok, fehler: grund } = await onWatchlist(kandidat);
+
+    clearTimeout(langsamTimer);
+    laufend.current.delete(key);
+    setLangsam((alt) => {
+      if (!alt.has(key)) return alt;
+      const neu = new Set(alt);
+      neu.delete(key);
+      return neu;
+    });
+
+    if (!ok) {
+      setVorgemerkt((alt) => {
+        const neu = new Set(alt);
+        neu.delete(key);
+        return neu;
+      });
+      setZeilenFehler((alt) => ({ ...alt, [key]: grund || "Nicht vorgemerkt." }));
+    }
   }
 
   /* Beide Wege — vormerken und direkt bewerten — laufen durch dieselbe
@@ -2523,18 +2613,32 @@ function NeuerEintrag({ category, categoryLabel, busy, bekannt, onWatchlist, onB
         <button
           onClick={suchen}
           disabled={!text.trim() || laeuft}
+          aria-busy={laeuft}
           style={{
             flex: "0 0 auto", padding: "0 18px", borderRadius: 8, fontSize: 14, fontWeight: 700,
             background: text.trim() ? "var(--accent, #C9A227)" : "#2A2A2E",
             color: text.trim() ? "#17171A" : "#77746c",
-            border: "none", cursor: text.trim() ? "pointer" : "default",
+            border: "none", cursor: text.trim() && !laeuft ? "pointer" : "default",
+            // Waehrend der Abfrage gesperrt und gedimmt — dieselbe
+            // Ladedarstellung wie ueberall sonst in der App.
+            opacity: laeuft ? 0.5 : 1,
           }}
         >
           Suchen
         </button>
       </div>
 
-      {laeuft && <div style={{ fontSize: 13, color: "#9A968C", marginBottom: 10 }}>Wird gesucht…</div>}
+      {/* Waehrend der Abfrage vier Platzhalterzeilen statt eines
+          Kleingedruckten. Sie sind das eigentliche Signal — und sie
+          geben dem Dokument Hoehe, damit die Seite beim Schliessen der
+          Tastatur nicht nach oben klappt. */}
+      {laeuft && (
+        <div>
+          {Array.from({ length: 4 }, (_, i) => (
+            <SkelettTrefferZeile key={i} />
+          ))}
+        </div>
+      )}
       {fehler && <div style={{ color: "#d9736a", fontSize: 12.5, marginBottom: 10 }}>{fehler}</div>}
 
       {treffer && !laeuft && (
@@ -2549,8 +2653,9 @@ function NeuerEintrag({ category, categoryLabel, busy, bekannt, onWatchlist, onB
               <TrefferZeile
                 key={t.title + "::" + i}
                 treffer={t}
-                busy={busy}
                 vorgemerkt={vorgemerkt.has(kandidatSchluessel(t))}
+                langsam={langsam.has(kandidatSchluessel(t))}
+                fehler={zeilenFehler[kandidatSchluessel(t)]}
                 onWatchlist={() => anstossen(t, "watchlist")}
                 onBewerten={() => anstossen(t, "bewerten")}
               />
@@ -2566,8 +2671,9 @@ function NeuerEintrag({ category, categoryLabel, busy, bekannt, onWatchlist, onB
               </div>
               <TrefferZeile
                 treffer={eigener}
-                busy={busy}
                 vorgemerkt={vorgemerkt.has(kandidatSchluessel(eigener))}
+                langsam={langsam.has(kandidatSchluessel(eigener))}
+                fehler={zeilenFehler[kandidatSchluessel(eigener)]}
                 onWatchlist={() => anstossen(eigener, "watchlist")}
                 onBewerten={() => anstossen(eigener, "bewerten")}
               />
@@ -3181,7 +3287,7 @@ function Empfehlungen({ category, profil, bekannt, busy, onWatchlist }) {
             busy={busy}
             vorgemerkt={vorgemerkt.has(titelSchluessel(v.title))}
             onWatchlist={async () => {
-              const ok = await onWatchlist(v);
+              const { ok } = await onWatchlist(v);
               if (ok) setVorgemerkt((alt) => new Set(alt).add(titelSchluessel(v.title)));
             }}
           />
@@ -7751,11 +7857,16 @@ export default function App() {
   /* ---- Watchlist ----
      Vormerken legt einen Eintrag ohne jede Bewertung an. Poster und
      Angaben holt danach dasselbe automatische Nachladen wie bei jedem
-     anderen Eintrag. */
+     anderen Eintrag.
+
+     Bewusst OHNE `busy` und OHNE globale Fehlermeldung: der Aufruf
+     dauert rund zwei Sekunden, und in dieser Zeit sollen die uebrigen
+     Zeilen der Trefferliste bedienbar bleiben. Ladezustand und Fehler
+     gehoeren an die Zeile, die gedrueckt wurde — deshalb liefert die
+     Funktion beides zurueck, statt es selbst anzuzeigen. */
   async function watchlistHinzufuegen({ title, poster, year }) {
     const name = (title || "").trim();
-    if (!name) return false;
-    setBusy(true);
+    if (!name) return { ok: false, fehler: "Kein Titel." };
     try {
       const created = await api.create({
         category,
@@ -7766,13 +7877,9 @@ export default function App() {
         watchlist: true,
       });
       setItems((prev) => ({ ...prev, [category]: [normalizeEntry(created), ...prev[category]] }));
-      setSaveError("");
-      return true;
+      return { ok: true, fehler: "" };
     } catch (e) {
-      setSaveError("Nicht vorgemerkt: " + e.message);
-      return false;
-    } finally {
-      setBusy(false);
+      return { ok: false, fehler: "Nicht vorgemerkt: " + e.message };
     }
   }
 
@@ -8957,7 +9064,6 @@ export default function App() {
             <NeuerEintrag
               category={category}
               categoryLabel={catInfo.singular}
-              busy={busy}
               bekannt={bekannteEintraege}
               onWatchlist={(t) => watchlistHinzufuegen({ title: t.title, poster: t.poster, year: t.year })}
               onBewerten={(t) => { setGewaehlterTreffer(t); setMode("form"); }}
