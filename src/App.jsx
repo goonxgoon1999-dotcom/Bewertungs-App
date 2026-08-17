@@ -2584,10 +2584,24 @@ function findeDuplikat(treffer, bekannt) {
  */
 function TrefferZeile({ treffer, vorgemerkt, langsam, fehler, onWatchlist, onBewerten }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}>
       <Poster url={treffer.poster} title={treffer.title} size={40} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {/* Der Titel bekommt die volle Zeilenbreite und darf ueber zwei
+            Zeilen laufen. Vorher standen die beiden Knoepfe daneben —
+            danach blieb vom Titel "Der ...", "Ros...", "Ber..." uebrig
+            und man wusste nicht, was man gerade hinzufuegt. */}
+        <div
+          title={treffer.title}
+          style={{
+            fontSize: 14.5,
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            overflowWrap: "anywhere",
+          }}
+        >
           {treffer.title}
         </div>
         {treffer.year && (
@@ -2599,57 +2613,71 @@ function TrefferZeile({ treffer, vorgemerkt, langsam, fehler, onWatchlist, onBew
         {fehler && (
           <div style={{ color: "#d9736a", fontSize: 11.5, marginTop: 2, lineHeight: 1.4 }}>{fehler}</div>
         )}
-      </div>
-      {vorgemerkt ? (
-        <span
-          style={{ fontSize: 12.5, color: "#77746c", flexShrink: 0, opacity: langsam ? 0.5 : 1 }}
-        >
-          ✓ vorgemerkt
-        </span>
-      ) : (
-        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-          <button
-            onClick={onWatchlist}
-            style={{
-              padding: "8px 10px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
-              background: "transparent", color: "var(--accent, #C9A227)",
-              border: "1px solid var(--accent, #C9A227)", fontWeight: 600,
-            }}
-          >
-            + Watchlist
-          </button>
-          <button
-            onClick={onBewerten}
-            style={{
-              padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
-              background: "var(--accent, #C9A227)", color: "#17171A",
-              border: "1px solid var(--accent, #C9A227)", fontWeight: 700,
-            }}
-          >
-            Bewerten
-          </button>
+        {/* Eigene Reihe unter dem Titel, rechtsbuendig — Groesse und
+            Stil der Knoepfe bleiben unveraendert. */}
+        {/* flexWrap zusammen mit nowrap in den Knoepfen: wird es ganz
+            eng (320 px im eingerueckten "eigener Titel"-Kasten),
+            rutscht der zweite Knopf in die naechste Reihe, statt dass
+            die Beschriftung "+ Watchlist" mitten im Wort umbricht.
+            Groesse und Stil der Knoepfe bleiben unveraendert. */}
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+          {vorgemerkt ? (
+            <span style={{ fontSize: 12.5, color: "#77746c", opacity: langsam ? 0.5 : 1 }}>
+              ✓ vorgemerkt
+            </span>
+          ) : (
+            <>
+              <button
+                onClick={onWatchlist}
+                style={{
+                  padding: "8px 10px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
+                  background: "transparent", color: "var(--accent, #C9A227)",
+                  border: "1px solid var(--accent, #C9A227)", fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                + Watchlist
+              </button>
+              <button
+                onClick={onBewerten}
+                style={{
+                  padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
+                  background: "var(--accent, #C9A227)", color: "#17171A",
+                  border: "1px solid var(--accent, #C9A227)", fontWeight: 700,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Bewerten
+              </button>
+            </>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
 
-/* Platzhalterzeile der Trefferliste — dieselben Masse wie oben:
-   Innenabstand 10px oben/unten, Poster 40 x 57, dieselbe Trennlinie.
+/* Platzhalterzeile der Trefferliste — derselbe Aufbau und dieselben
+   Masse wie oben: Innenabstand 10px oben/unten, Poster 40 x 57,
+   Titelzeile, Jahr, darunter die Knopfreihe, dieselbe Trennlinie.
+
    Sie gibt dem Dokument sofort Hoehe, damit die Seite beim Schliessen
    der Tastatur nicht nach oben klappt. */
 function SkelettTrefferZeile() {
   return (
     <div
       aria-hidden="true"
-      style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}
+      style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 0", borderBottom: "1px solid #232326" }}
     >
       <SkelettFlaeche breite={40} hoehe={57} style={{ flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <SkelettFlaeche breite="58%" hoehe={13} rund={3} />
-        <SkelettFlaeche breite="22%" hoehe={9} rund={3} style={{ marginTop: 6 }} />
+        <SkelettFlaeche breite="62%" hoehe={15} rund={3} />
+        <SkelettFlaeche breite="24%" hoehe={13} rund={3} style={{ marginTop: 2 }} />
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
+          <SkelettFlaeche breite={94} hoehe={33} rund={6} />
+          <SkelettFlaeche breite={83} hoehe={33} rund={6} />
+        </div>
       </div>
-      <SkelettFlaeche breite={86} hoehe={31} rund={6} style={{ flexShrink: 0 }} />
     </div>
   );
 }
