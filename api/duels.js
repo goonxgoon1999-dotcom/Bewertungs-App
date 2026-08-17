@@ -1,7 +1,9 @@
 import { sql, ensureReady, rowToDuelCount, CATEGORIES } from "./_db.js";
 
 /**
- * Gespielte Duelle des Minispiels "Head-to-Head", je Kategorie.
+ * Gespielte Duelle je Kategorie — aus dem Minispiel "Head-to-Head"
+ * ebenso wie aus dem Turnier, dessen Paarungen dieselbe Auswertung
+ * durchlaufen.
  *
  *   GET  /api/duels                 -> { counts: { movie: 12, series: 0, ... } }
  *   POST /api/duels   { category }  -> { category, count }

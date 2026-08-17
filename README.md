@@ -433,7 +433,7 @@ vercel dev          # startet Frontend + API zusammen
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |
 | DELETE | `/api/header-images?id=…` | Bild-Adresse entfernen |
-| GET | `/api/duels` | Gespielte Duelle je Kategorie (Minispiel Head-to-Head) |
+| GET | `/api/duels` | Gespielte Duelle je Kategorie (Head-to-Head und Turnier) |
 | POST | `/api/duels` | Ein ausgewertetes Duell zählen (`{ category }`) |
 | GET | `/api/highscores?game=…` | Bestwerte eines Minispiels, je Spielart |
 | POST | `/api/highscores` | Ergebnis eines Durchgangs melden (`{ game, mode, score }`) — gespeichert wird nur, was den Bestwert übertrifft |
@@ -638,6 +638,63 @@ einem Eintrag ohne Staffeln.
 Beim Überspringen passiert nichts: kein Bauchgefühl ändert sich, und der
 Zähler bleibt stehen.
 
+### Turnier
+
+Kein zweites Duellspiel, sondern die Runden drumherum: Statt einzelner
+Duelle wird ein **K.o.-Turnier** über mehrere Runden bis zu einem Sieger
+gespielt. Der Duell-Bildschirm, die Elo-Anpassung des Bauchgefühls und
+der Duell-Zähler sind **exakt dieselben** wie beim Head-to-Head — das
+Turnier ergänzt nur Auslosung, Rundensteuerung und Bracket.
+
+**Auslosung.** Zuerst die Kategorie — Kategorien mit weniger als vier
+bewerteten Einträgen stehen nicht zur Wahl. Dann die Turniergröße: **4,
+8 oder 16** Teilnehmer, wobei nur Größen anwählbar sind, für die in
+dieser Kategorie genug bewertete Einträge vorhanden sind; der Rest ist
+ausgegraut und sagt, wie viele fehlen. Vorgemerkte Einträge zählen nicht
+mit — sie haben keine Note.
+
+Die Teilnehmer werden **zufällig gelost** (Fisher-Yates über die ganze
+Kategorie, danach vorne abgeschnitten). Es gibt **kein Seeding nach
+Rang**: Platz 1 kann schon in der ersten Runde auf Platz 2 treffen.
+
+**Ablauf.** Gespielt wird Paarung für Paarung von oben nach unten — bei
+8 Teilnehmern also Viertelfinale → Halbfinale → Finale, insgesamt
+`n − 1` Duelle. Jede Paarung nutzt denselben Duell-Bildschirm wie das
+Head-to-Head: Poster, Titel und Jahr nebeneinander, dazwischen „VS",
+**ohne Note**. Anders als dort gibt es **kein Überspringen** — in jeder
+Paarung muss eine Wahl getroffen werden, sonst käme niemand weiter.
+
+Jede Wahl löst **dieselbe Auswertung** aus wie ein freies Duell: das
+Bauchgefühl beider Titel verschiebt sich über die Elo-Formel oben, der
+Duell-Zähler der Kategorie wächst, und es gibt die 2 XP fürs Duell. Die
+Auswertungen laufen nacheinander, damit zwei schnell hintereinander
+gewählte Paarungen sich nicht gegenseitig überschreiben.
+
+**Bracket.** Ein klassischer Turnierbaum läuft in die Breite und passt
+damit auf kein Telefon. Hier stehen die Runden deshalb **untereinander**
+— Runde 1 oben, darunter die nächste —, je Runde eine Spalte aus
+Paarungskarten, dazwischen ein Pfeil nach unten. Jede Karte zeigt beide
+Teilnehmer untereinander, getrennt durch eine dünne Linie:
+
+| Zustand | Darstellung |
+|---|---|
+| Jetzt zu entscheiden | Rahmen und getönter Grund in der Kategoriefarbe |
+| Bereits entschieden | Sieger mit Häkchen, Verlierer auf 50 % abgeblendet, Karte auf 85 % |
+| Noch nicht erreichbar | „?" statt Titel, Karte auf 35 % abgeblendet |
+
+Unter dem Baum steht von Anfang an der Platz des Siegers: Pokal und
+„Turniersieger wird hier gekrönt". Sobald das Finale entschieden ist,
+steht dort der Titel.
+
+**Ende.** Nach dem Finale erscheint der Sieger-Bildschirm — Pokal,
+„TURNIERSIEGER", Poster und Titel —, darunter führt **Neues Turnier**
+zurück zur Größenwahl. Ein abgeschlossenes Turnier gibt **25 XP**.
+
+**Abbrechen** ist jederzeit möglich („← Turnier abbrechen"). Ein
+abgebrochenes Turnier zählt nicht als abgeschlossen und gibt **keine**
+Turnier-XP. Die bereits ausgespielten Paarungen behalten ihre Wirkung —
+sie waren richtige Duelle.
+
 ### Higher or Lower
 
 Oben ein Titel mit sichtbarer Endnote, darunter einer mit verdeckter:
@@ -747,7 +804,7 @@ Schwellen muss deshalb nichts umschreiben.
 |---|---|
 | Neue Bewertung abgegeben | 10 |
 | Vorgemerkter Eintrag wird bewertet | 15 |
-| Head-to-Head-Duell gespielt | 2 |
+| Head-to-Head-Duell gespielt (auch je Turnier-Paarung) | 2 |
 | Turnier abgeschlossen | 25 |
 | Neuer persönlicher Bestwert bei Higher or Lower | 10 |
 | In **jeder** Kategorie mindestens ein Titel bewertet (einmalig) | 20 |
@@ -765,9 +822,10 @@ werden, sodass auch zwei gleichzeitige Meldungen nur einmal zählen.
 Nach jeder Gutschrift blendet sich kurz „+10 XP" ein, in der Farbe des
 aktuellen Rangs.
 
-**Turnier:** Die Quelle ist vollständig angelegt und gültig, wird aber
-noch von niemandem ausgelöst — ein Turnier-Minispiel gibt es bisher
-nicht. Sobald es dazukommt, genügt ein Aufruf mit dieser Quelle.
+**Turnier:** Die 25 XP gibt es für ein **abgeschlossenes** Turnier, also
+für ein entschiedenes Finale. Ein abgebrochenes Turnier bringt nichts.
+Die einzelnen Paarungen zählen davon unabhängig als Duelle und bringen
+je 2 XP — ein Turnier mit 8 Teilnehmern kommt so auf 7 × 2 + 25 XP.
 
 **Der Bestand:** Beim ersten Start nach Einführung der Punkte werden
 die bereits vorhandenen Bewertungen einmalig mit je 10 XP angerechnet.

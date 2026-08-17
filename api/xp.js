@@ -23,12 +23,11 @@ const XP_QUELLEN = {
   bewertung: 10,
   // Ein vorgemerkter Eintrag wurde bewertet.
   watchlist: 15,
-  // Ein Head-to-Head-Duell gespielt.
+  /* Ein Duell gespielt — im Head-to-Head wie im Turnier: eine
+     Turnier-Paarung ist ein Duell wie jedes andere. */
   duell: 2,
-  /* Ein Turnier abgeschlossen. Die Quelle ist fertig angelegt und
-     gueltig, wird aber noch von niemandem ausgeloest — ein
-     Turnier-Minispiel gibt es bisher nicht. Sobald es dazukommt,
-     genuegt ein Aufruf mit dieser Quelle. */
+  /* Ein Turnier abgeschlossen, also ein entschiedenes Finale. Ein
+     abgebrochenes Turnier meldet sich hier nie. */
   turnier: 25,
   // Neuer persoenlicher Bestwert bei Higher or Lower.
   highscore: 10,
