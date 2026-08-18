@@ -2109,17 +2109,118 @@ function SkelettListe({ anzahl = 8 }) {
  * uebergeben: damit spielen auch die eigenen Knoepfe des Blattes die
  * Aus-Bewegung, statt einfach zu verschwinden.
  *
- * Die Griffleiste oben bleibt wie sie ist; gezogen wird hier nichts.
+ * Die Griffleiste oben ist zugleich der Ziehbereich: nach unten
+ * gezogen folgt das Blatt 1:1 dem Finger. Beim Loslassen entscheidet
+ * Weg oder Tempo, ob es schliesst — sonst schnappt es zurueck. Nach
+ * oben gezogen bleibt es stehen. Am Aussehen aendert das nichts.
  */
+/* Ab hier gilt das Blatt beim Loslassen als weggezogen: Weg in px
+   oder Tempo in px je ms. Ein kurzer, schneller Wisch reicht damit
+   ebenso wie ein langsames, weites Ziehen. Unterhalb von
+   ZIEH_MINDESTWEG_PX ist es ein Tippen und kein Wisch — sonst schloesse
+   schon ein hastiger Fingerauftupfer das Blatt. */
+const ZIEH_WEG_PX = 100;
+const ZIEH_TEMPO_PX_MS = 0.5;
+const ZIEH_MINDESTWEG_PX = 12;
+/* Mindestabstand zweier Tempomessungen und Hoechstalter der letzten
+   Messung beim Loslassen — beides in ms. */
+const ZIEH_MESSABSTAND_MS = 8;
+const ZIEH_TEMPO_FRISCH_MS = 120;
+/* Der Ziehbereich greift etwas ueber die Griffleiste hinaus. Die
+   Polsterung wird durch denselben negativen Aussenabstand wieder
+   aufgehoben: der Bereich fasst weiter, verschiebt aber nichts. */
+const ZIEH_GRIFF_LUFT_PX = 12;
+
 function BottomSheet({ title, onClose, children }) {
   const reducedMotion = usePrefersReducedMotion();
   const [geht, setGeht] = useState(false);
+  /* Wird das Blatt weggezogen, laeuft die Aus-Bewegung aus der
+     Position heraus, in der der Finger es losgelassen hat. Die Klasse
+     .blatt-raus faengt dagegen immer bei 0 an und liesse das Blatt
+     zuerst sichtbar hochspringen — deshalb bleibt sie in diesem Fall
+     weg, und der Weg nach unten laeuft ueber eine transition. */
+  const [ziehtRaus, setZiehtRaus] = useState(false);
+  const blattRef = useRef(null);
+  const zug = useRef(null);
 
   function schliessen(danach) {
     const ende = typeof danach === "function" ? danach : onClose;
     if (reducedMotion) { ende(); return; }
     setGeht(true);
     setTimeout(ende, BEWEGUNG_RAUS_MS);
+  }
+
+  /* Der Versatz geht direkt ans Element und nicht ueber den Zustand:
+     am Finger soll nichts nachhinken, und ein Renderdurchlauf je
+     Mausbewegung waere dafuer zu viel. */
+  function setzeVersatz(px, uebergang) {
+    const el = blattRef.current;
+    if (!el) return;
+    el.style.transition = uebergang || "";
+    el.style.transform = px ? `translateY(${px}px)` : "";
+  }
+
+  function ziehAnfang(e) {
+    if (geht) return;
+    if (e.button != null && e.button > 0) return;
+    zug.current = { id: e.pointerId, start: e.clientY, weg: 0, tempo: 0, letzteY: e.clientY, letzteZeit: e.timeStamp };
+    /* Ohne Capture endete die Geste, sobald der Finger den
+       Griffbereich verlaesst — beim Ziehen nach unten also sofort. */
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* nicht ueberall vorhanden */ }
+  }
+
+  function ziehBewegung(e) {
+    const z = zug.current;
+    if (!z || e.pointerId !== z.id) return;
+    /* Nur nach unten: ueber die Ausgangslage hinaus bleibt es stehen. */
+    z.weg = Math.max(0, e.clientY - z.start);
+    /* Das Tempo braucht einen Mindestabstand zwischen zwei Messungen:
+       aus zwei Punkten, die eine Millisekunde auseinanderliegen, kaeme
+       ein beliebig grosser Wert heraus. */
+    const dt = e.timeStamp - z.letzteZeit;
+    if (dt >= ZIEH_MESSABSTAND_MS) {
+      z.tempo = (e.clientY - z.letzteY) / dt;
+      z.letzteY = e.clientY;
+      z.letzteZeit = e.timeStamp;
+    }
+    setzeVersatz(z.weg);
+  }
+
+  /* Zurueck in die Ausgangslage — dieselbe Kurve wie beim Hereinkommen. */
+  function ziehZurueck() {
+    setzeVersatz(0, reducedMotion ? "" : `transform ${BEWEGUNG_REIN_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`);
+  }
+
+  function ziehEnde(e) {
+    const z = zug.current;
+    zug.current = null;
+    if (!z || e.pointerId !== z.id) return;
+    /* Wer zuletzt stillhaelt, wirft nicht: liegt die letzte Bewegung
+       schon eine Weile zurueck, zaehlt allein der Weg. */
+    const frisch = e.timeStamp - z.letzteZeit <= ZIEH_TEMPO_FRISCH_MS;
+    const geworfen = frisch && z.tempo >= ZIEH_TEMPO_PX_MS && z.weg >= ZIEH_MINDESTWEG_PX;
+    const weggezogen = z.weg >= ZIEH_WEG_PX || geworfen;
+    if (!weggezogen) { ziehZurueck(); return; }
+    /* Dasselbe Schliessen wie beim Tippen auf die Abdunkelung: die
+       Ebene blendet aus, nach der Aus-Bewegung faellt das Blatt aus
+       dem Baum. Nur der Weg des Blattes selbst beginnt hier dort, wo
+       der Finger es gelassen hat. */
+    if (reducedMotion) { onClose(); return; }
+    setZiehtRaus(true);
+    const el = blattRef.current;
+    if (el) {
+      el.style.transition = `transform ${BEWEGUNG_RAUS_MS}ms cubic-bezier(0.4, 0, 1, 1)`;
+      el.style.transform = "translateY(100%)";
+    }
+    setGeht(true);
+    setTimeout(onClose, BEWEGUNG_RAUS_MS);
+  }
+
+  function ziehAbbruch(e) {
+    const z = zug.current;
+    zug.current = null;
+    if (!z || e.pointerId !== z.id) return;
+    ziehZurueck();
   }
 
   return (
@@ -2134,8 +2235,9 @@ function BottomSheet({ title, onClose, children }) {
         style={{ position: "absolute", inset: 0, background: "#000", opacity: 0.55 }}
       />
       <div
+        ref={blattRef}
         onClick={(e) => e.stopPropagation()}
-        className={geht ? "blatt-raus" : "blatt-rein"}
+        className={geht ? (ziehtRaus ? "" : "blatt-raus") : "blatt-rein"}
         style={{
           position: "relative",
           background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: "14px 14px 0 0",
@@ -2143,8 +2245,24 @@ function BottomSheet({ title, onClose, children }) {
           maxHeight: "85vh", overflowY: "auto", WebkitOverflowScrolling: "touch",
         }}
       >
-        <div style={{ width: 36, height: 4, background: "#33333a", borderRadius: 2, margin: "0 auto 16px" }} />
-        {title && <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 16px" }}>{title}</h3>}
+        {/* Griffleiste und Titel bilden zusammen den Ziehbereich.
+            touchAction: none, damit der Zug nach unten nicht als
+            Rollen im Blatt ankommt. Polsterung und negativer
+            Aussenabstand heben sich auf — es sitzt alles wie zuvor. */}
+        <div
+          onPointerDown={ziehAnfang}
+          onPointerMove={ziehBewegung}
+          onPointerUp={ziehEnde}
+          onPointerCancel={ziehAbbruch}
+          style={{
+            touchAction: "none",
+            padding: `${ZIEH_GRIFF_LUFT_PX}px 0`,
+            margin: `${-ZIEH_GRIFF_LUFT_PX}px 0`,
+          }}
+        >
+          <div style={{ width: 36, height: 4, background: "#33333a", borderRadius: 2, margin: "0 auto 16px" }} />
+          {title && <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 16px" }}>{title}</h3>}
+        </div>
         {typeof children === "function" ? children(schliessen) : children}
       </div>
     </div>
@@ -8854,7 +8972,8 @@ export default function App() {
 
   return (
     /* overflowX: "clip" faengt den Versatz der Kategorie-Bewegung ab —
-       ohne ihn zeigte die Seite fuer die 200 ms eine Querlaufleiste.
+       ohne ihn zeigte die Seite fuer die Dauer der Bewegung eine
+       Querlaufleiste.
        "clip" und nicht "hidden": es macht die Seite nicht zum
        Rollbereich und laesst die Detailseite (position: fixed)
        unberuehrt. */
@@ -8877,6 +8996,11 @@ export default function App() {
           --bewegung-raus:   160ms cubic-bezier(0.4, 0, 1, 1);
           --bewegung-tippen: 110ms cubic-bezier(0.4, 0, 0.2, 1);
           --bewegung-blende: 600ms ease-in-out; /* nur Bild-Ueberblendungen */
+          /* Der Kategorie-Wechsel laeuft bewusst etwas laenger als der
+             Rest: er traegt den groessten Weg und wirkte mit der
+             allgemeinen Rein-Dauer abgehackt. Nur diese eine Bewegung
+             nutzt den Wert. */
+          --bewegung-kategorie: 240ms cubic-bezier(0.25, 0.1, 0.25, 1);
         }
 
         /* Wer weniger Bewegung eingestellt hat, bekommt keine: alle
@@ -8889,6 +9013,7 @@ export default function App() {
             --bewegung-raus:   0ms linear;
             --bewegung-tippen: 0ms linear;
             --bewegung-blende: 0ms linear;
+            --bewegung-kategorie: 0ms linear;
           }
         }
 
@@ -8963,8 +9088,8 @@ export default function App() {
           from { opacity: 0.4; transform: translateX(-20px); }
           to   { opacity: 1; transform: none; }
         }
-        .kategorie-rechts { animation: kategorieVonRechts var(--bewegung-rein) backwards; }
-        .kategorie-links  { animation: kategorieVonLinks  var(--bewegung-rein) backwards; }
+        .kategorie-rechts { animation: kategorieVonRechts var(--bewegung-kategorie) backwards; }
+        .kategorie-links  { animation: kategorieVonLinks  var(--bewegung-kategorie) backwards; }
 
         /* Seitenwechsel: Detailseite, Minispiele, Statistik und
            Daten-Panel. Hinein von rechts, zurueck nach rechts hinaus. */
