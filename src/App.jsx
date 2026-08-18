@@ -7042,8 +7042,9 @@ function alleKategorienBewertet(items) {
   return CATEGORY_KEYS.every((k) => (items[k] || []).some((f) => !istVorgemerkt(f)));
 }
 
-/* Schild — das Zeichen des Rangs. Wie die uebrigen Symbole der App
-   eine reine Strichzeichnung, die ihre Farbe vom Umfeld erbt. */
+/* Schild — Zeichen der Stufe Bronze und Rueckfall fuer jede Stufe
+   ohne eigenes Zeichen. Wie die uebrigen Symbole der App eine reine
+   Strichzeichnung, die ihre Farbe vom Umfeld erbt. */
 function IconSchild({ groesse = 18 }) {
   return (
     <svg
@@ -7086,7 +7087,120 @@ function IconSchloss({ groesse = 18 }) {
   );
 }
 
-/* Der Rang unter dem Titel: Schild und Name in der Rangfarbe. */
+/* ------------------------------------------------------------
+   Ein eigenes Zeichen je Stufe.
+
+   Bis hierher trugen alle acht Stufen dasselbe Schild und
+   unterschieden sich allein in der Farbe — auf dem Chip unter dem
+   Titel war die Stufe damit nur am Namen zu erkennen. Jede Stufe
+   bekommt jetzt ihr eigenes Symbol, das mit ihr aufsteigt:
+   Muenze, Schild, Stern, Barren, Krone, Edelstein, Raute, Pokal.
+   Den Pokal gibt es schon (IconPokal, Turniersieger) — er wird hier
+   benutzt, nicht ein zweites Mal gezeichnet.
+
+   Es bleiben reine Strichzeichnungen wie die uebrigen Symbole der
+   App (symbolBasis): kein Fuellen, Farbe kommt vom Umfeld. Damit
+   traegt jedes Zeichen weiterhin die Rangfarbe, ohne dass hier eine
+   Farbe steht.
+   ------------------------------------------------------------ */
+
+/* Huelle fuer die Rang-Zeichen — spart acht Mal dasselbe Geruest. */
+function RangSymbol({ groesse = 18, children }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      style={{ ...symbolBasis, width: groesse, height: groesse }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      {children}
+    </svg>
+  );
+}
+
+/* Kupfer — Muenze. */
+function IconMuenze({ groesse = 18 }) {
+  return (
+    <RangSymbol groesse={groesse}>
+      <circle cx="12" cy="12" r="8.2" />
+      <circle cx="12" cy="12" r="3.4" />
+    </RangSymbol>
+  );
+}
+
+/* Silber — Stern. */
+function IconStern({ groesse = 18 }) {
+  return (
+    <RangSymbol groesse={groesse}>
+      <path d="M12 3.6l2.6 5.3 5.8.85-4.2 4.1 1 5.8-5.2-2.75-5.2 2.75 1-5.8-4.2-4.1 5.8-.85L12 3.6Z" />
+    </RangSymbol>
+  );
+}
+
+/* Gold — Barren. */
+function IconBarren({ groesse = 18 }) {
+  return (
+    <RangSymbol groesse={groesse}>
+      <path d="M3.4 18.8h17.2l-3.4-8.4H6.8L3.4 18.8Z" />
+      <path d="M6.8 10.4l2-5.2h6.4l2 5.2" />
+    </RangSymbol>
+  );
+}
+
+/* Platin — Krone. */
+function IconKrone({ groesse = 18 }) {
+  return (
+    <RangSymbol groesse={groesse}>
+      <path d="M5.4 17.6l-1.5-9.2 4.6 3.5L12 5.6l3.5 6.3 4.6-3.5-1.5 9.2H5.4Z" />
+      <path d="M5.9 20.2h12.2" />
+    </RangSymbol>
+  );
+}
+
+/* Smaragd — geschliffener Stein: Krone, Rundiste, zwei Facetten. */
+function IconEdelstein({ groesse = 18 }) {
+  return (
+    <RangSymbol groesse={groesse}>
+      <path d="M8.2 4.6h7.6L19 9.7 12 19.6 5 9.7l3.2-5.1Z" />
+      <path d="M5 9.7h14" />
+      <path d="M9.5 9.7L12 4.6l2.5 5.1" />
+    </RangSymbol>
+  );
+}
+
+/* Diamant — Raute mit Tafel. Spitze Ecken, damit sie sich vom
+   geschliffenen Stein der Stufe darunter klar unterscheidet. */
+function IconRaute({ groesse = 18 }) {
+  return (
+    <RangSymbol groesse={groesse}>
+      <path d="M12 3.2 20.8 12 12 20.8 3.2 12 12 3.2Z" />
+      <path d="M12 8.4 15.6 12 12 15.6 8.4 12 12 8.4Z" />
+    </RangSymbol>
+  );
+}
+
+/* Welches Zeichen zu welcher Stufe gehoert. Der Schluessel ist der
+   der Stufe (RAENGE) — kommt spaeter eine dazu, ohne dass hier ein
+   Zeichen hinterlegt wird, traegt sie das Schild wie bisher. */
+const RANG_ICONS = {
+  kupfer: IconMuenze,
+  bronze: IconSchild,
+  silber: IconStern,
+  gold: IconBarren,
+  platin: IconKrone,
+  smaragd: IconEdelstein,
+  diamant: IconRaute,
+  // Champion — derselbe Pokal wie beim Turniersieger.
+  champion: IconPokal,
+};
+
+/* Das Zeichen einer Stufe. Ohne hinterlegtes Zeichen das Schild. */
+function RangIcon({ stufe, groesse = 18 }) {
+  const Zeichen = (stufe && RANG_ICONS[stufe.key]) || IconSchild;
+  return <Zeichen groesse={groesse} />;
+}
+
+/* Der Rang unter dem Titel: Zeichen und Name in der Rangfarbe. */
 function RangChip({ xp, onClick }) {
   const { rang } = rangFuer(xp);
   return (
@@ -7103,7 +7217,7 @@ function RangChip({ xp, onClick }) {
         fontSize: 12.5, fontWeight: 700, lineHeight: 1,
       }}
     >
-      <IconSchild groesse={14} />
+      <RangIcon stufe={rang} groesse={14} />
       {rang.name}
     </button>
   );
@@ -7123,7 +7237,7 @@ function RangZeile({ stufe, platz, erreicht, aktuell }) {
       }}
     >
       <span style={{ color: stufe.farbe, display: "flex", flexShrink: 0 }}>
-        <IconSchild groesse={16} />
+        <RangIcon stufe={stufe} groesse={16} />
       </span>
       <span
         style={{
@@ -7188,7 +7302,7 @@ function RangOverlay({ xp, onClose }) {
             color: rang.farbe,
           }}
         >
-          <IconSchild groesse={30} />
+          <RangIcon stufe={rang} groesse={30} />
         </div>
 
         <div style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 26, color: rang.farbe, lineHeight: 1.1 }}>

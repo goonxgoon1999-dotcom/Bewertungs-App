@@ -766,13 +766,13 @@ Statistik; es ist für den Moment gedacht.
 
 ## Aktivitäts-Rang
 
-Unter dem Titel „Rifat's Archiv" steht ein kleiner Chip mit Schild und
-Rangnamen. Er gehört **dem Nutzer**, nicht den Titeln: mit den
+Unter dem Titel „Rifat's Archiv" steht ein kleiner Chip mit dem
+Zeichen der Stufe und dem Rangnamen. Er gehört **dem Nutzer**, nicht den Titeln: mit den
 Medaillen der ersten drei Plätze in den Ranglisten hat er nichts zu
 tun. Er ist rein kosmetisch — kein Filter, keine Sortierung, keine
 Bewertung hängt daran.
 
-Ein Tipp öffnet die Übersicht: oben der eigene Stand (Schild im
+Ein Tipp öffnet die Übersicht: oben der eigene Stand (Zeichen im
 Farbkreis, Rangname, „Rang X von 8", Fortschrittsbalken und der
 XP-Text, z. B. „1.240 / 1.800 XP bis Platin"), darunter die ganze
 Leiter mit der höchsten Stufe zuoberst. Erreichte Stufen tragen ein
@@ -783,16 +783,23 @@ steht „Höchster Rang erreicht".
 
 ### Stufen
 
-| Stufe | Farbe | ab |
-|---|---|---|
-| Kupfer | `#C97D4A` | 0 XP |
-| Bronze | `#A9662F` | 200 XP |
-| Silber | `#A8A8B0` | 500 XP |
-| Gold | `#D4AF37` | 900 XP |
-| Platin | `#7FA8B3` | 1.800 XP |
-| Smaragd | `#2E9B6F` | 3.200 XP |
-| Diamant | `#9B7FD4` | 5.000 XP |
-| Champion | `#D6453F` | 7.500 XP |
+| Stufe | Farbe | ab | Zeichen |
+|---|---|---|---|
+| Kupfer | `#C97D4A` | 0 XP | Münze |
+| Bronze | `#A9662F` | 200 XP | Schild |
+| Silber | `#A8A8B0` | 500 XP | Stern |
+| Gold | `#D4AF37` | 900 XP | Barren |
+| Platin | `#7FA8B3` | 1.800 XP | Krone |
+| Smaragd | `#2E9B6F` | 3.200 XP | Geschliffener Stein |
+| Diamant | `#9B7FD4` | 5.000 XP | Raute |
+| Champion | `#D6453F` | 7.500 XP | Pokal |
+
+Jede Stufe trägt ihr eigenes Zeichen — vorher stand über allen achten
+dasselbe Schild, die Stufe war auf dem Chip also nur am Namen zu
+erkennen. Es sind Strichzeichnungen wie die übrigen Symbole der App:
+die Farbe kommt vom Umfeld, also von der Stufe. Der Pokal ist derselbe
+wie beim Turniersieger. Eine später ergänzte Stufe ohne hinterlegtes
+Zeichen trägt weiterhin das Schild.
 
 Gespeichert wird **nur die Gesamtzahl der Punkte**; die Stufe wird
 daraus abgeleitet und nirgends festgehalten. Eine spätere Änderung der
