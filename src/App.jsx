@@ -455,21 +455,56 @@ const DUELL_FENSTER = 5;
 /* Ab zwei bewerteten Titeln laesst sich in einer Kategorie spielen. */
 const MIN_DUELL_TEILNEHMER = 2;
 
+/* Wie viele der zuletzt gespielten Paarungen gesperrt bleiben. Nur die
+   unmittelbar vorige zu sperren genuegte nicht: in einer kleinen
+   Kategorie stand dieselbe Begegnung schon nach einem Zug wieder da.
+   Deutlich mehr zu sperren bringt nichts — bei wenigen Titeln gibt es
+   schlicht nicht genug verschiedene Paarungen, und dann greift ohnehin
+   der Ausweg unten. */
+const DUELL_VERLAUF = 3;
+
+/* So oft wird gezogen, bis eine freie Paarung dasteht. Mit nur einer
+   gesperrten Paarung genuegten zwoelf Versuche; seit drei gesperrt
+   sind, ist das Fenster enger und der Ausweg unten sprang bei vier
+   Titeln gelegentlich an (rund einer von zehntausend Zuegen). Mit dem
+   doppelten Vorrat an Versuchen faellt das unter jede spuerbare
+   Schwelle, ohne dass sich an der Ziehung selbst etwas aendert. */
+const DUELL_VERSUCHE = 24;
+
+/* Eine Paarung ist dieselbe, egal wer links steht. */
+function paarungsSchluessel(a, b) {
+  return String(a) < String(b) ? a + "|" + b : b + "|" + a;
+}
+
 /**
  * Zwei Titel fuer ein Duell ziehen: ein zufaelliger Anker aus der nach
  * Endnote sortierten Liste, der Gegner aus dem Fenster um ihn herum.
  * Welcher der beiden links steht, wird gelost — sonst saesse der Anker
  * immer auf derselben Seite.
  *
- * `zuletzt` ist die vorige Paarung (zwei IDs). Sie soll sich nicht
- * unmittelbar wiederholen; gibt es nur zwei Titel, bleibt es
- * zwangslaeufig beim einzigen moeglichen Paar.
+ * `verlauf` sind die zuletzt gezogenen Paarungen als Paare von IDs,
+ * die juengste zuletzt. Keine davon soll gleich wieder drankommen.
+ *
+ * Zwei Sperren, die nicht verhandelbar sind:
+ *  - Ein Titel tritt nie gegen sich selbst an. Die Indizes sind zwar
+ *    schon verschieden, aber zwei Plaetze der Liste koennten denselben
+ *    Eintrag fuehren — die IDs entscheiden.
+ *  - Findet sich im Fenster nichts Freies, ist der Ausweg immer noch
+ *    eine Paarung, die wenigstens nicht die unmittelbar vorige ist.
+ *    Bei genau zwei Titeln bleibt es zwangslaeufig beim einzigen
+ *    moeglichen Paar.
  */
-function ziehePaarung(liste, zuletzt, zufall = Math.random) {
+function ziehePaarung(liste, verlauf, zufall = Math.random) {
   if (!Array.isArray(liste) || liste.length < MIN_DUELL_TEILNEHMER) return null;
 
-  let paar = null;
-  for (let versuch = 0; versuch < 12; versuch++) {
+  const gesperrt = (Array.isArray(verlauf) ? verlauf : [])
+    .filter((eintrag) => Array.isArray(eintrag) && eintrag.length === 2)
+    .map((eintrag) => paarungsSchluessel(eintrag[0], eintrag[1]));
+  const vorige = gesperrt.length ? gesperrt[gesperrt.length - 1] : null;
+
+  let ersatz = null;
+  let zuletztGezogen = null;
+  for (let versuch = 0; versuch < DUELL_VERSUCHE; versuch++) {
     const ankerIndex = Math.floor(zufall() * liste.length);
     const von = Math.max(0, ankerIndex - DUELL_FENSTER);
     const bis = Math.min(liste.length - 1, ankerIndex + DUELL_FENSTER);
@@ -480,13 +515,16 @@ function ziehePaarung(liste, zuletzt, zufall = Math.random) {
 
     const gegnerIndex = kandidaten[Math.floor(zufall() * kandidaten.length)];
     const gezogen = [liste[ankerIndex], liste[gegnerIndex]];
-    paar = zufall() < 0.5 ? gezogen : [gezogen[1], gezogen[0]];
+    if (!gezogen[0] || !gezogen[1] || gezogen[0].id === gezogen[1].id) continue;
 
-    const wieZuletzt =
-      Array.isArray(zuletzt) && zuletzt.includes(paar[0].id) && zuletzt.includes(paar[1].id);
-    if (!wieZuletzt) return paar;
+    const paar = zufall() < 0.5 ? gezogen : [gezogen[1], gezogen[0]];
+    const schluessel = paarungsSchluessel(paar[0].id, paar[1].id);
+    zuletztGezogen = paar;
+
+    if (!gesperrt.includes(schluessel)) return paar;
+    if (!ersatz && schluessel !== vorige) ersatz = paar;
   }
-  return paar;
+  return ersatz || zuletztGezogen;
 }
 
 /* Ankerpunkte der Notenfarbe. Zwischen zwei Ankern wird pro Kanal
@@ -5499,9 +5537,22 @@ function DuellKarte({ eintrag, zustand, onClick }) {
 function duellTeilnehmer(ranked) {
   const result = {};
   for (const c of CATEGORIES) {
-    result[c.key] = (ranked[c.key] || []).filter(
-      (f) => typeof f.score === "number" && typeof entryPersonal(f) === "number"
-    );
+    /* Jeder Eintrag tritt hoechstens einmal an. Stuende derselbe
+       zweimal in der Liste, koennte er im Duell gegen sich selbst
+       antreten und im Turnierbaum zweimal auftauchen. Die Sperre sitzt
+       hier und nicht in den Spielen: so ziehen Head-to-Head und
+       Turnier aus demselben Feld, und die Zahl, die bei der Kategorie
+       steht ("N bewertet"), meint genau die Titel, die auch antreten
+       koennen. Eintraege ohne ID bleiben unangetastet — sie liessen
+       sich nicht auseinanderhalten. */
+    const gesehen = new Set();
+    result[c.key] = (ranked[c.key] || []).filter((f) => {
+      if (typeof f.score !== "number" || typeof entryPersonal(f) !== "number") return false;
+      if (!f.id) return true;
+      if (gesehen.has(f.id)) return false;
+      gesehen.add(f.id);
+      return true;
+    });
   }
   return result;
 }
@@ -5520,8 +5571,14 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      jedem Neuaufbau neu gesetzt werden soll. */
   const listeRef = useRef([]);
   listeRef.current = kategorie ? teilnehmer[kategorie] : [];
-  const paarRef = useRef(null);
-  paarRef.current = paar;
+  /* Die zuletzt gezogenen Paarungen, die juengste zuletzt. Sie halten
+     dieselbe Begegnung fuer ein paar Zuege draussen. */
+  const verlaufRef = useRef([]);
+
+  function merkePaarung(gezogen) {
+    if (!gezogen) return;
+    verlaufRef.current = [...verlaufRef.current, [gezogen[0].id, gezogen[1].id]].slice(-DUELL_VERLAUF);
+  }
 
   const speicherungRef = useRef(null);
   const wechseltRef = useRef(false);
@@ -5538,9 +5595,10 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
     const zeichnen = () => {
       wechseltRef.current = false;
       if (!lebtRef.current) return;
-      const vorher = paarRef.current;
       setGewaehlt(null);
-      setPaar(ziehePaarung(listeRef.current, vorher ? [vorher[0].id, vorher[1].id] : null));
+      const naechste = ziehePaarung(listeRef.current, verlaufRef.current);
+      merkePaarung(naechste);
+      setPaar(naechste);
     };
 
     const laufend = speicherungRef.current;
@@ -5560,7 +5618,12 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      Paar ziehen und die Rueckmeldung waere nie zu sehen. */
   useEffect(() => {
     setGewaehlt(null);
-    setPaar(kategorie ? ziehePaarung(listeRef.current, null) : null);
+    /* Neue Kategorie, neuer Verlauf — die gesperrten Paarungen der
+       vorigen Kategorie kommen hier ohnehin nicht vor. */
+    verlaufRef.current = [];
+    const erste = kategorie ? ziehePaarung(listeRef.current, null) : null;
+    merkePaarung(erste);
+    setPaar(erste);
   }, [kategorie]);
 
   /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt. */
