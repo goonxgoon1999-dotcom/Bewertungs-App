@@ -60,9 +60,11 @@ Vercel legt die Zugangsdaten danach automatisch als Umgebungsvariable an
 5. Zurück auf den Reiter **Deployments** → beim neuesten Deployment
    **Redeploy** klicken, damit die App die Datenbank sieht.
 
-Beim ersten Aufruf legt die App die Tabelle selbst an und füllt sie
-einmalig mit deinen 148 Filmen. Alle Kriterien werden dabei auf die
-bisherige Endnote gesetzt, sodass die Noten exakt erhalten bleiben.
+Beim ersten Aufruf legt die App die Tabellen selbst an. **Eine frische
+Datenbank bleibt dabei leer** — in allen Kategorien. Es werden keine
+Beispiel- oder Fremddaten eingetragen.
+
+Wie du eigene Bewertungen hineinbekommst, steht in Schritt 4.
 
 ---
 
@@ -74,6 +76,60 @@ Falls du in der Artefakt-Version Serien/Anime oder neue Filme angelegt hast:
 2. In der neuen App über „⇅ Daten" → **JSON-Datei importieren**.
 
 Der Import ergänzt nur und überschreibt nichts.
+
+---
+
+## Name der App
+
+Im Kopfbereich steht standardmäßig **„Rifat's Archiv"**. Der Name ist
+nicht fest verdrahtet — er kommt aus einer einzigen Umgebungsvariablen:
+
+```
+VITE_APP_NAME="Dein Archiv"
+```
+
+- **Lokal:** in eine Datei `.env` im Projektordner schreiben
+  (Vorlage: `.env.example`).
+- **Bei Vercel:** Settings → Environment Variables → `VITE_APP_NAME`
+  anlegen und anschließend einmal **Redeploy** klicken.
+
+Ist nichts gesetzt, bleibt „Rifat's Archiv" stehen.
+
+**Zwei Zeilen.** Der Titel wird zweizeilig gesetzt und dafür am letzten
+Leerzeichen umgebrochen — aus „Rifat's Archiv" werden also die Zeilen
+„Rifat's" und „Archiv". Wer den Umbruch selbst bestimmen will, setzt
+einen senkrechten Strich an die gewünschte Stelle:
+
+```
+VITE_APP_NAME="Archiv der|guten Filme"
+```
+
+Ein Name ohne Leerzeichen steht einzeilig.
+
+**Wichtig:** Die Variable wird **beim Bauen** eingesetzt, nicht zur
+Laufzeit. Nach einer Änderung muss neu gebaut bzw. neu deployt werden.
+
+### Was der Name *nicht* ändert
+
+Der Browser-Tab-Titel (`index.html`) und das PWA-Manifest
+(`public/manifest.webmanifest`) tragen den neutralen Text
+**„Dein Bewertungsbogen"** — dort stand der Name noch nie, und
+`VITE_APP_NAME` fasst beides bewusst nicht an.
+
+Beim Manifest geht es technisch auch gar nicht ohne Umbau: Es ist eine
+statische JSON-Datei, die Vite unverändert aus `public/` ausliefert.
+Sie kann keine Umgebungsvariable lesen. Damit der Name dort landet,
+müsste die Datei beim Bauen erzeugt werden (Vite-Plugin oder ein
+kleines Build-Skript) — machbar, aber ein eigener Umbau. Der
+Tab-Titel in `index.html` ließe sich dagegen leicht nachziehen; beide
+Punkte sind hier absichtlich offen gelassen, weil sie das heutige
+Verhalten ändern würden.
+
+Wer beides trotzdem umbenennen möchte, ändert die zwei Dateien direkt
+— es sind genau zwei Stellen:
+
+- `index.html` → `<title>`
+- `public/manifest.webmanifest` → `name` und `short_name`
 
 ---
 

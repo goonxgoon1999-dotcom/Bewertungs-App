@@ -1,5 +1,4 @@
 import { neon } from "@neondatabase/serverless";
-import { INITIAL_MOVIES_RAW } from "./seed-data.js";
 
 // Vercel/Neon setzen diese Variable automatisch, wenn du die
 // Neon-Integration im Vercel-Dashboard hinzufügst.
@@ -259,24 +258,23 @@ async function init() {
   await ensureHighscores();
   await ensureXp();
 
-  // Seeding nur, wenn die Tabelle wirklich leer ist — so gehen
-  // vorhandene Bewertungen niemals verloren.
-  const rows = await sql`SELECT COUNT(*)::int AS n FROM media_items`;
-  if (rows[0].n > 0) return;
+  /* Hier endet der Start. Eine frische Datenbank bleibt in allen
+     Kategorien leer.
 
-  for (let i = 0; i < INITIAL_MOVIES_RAW.length; i++) {
-    const [title, score] = INITIAL_MOVIES_RAW[i];
-    await sql`
-      INSERT INTO media_items
-        (id, category, title, poster, story, charaktere, unterhaltung, emotion,
-         inszenierung, schauspiel, sound, personal, created_at, updated_at)
-      VALUES
-        (${"legacy_movie_" + i}, 'movie', ${title}, '',
-         ${score}, ${score}, ${score}, ${score}, ${score}, ${score}, ${score}, ${score},
-         0, 0)
-      ON CONFLICT (id) DO NOTHING
-    `;
-  }
+     Frueher wurden an dieser Stelle einmalig rund 150 Filme aus der
+     Sammlung des urspruenglichen Autors eingetragen — sichtbar nur
+     bei einer wirklich leeren media_items, denn ein
+     `SELECT COUNT(*)` hat vorher abgebrochen. In einem Fork war das
+     ein Fehlstart: Filme fremder Herkunft, Serien/Anime/Spiele leer.
+
+     An einer befuellten Datenbank aendert das Entfernen nichts. Der
+     Block lief ausschliesslich bei COUNT(*) = 0; wo Zeilen stehen,
+     wurde er noch nie erreicht. Es wird nichts geloescht, nichts
+     ueberschrieben und keine Migration angefasst.
+
+     Wer eine leere Datenbank fuellen will, nimmt den Weg, den die App
+     ohnehin hat: Daten-Panel (Zahnrad oben rechts) ->
+     "JSON-Datei importieren". Der Import ergaenzt nur. */
 }
 
 /**
