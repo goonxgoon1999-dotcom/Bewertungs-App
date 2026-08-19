@@ -60,9 +60,11 @@ Vercel legt die Zugangsdaten danach automatisch als Umgebungsvariable an
 5. Zurück auf den Reiter **Deployments** → beim neuesten Deployment
    **Redeploy** klicken, damit die App die Datenbank sieht.
 
-Beim ersten Aufruf legt die App die Tabelle selbst an und füllt sie
-einmalig mit deinen 148 Filmen. Alle Kriterien werden dabei auf die
-bisherige Endnote gesetzt, sodass die Noten exakt erhalten bleiben.
+Beim ersten Aufruf legt die App die Tabellen selbst an. **Eine frische
+Datenbank bleibt dabei leer** — in allen Kategorien. Es werden keine
+Beispiel- oder Fremddaten eingetragen.
+
+Wie du eigene Bewertungen hineinbekommst, steht in Schritt 4.
 
 ---
 
