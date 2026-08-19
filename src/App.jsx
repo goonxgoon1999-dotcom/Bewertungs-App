@@ -1,6 +1,65 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 /* ============================================================
+   APP-NAME — die eine Stelle, an der der Name steht
+
+   Der Name im Kopfbereich kommt aus der Umgebungsvariablen
+   VITE_APP_NAME. Wer das Repo forkt, setzt sie einmal — lokal in
+   einer .env-Datei (Vorlage: .env.example), bei Vercel unter
+   Settings -> Environment Variables — und muss dafuer keine Zeile
+   Code durchsuchen. Ist nichts gesetzt, steht dort weiterhin
+   "Rifat's Archiv".
+
+   Zweizeilig bleibt der Titel: Der Name wird am letzten Leerzeichen
+   umgebrochen, aus "Rifat's Archiv" werden also unveraendert die
+   Zeilen "Rifat's" und "Archiv". Wer den Umbruch selbst setzen will,
+   schreibt ihn mit einem senkrechten Strich:
+   VITE_APP_NAME="Archiv der|guten Filme".
+
+   `import.meta.env` gibt es nur im Vite-Build. Die Tests laden diese
+   Datei direkt in Node, dort fehlt das Feld — daher der Zugriff mit
+   Fragezeichen und der Rueckfall auf den Standard.
+
+   Nicht betroffen sind der Browser-Tab-Titel (index.html) und das
+   PWA-Manifest (public/manifest.webmanifest): Dort stand der Name
+   noch nie, beide tragen den neutralen Text "Dein Bewertungsbogen".
+   Das Manifest ist eine statische Datei, die unveraendert
+   ausgeliefert wird — sie kann eine Umgebungsvariable nicht selbst
+   lesen. Siehe README.
+   ============================================================ */
+const APP_NAME_STANDARD = "Rifat's Archiv";
+
+const APP_NAME = (() => {
+  const gesetzt = import.meta.env?.VITE_APP_NAME;
+  const sauber = typeof gesetzt === "string" ? gesetzt.trim() : "";
+  return sauber || APP_NAME_STANDARD;
+})();
+
+/**
+ * Name -> hoechstens zwei Zeilen fuer den Kopfbereich.
+ *
+ * "Rifat's Archiv"          -> ["Rifat's", "Archiv"]
+ * "Archiv der|guten Filme"  -> ["Archiv der", "guten Filme"]
+ * "Archiv"                  -> ["Archiv"]
+ */
+function appNameZeilen(name) {
+  const text = (typeof name === "string" ? name : "").trim() || APP_NAME_STANDARD;
+
+  const strich = text.indexOf("|");
+  if (strich >= 0) {
+    const oben = text.slice(0, strich).trim();
+    const unten = text.slice(strich + 1).trim();
+    return [oben, unten].filter(Boolean);
+  }
+
+  const luecke = text.lastIndexOf(" ");
+  if (luecke <= 0) return [text];
+  return [text.slice(0, luecke).trim(), text.slice(luecke + 1).trim()];
+}
+
+const APP_NAME_ZEILEN = appNameZeilen(APP_NAME);
+
+/* ============================================================
    KRITERIEN-DEFINITION — je Kategorie eigene Kriterien
 
    Film, Serie und Anime teilen sich dieselben sieben Datenfelder
@@ -9484,8 +9543,9 @@ export default function App() {
         <div style={{ position: "relative", zIndex: 1, padding: "32px 20px 0" }}>
           <div style={{ maxWidth: 720, margin: "0 auto" }}>
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 34, margin: 0, lineHeight: 1.08 }}>
-              <span style={{ display: "block" }}>Rifat's</span>
-              <span style={{ display: "block" }}>Archiv</span>
+              {APP_NAME_ZEILEN.map((zeile, i) => (
+                <span key={i} style={{ display: "block" }}>{zeile}</span>
+              ))}
             </h1>
             {/* Der eigene Rang — er gehoert zum Nutzer, nicht zu einer
                 Kategorie, und steht deshalb direkt unter dem Titel.
