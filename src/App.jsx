@@ -4312,16 +4312,32 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
    ueberdeckt. Bei Spielen und ohne Angaben faellt sie ganz weg —
    dann bleibt die Zeile so hoch wie bisher.
    ------------------------------------------------------------ */
-function AngabenZeile({ eintrag }) {
+/* `mitImdb` haengt ab 1024px die IMDb-Note hinten an — bis dahin stand
+   sie in der Liste gar nicht, sondern nur in der Detailansicht. Auf dem
+   Handy fehlt dafuer schlicht der Platz: Jahr und Regie fuellen die
+   Zeile dort bereits bis zum Abschneiden.
+
+   Sichtbar wird sie ueber .nur-desktop-* und damit rein ueber CSS —
+   unterhalb der Schwelle steht sie auf display: none und nimmt keinen
+   Punkt ein. Die Rangliste in der Statistik setzt das Kennzeichen
+   nicht und bleibt dadurch in jeder Breite unveraendert. */
+function AngabenZeile({ eintrag, mitImdb }) {
   if (!unterstuetztAngaben(eintrag.category)) return null;
 
   const teile = [];
   if (typeof eintrag.releaseYear === "number") teile.push(String(eintrag.releaseYear));
   if (eintrag.director) teile.push(eintrag.director);
-  if (!teile.length) return null;
+  const imdb = mitImdb && typeof eintrag.imdbRating === "number" ? eintrag.imdbRating : null;
+  if (!teile.length && imdb === null) return null;
+
+  /* Nur die IMDb-Note und sonst nichts: Dann darf auch die Zeile selbst
+     erst ab der Schwelle erscheinen — eine leere Zeile haette am Handy
+     zwei Bildpunkte Hoehe eingenommen, die es vorher nicht gab. */
+  const nurImdb = !teile.length;
 
   return (
     <div
+      className={nurImdb ? "nur-desktop-block" : undefined}
       style={{
         fontFamily: "'JetBrains Mono', monospace",
         fontSize: 11,
@@ -4333,6 +4349,11 @@ function AngabenZeile({ eintrag }) {
       }}
     >
       {teile.join(" · ")}
+      {imdb !== null && (
+        <span className="nur-desktop-inline">
+          {nurImdb ? "" : " · "}IMDb {imdb.toFixed(1)}
+        </span>
+      )}
     </div>
   );
 }
@@ -9538,6 +9559,15 @@ export default function App() {
           .podest2-streifen { opacity: 0; }
         }
 
+        /* Ab 1024px sichtbar, darunter gar nicht vorhanden. Beide
+           Klassen tragen ausschliesslich neu hinzugekommene Elemente —
+           fuer alles Bestehende aendert sich dadurch nichts. */
+        .nur-desktop-inline, .nur-desktop-block { display: none; }
+        @media (min-width: 1024px) {
+          .nur-desktop-inline { display: inline; }
+          .nur-desktop-block { display: block; }
+        }
+
         /* ==========================================================
            DESKTOP — ab 1024px
 
@@ -10281,7 +10311,7 @@ export default function App() {
                           <span style={{ fontSize: 15, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.title}</span>
                           {neueStaffelIds.has(f.id) && <NeueStaffelBadge />}
                         </div>
-                        <AngabenZeile eintrag={f} />
+                        <AngabenZeile eintrag={f} mitImdb />
                       </div>
                     </div>
                     <ScoreBadge score={f.score} />
