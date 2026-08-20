@@ -1404,6 +1404,39 @@ function usePrefersReducedMotion() {
 }
 
 /* ------------------------------------------------------------
+   Ab welcher Breite gilt die Desktop-Ansicht?
+
+   Derselbe Wert wie im <style>-Block (DESKTOP_AB). Alles, was sich
+   auf dem Desktop anders anordnet, laesst sich in CSS erledigen —
+   bis auf eine Ausnahme: die Filter-Seitenleiste. Sie ist nicht
+   dasselbe Element wie das Blatt von unten, sondern eine zweite
+   Darstellung derselben Komponente, und welche davon im Baum steht,
+   kann eine Media Query nicht entscheiden.
+
+   Unterhalb der Schwelle meldet der Haken durchgaengig false — dort
+   bleibt der Baum also Zeichen fuer Zeichen der bisherige.
+   ------------------------------------------------------------ */
+const DESKTOP_AB = "(min-width: 1024px)";
+
+function useDesktop() {
+  /* Der Startwert wird schon beim ersten Rendern gelesen, nicht erst
+     im Effekt: sonst zeigte der Desktop fuer einen Bildaufbau das
+     Blatt-Layout und ordnete danach sichtbar um. */
+  const [desktop, setDesktop] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(DESKTOP_AB).matches
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(DESKTOP_AB);
+    const update = () => setDesktop(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return desktop;
+}
+
+/* ------------------------------------------------------------
    Poster-Hintergrund hinter Titel und Tab-Leiste.
 
    Zwei Ebenen: die scheidende gleitet nach links hinaus, die neue
@@ -2025,6 +2058,7 @@ function IconButton({ title, label, active, onClick }) {
       onClick={onClick}
       title={title}
       aria-label={title}
+      className="icon-knopf"
       style={{
         flex: "0 0 auto",
         width: 46,
@@ -2057,6 +2091,7 @@ function KopfIconButton({ title, active, onClick, children }) {
       title={title}
       aria-label={title}
       aria-pressed={active}
+      className="kopf-icon"
       style={{
         pointerEvents: "auto",
         flex: "0 0 auto",
@@ -2441,6 +2476,7 @@ function FilterChip({ label, active, onClick }) {
     <button
       onClick={onClick}
       aria-pressed={active}
+      className="filter-eintrag"
       style={{
         padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
         background: active ? "var(--accent, #C9A227)" : "transparent",
@@ -2482,7 +2518,10 @@ function FilterAuswahl({ label, wert, optionen, alleLabel, onChange }) {
   );
 }
 
-function FilterSheet({ initial, totalCount, allInCategory, category, onApply, onClose }) {
+/* `alsSeitenleiste` waehlt allein die Huelle: dieselben Zustaende,
+   dieselben Bedienelemente, dieselbe Filterlogik — einmal im Blatt von
+   unten (Handy, unveraendert), einmal als feste Spalte (ab 1024px). */
+function FilterSheet({ initial, totalCount, allInCategory, category, onApply, onClose, alsSeitenleiste }) {
   const [sort, setSort] = useState(initial.sort);
   const [min, setMin] = useState(initial.min);
   const [max, setMax] = useState(initial.max);
@@ -2542,12 +2581,11 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
     onApply({ ...DEFAULT_FILTER, sort });
   }
 
-  return (
-    <BottomSheet title="Filter" onClose={onClose}>
-      {/* Als Funktion, damit auch "Anwenden" und "Zuruecksetzen" die
-          Aus-Bewegung des Blattes spielen statt einfach zu
-          verschwinden. */}
-      {(schliessen) => (
+  /* Der Inhalt haengt nicht am Blatt — dieselbe Funktion fuellt auch
+     die Seitenleiste. Als Funktion, damit auch "Anwenden" und
+     "Zuruecksetzen" die Aus-Bewegung des Blattes spielen statt einfach
+     zu verschwinden. */
+  const inhalt = (schliessen) => (
       <>
       {/* Die Sortierung steht vor den Filtern — sie bestimmt die
           Reihenfolge der Liste, die die Filter danach kuerzen. */}
@@ -2558,6 +2596,7 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
             key={o.key}
             onClick={() => setSort(o.key)}
             aria-pressed={sort === o.key}
+            className="filter-eintrag"
             style={{
               textAlign: "left", padding: "13px 14px", borderRadius: 8, fontSize: 14, cursor: "pointer",
               background: sort === o.key ? "var(--accent, #C9A227)" : "#141416",
@@ -2701,7 +2740,23 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
         </button>
       </div>
       </>
-      )}
+  );
+
+  /* Feste Spalte: kein Blatt, keine Abdunkelung, kein Ziehgriff — und
+     nichts zu schliessen. `schliessen` fuehrt den uebergebenen Aufruf
+     deshalb einfach aus, "Anwenden" und "Zuruecksetzen" wirken damit
+     genau wie im Blatt. */
+  if (alsSeitenleiste) {
+    return (
+      <div className="filter-seitenleiste">
+        {inhalt((fn) => { if (fn) fn(); })}
+      </div>
+    );
+  }
+
+  return (
+    <BottomSheet title="Filter" onClose={onClose}>
+      {inhalt}
     </BottomSheet>
   );
 }
@@ -7666,6 +7721,10 @@ export default function App() {
   const [importPreview, setImportPreview] = useState(null);
   const [importError, setImportError] = useState("");
   const [filterState, setFilterState] = useState({ ...DEFAULT_FILTER });
+  /* Ab 1024px stehen Filter und Sortieren als feste Spalte neben der
+     Liste statt im Blatt von unten. Unterhalb bleibt der Wert false und
+     damit alles wie bisher. */
+  const istDesktop = useDesktop();
   const fileInputRef = useRef(null);
 
   /* Die Tab-Leiste ist seitlich wischbar und breiter als das Display.
@@ -9478,6 +9537,135 @@ export default function App() {
           .podest1-glanz { opacity: 0.30; }
           .podest2-streifen { opacity: 0; }
         }
+
+        /* ==========================================================
+           DESKTOP — ab 1024px
+
+           Alles unterhalb dieser Schwelle bleibt unberuehrt: Es gibt
+           in diesem Abschnitt keine Regel ausserhalb der Media Query,
+           und keine der benutzten Klassen traegt sonst irgendwo eine
+           Eigenschaft. Die Handy-Ansicht kennt die Klassen also, hat
+           aber nichts von ihnen.
+
+           Warum an vielen Stellen !important: Die App gibt ihr Layout
+           ueberwiegend als style-Attribut mit. Ein style-Attribut
+           schlaegt jede Regel aus dem Stylesheet — ausser einer mit
+           !important. Der bestehende Inline-Wert bleibt dadurch
+           unangetastet und gilt weiterhin unterhalb der Schwelle; er
+           wird nur oberhalb ueberstimmt.
+           ========================================================== */
+        @media (min-width: 1024px) {
+          /* --- 1. Inhalts-Container ---------------------------------
+             Der Seitenhintergrund liegt am aeussersten <div> und
+             bleibt davon unberuehrt — er faerbt weiterhin das ganze
+             Fenster. Zentriert wird nur, was Inhalt traegt. */
+          .inhalt-breite { max-width: 1200px !important; }
+
+          /* --- 2. Kopfbereich ---------------------------------------
+             Ohne 16:9 waere der Kopf auf 1920px ueber 1000px hoch.
+             min-height statt height mit Deckel: Der Kopf traegt Titel,
+             Rang, Zaehler und die Tab-Leiste — waere die Hoehe fest
+             und der Inhalt einmal hoeher, schnitte ihn das
+             overflow: hidden des Kopfbereichs ab. So ist 360px der
+             Boden, nicht die Decke, und nichts kann verschwinden.
+
+             Das Bild dahinter fuellt den Ausschnitt unveraendert mit
+             object-fit: cover (siehe HeaderSlideshow) — es wird
+             beschnitten, nicht verzerrt. Titel und Symbolreihe sitzen
+             relativ zum Kopfbereich und wandern einfach mit; an
+             Deckkraft und Wechselintervall aendert sich nichts.
+
+             box-sizing: border-box, weil die Polsterung oben sonst auf
+             die 360px draufkaeme — der Kopf waere dann 388px hoch und
+             damit ueber dem angepeilten Bereich. Am Handy bleibt es
+             beim bisherigen content-box: dort gilt diese Regel nicht. */
+          .kopfbereich {
+            aspect-ratio: auto;
+            box-sizing: border-box;
+            min-height: 360px;
+          }
+          /* Hebt die Ersatzregel aus dem @supports-Block oben auf —
+             sie rechnet ebenfalls mit 56.25vw und stuende hier sonst
+             mit 1080px dagegen. */
+          @supports not (aspect-ratio: 16 / 9) {
+            .kopfbereich { min-height: 360px; }
+          }
+
+          /* --- 3. Tab-Leiste ----------------------------------------
+             Sechs Kategorien haben auf 1200px reichlich Platz. Kein
+             Wischen mehr, stattdessen teilen sich die Tabs die Breite
+             zu gleichen Teilen. Farben, Form und der aktive Zustand
+             stehen als Inline-Stil an den Knoepfen und bleiben, wie
+             sie sind — hier aendert sich allein die Breite. */
+          .tab-leiste {
+            overflow-x: visible;
+            scroll-snap-type: none;
+            padding-right: 0;
+          }
+          .tab-btn {
+            flex: 1 1 0;
+            min-width: 0;
+          }
+
+          /* --- 4. Filter und Sortieren als Seitenleiste -------------
+             Zwei Spalten: links die Filter, rechts die Liste. Welche
+             Darstellung im Baum steht, entscheidet useDesktop — hier
+             steht nur ihre Anordnung. */
+          .listen-spalten {
+            display: grid;
+            grid-template-columns: 240px minmax(0, 1fr);
+            gap: 28px;
+            align-items: start;
+          }
+          /* Die Leiste laeuft mit, wenn die Liste lang wird. */
+          .filter-spalte {
+            position: sticky;
+            top: 20px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+          }
+
+          /* --- 5. Ranglisten-Zeilen ---------------------------------
+             Einspaltig wie bisher — nur mehr Luft nach oben und
+             unten. Die Zeile selbst wird durch den breiteren Container
+             breiter, dazu braucht es keine Regel. */
+          .listen-eintrag { padding: 16px 10px !important; }
+
+          /* --- 6. Verlauf der Plaetze 1-10 --------------------------
+             Am Handy holt der Inline-Wert calc(-50vw + 50%) den
+             Verlauf bis an den linken Fensterrand. Ab hier steht links
+             die Filterleiste: derselbe Wert liefe unter ihr hindurch
+             und begaenne im leeren Bereich daneben. Der Verlauf endet
+             deshalb an der linken Kante der Listenspalte — dort, wo
+             der Inhalt anfaengt.
+
+             Farbe, Kurve und Abstufung stecken im background der
+             Zeile (rangVerlauf) und werden hier nicht angefasst. */
+          .zeilen-schmuck { left: 0 !important; }
+        }
+
+        /* --- 7. Hover ----------------------------------------------
+           Nur fuer Geraete mit echtem Zeiger. Touch-Geraete melden
+           hover: none und bekommen davon nichts zu sehen — dort bliebe
+           ein Hover-Zustand sonst nach dem Tippen kleben.
+
+           Ausschliesslich Farben, die die App schon fuehrt: #1D1D21
+           (Flaeche der Eingabefelder), #9A968C (gedaempfte Schrift),
+           #EDEAE3 (Textfarbe) und die Akzentfarbe der Kategorie. Kein
+           einziger neuer Farbwert. */
+        @media (min-width: 1024px) and (hover: hover) {
+          .listen-eintrag { transition: background var(--bewegung-tippen); }
+          .listen-eintrag:hover { background: #1D1D21; }
+
+          /* Nur die nicht gewaehlten Tabs reagieren — der aktive traegt
+             bereits die Akzentfarbe und soll darunter nicht flackern. */
+          .tab-btn:not([data-aktiv="ja"]):hover { color: #EDEAE3; }
+          .unter-reiter:not([aria-pressed="true"]):hover { border-color: #9A968C; }
+
+          .filter-eintrag:not([aria-pressed="true"]):hover { border-color: #9A968C; }
+          .kopf-icon:hover, .icon-knopf:hover { border-color: var(--accent, #C9A227); }
+        }
       `}</style>
 
       {/* Header — mit laufendem Poster-Hintergrund */}
@@ -9506,7 +9694,7 @@ export default function App() {
             padding: "12px 20px 0", pointerEvents: "none",
           }}
         >
-          <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <div className="inhalt-breite" style={{ maxWidth: 720, margin: "0 auto", display: "flex", justifyContent: "flex-end", gap: 8 }}>
             {/* Minispiele und Statistik liegen neben den Kategorien,
                 nicht daneben in einer Reihe — hier gibt es also keine
                 Wechselrichtung, sie wird zurueckgesetzt. */}
@@ -9541,7 +9729,7 @@ export default function App() {
         </div>
 
         <div style={{ position: "relative", zIndex: 1, padding: "32px 20px 0" }}>
-          <div style={{ maxWidth: 720, margin: "0 auto" }}>
+          <div className="inhalt-breite" style={{ maxWidth: 720, margin: "0 auto" }}>
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 34, margin: 0, lineHeight: 1.08 }}>
               {APP_NAME_ZEILEN.map((zeile, i) => (
                 <span key={i} style={{ display: "block" }}>{zeile}</span>
@@ -9594,6 +9782,7 @@ export default function App() {
               <button
                 key={c.key}
                 data-tab={c.key}
+                data-aktiv={activeTab === c.key ? "ja" : "nein"}
                 onClick={() => {
                   /* Richtung aus der Position in der Leiste: weiter
                      rechts heisst, der Inhalt kommt von rechts. */
@@ -9806,6 +9995,7 @@ export default function App() {
           onTouchStart={wischAnfang}
           onTouchEnd={wischEnde}
           onTouchCancel={() => { wischStart.current = null; }}
+          className="inhalt-breite"
           style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px" }}
         >
           {/* Der Tabwechsel blendet den neuen Kategorie-Inhalt ein.
@@ -9987,14 +10177,12 @@ export default function App() {
             </Uebergang>
           )}
 
-          {mode === "list" && unterReiter === "bewertet" && (
-            <Uebergang trigger={unterReiter}>
-            <>
-              {/* Suchzeile: Feld schrumpft mit (minWidth 0), der Knopf
-                  bleibt als Symbol in fester Breite — so passt die Zeile
-                  auch auf schmale Displays ohne Querscrollen. Sortieren
-                  steckt im selben Menue wie die Filter. */}
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          {mode === "list" && unterReiter === "bewertet" && (() => {
+            /* Suchfeld, Zaehler und Liste stehen als Bausteine bereit:
+               am Handy in genau der bisherigen Reihenfolge untereinander,
+               ab 1024px verteilt auf zwei Spalten. Der Inhalt der
+               Bausteine ist in beiden Faellen derselbe. */
+            const suchfeld = (
                 <input
                   type="text"
                   placeholder={`${catInfo.label} durchsuchen...`}
@@ -10002,6 +10190,15 @@ export default function App() {
                   onChange={(e) => setSearch(e.target.value)}
                   style={{ flex: "1 1 auto", minWidth: 0, background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 8, padding: "13px 12px", color: "#EDEAE3", fontSize: 15, boxSizing: "border-box" }}
                 />
+            );
+
+            /* Suchzeile: Feld schrumpft mit (minWidth 0), der Knopf
+               bleibt als Symbol in fester Breite — so passt die Zeile
+               auch auf schmale Displays ohne Querscrollen. Sortieren
+               steckt im selben Menue wie die Filter. */
+            const suchzeile = (
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                {suchfeld}
                 <IconButton
                   title="Filter & Sortieren"
                   label={<IconFilter />}
@@ -10009,7 +10206,9 @@ export default function App() {
                   onClick={() => setShowFilter(true)}
                 />
               </div>
+            );
 
+            const zaehler = (
               <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
                 {!loaded && !zeigtCache ? (
                   <SkelettFlaeche breite={120} hoehe={11} rund={3} style={{ margin: "3px 0" }} />
@@ -10017,10 +10216,12 @@ export default function App() {
                   `${filtered.length} von ${anzeigeListe.length} ${catInfo.label}`
                 )}
               </div>
+            );
 
-              {/* Liste — die vorderen Plaetze tragen ihre Auszeichnung:
-                  Platz 1-3 das Podest, Platz 4-10 den Verlauf. Siehe
-                  zeilenSchmuck. */}
+            /* Liste — die vorderen Plaetze tragen ihre Auszeichnung:
+               Platz 1-3 das Podest, Platz 4-10 den Verlauf. Siehe
+               zeilenSchmuck. */
+            const liste = (
               <div>
                 {/* Noch keine Daten: acht Platzhalterzeilen in der Hoehe
                     echter Zeilen. Die echten Daten ersetzen sie ohne
@@ -10047,7 +10248,7 @@ export default function App() {
                     {(rang.verlauf || rang.klasse) && (
                       <div
                         aria-hidden="true"
-                        className={rang.klasse}
+                        className={"zeilen-schmuck" + (rang.klasse ? " " + rang.klasse : "")}
                         style={{
                           position: "absolute", top: 0, bottom: 0, right: 0,
                           left: "calc(-50vw + 50%)",
@@ -10097,9 +10298,54 @@ export default function App() {
                   </div>
                 )}
               </div>
-            </>
-            </Uebergang>
-          )}
+            );
+
+            /* Ab 1024px: Filter und Sortieren stehen links als feste
+               Spalte, dauerhaft sichtbar. Das Blatt von unten entfaellt
+               hier — mit der Maus gibt es nichts zu wischen. Angewendet
+               wird wie bisher ueber "Anwenden"; die Filterlogik selbst
+               ist dieselbe, es ist nur eine zweite Huelle um dieselbe
+               Komponente (siehe FilterSheet).
+
+               Das Suchfeld wandert mit in die Spalte, der Symbolknopf
+               daneben entfaellt: Er oeffnet das Blatt, und das steht
+               hier bereits offen. */
+            if (istDesktop) {
+              return (
+                <Uebergang trigger={unterReiter}>
+                <div className="listen-spalten">
+                  <aside className="filter-spalte">
+                    <div style={{ marginBottom: 12 }}>{suchfeld}</div>
+                    <FilterSheet
+                      alsSeitenleiste
+                      initial={filterState}
+                      totalCount={anzeigeListe.length}
+                      allInCategory={anzeigeListe}
+                      category={category}
+                      onApply={(f) => setFilterState(f)}
+                    />
+                  </aside>
+                  <div>
+                    {zaehler}
+                    {liste}
+                  </div>
+                </div>
+                </Uebergang>
+              );
+            }
+
+            /* Unterhalb der Schwelle: dieselbe Abfolge wie bisher —
+               Suchzeile, Zaehler, Liste, ohne zusaetzliche Huelle. */
+            return (
+              <Uebergang trigger={unterReiter}>
+              <>
+                {suchzeile}
+                {zaehler}
+                {liste}
+              </>
+              </Uebergang>
+            );
+          })()}
           </Uebergang>
         </div>
       )}
@@ -10118,7 +10364,7 @@ export default function App() {
         />
       )}
 
-      {showFilter && (
+      {showFilter && !istDesktop && (
         <FilterSheet
           initial={filterState}
           totalCount={anzeigeListe.length}
