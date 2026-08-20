@@ -1416,7 +1416,7 @@ function usePrefersReducedMotion() {
    Unterhalb der Schwelle meldet der Haken durchgaengig false — dort
    bleibt der Baum also Zeichen fuer Zeichen der bisherige.
    ------------------------------------------------------------ */
-const DESKTOP_AB = "(min-width: 1024px)";
+const DESKTOP_AB = "(min-width: 960px)";
 
 function useDesktop() {
   /* Der Startwert wird schon beim ersten Rendern gelesen, nicht erst
@@ -2520,7 +2520,7 @@ function FilterAuswahl({ label, wert, optionen, alleLabel, onChange }) {
 
 /* `alsSeitenleiste` waehlt allein die Huelle: dieselben Zustaende,
    dieselben Bedienelemente, dieselbe Filterlogik — einmal im Blatt von
-   unten (Handy, unveraendert), einmal als feste Spalte (ab 1024px). */
+   unten (Handy, unveraendert), einmal als feste Spalte (ab 960px). */
 function FilterSheet({ initial, totalCount, allInCategory, category, onApply, onClose, alsSeitenleiste }) {
   const [sort, setSort] = useState(initial.sort);
   const [min, setMin] = useState(initial.min);
@@ -4312,7 +4312,7 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
    ueberdeckt. Bei Spielen und ohne Angaben faellt sie ganz weg —
    dann bleibt die Zeile so hoch wie bisher.
    ------------------------------------------------------------ */
-/* `mitImdb` haengt ab 1024px die IMDb-Note hinten an — bis dahin stand
+/* `mitImdb` haengt ab 960px die IMDb-Note hinten an — bis dahin stand
    sie in der Liste gar nicht, sondern nur in der Detailansicht. Auf dem
    Handy fehlt dafuer schlicht der Platz: Jahr und Regie fuellen die
    Zeile dort bereits bis zum Abschneiden.
@@ -7742,7 +7742,7 @@ export default function App() {
   const [importPreview, setImportPreview] = useState(null);
   const [importError, setImportError] = useState("");
   const [filterState, setFilterState] = useState({ ...DEFAULT_FILTER });
-  /* Ab 1024px stehen Filter und Sortieren als feste Spalte neben der
+  /* Ab 960px stehen Filter und Sortieren als feste Spalte neben der
      Liste statt im Blatt von unten. Unterhalb bleibt der Wert false und
      damit alles wie bisher. */
   const istDesktop = useDesktop();
@@ -9559,17 +9559,17 @@ export default function App() {
           .podest2-streifen { opacity: 0; }
         }
 
-        /* Ab 1024px sichtbar, darunter gar nicht vorhanden. Beide
+        /* Ab 960px sichtbar, darunter gar nicht vorhanden. Beide
            Klassen tragen ausschliesslich neu hinzugekommene Elemente —
            fuer alles Bestehende aendert sich dadurch nichts. */
         .nur-desktop-inline, .nur-desktop-block { display: none; }
-        @media (min-width: 1024px) {
+        @media (min-width: 960px) {
           .nur-desktop-inline { display: inline; }
           .nur-desktop-block { display: block; }
         }
 
         /* ==========================================================
-           DESKTOP — ab 1024px
+           DESKTOP — ab 960px
 
            Alles unterhalb dieser Schwelle bleibt unberuehrt: Es gibt
            in diesem Abschnitt keine Regel ausserhalb der Media Query,
@@ -9584,7 +9584,7 @@ export default function App() {
            unangetastet und gilt weiterhin unterhalb der Schwelle; er
            wird nur oberhalb ueberstimmt.
            ========================================================== */
-        @media (min-width: 1024px) {
+        @media (min-width: 960px) {
           /* --- 1. Inhalts-Container ---------------------------------
              Der Seitenhintergrund liegt am aeussersten <div> und
              bleibt davon unberuehrt — er faerbt weiterhin das ganze
@@ -9656,6 +9656,19 @@ export default function App() {
             scrollbar-width: thin;
           }
 
+          /* --- "+ Neu hinzufuegen" ---------------------------------
+             Ueber die vollen 1200px gezogen wirkte der Knopf wie ein
+             Balken. Er bekommt deshalb einen Deckel — 240px, dieselbe
+             Breite wie die Filterspalte direkt darunter, sodass beide
+             an derselben Kante enden.
+
+             Nur max-width: Die Inline-Breite width: 100% bleibt stehen
+             und gilt unterhalb der Schwelle unveraendert weiter; ein
+             !important braucht es nicht, weil max-width ohnehin
+             vorgeht. Farbe, Hoehe, Rundung und Schrift stehen alle im
+             style-Attribut und sind nicht angefasst. */
+          .neu-knopf { max-width: 240px; }
+
           /* --- 5. Ranglisten-Zeilen ---------------------------------
              Einspaltig wie bisher — nur mehr Luft nach oben und
              unten. Die Zeile selbst wird durch den breiteren Container
@@ -9684,7 +9697,7 @@ export default function App() {
            (Flaeche der Eingabefelder), #9A968C (gedaempfte Schrift),
            #EDEAE3 (Textfarbe) und die Akzentfarbe der Kategorie. Kein
            einziger neuer Farbwert. */
-        @media (min-width: 1024px) and (hover: hover) {
+        @media (min-width: 960px) and (hover: hover) {
           .listen-eintrag { transition: background var(--bewegung-tippen); }
           .listen-eintrag:hover { background: #1D1D21; }
 
@@ -10210,7 +10223,7 @@ export default function App() {
           {mode === "list" && unterReiter === "bewertet" && (() => {
             /* Suchfeld, Zaehler und Liste stehen als Bausteine bereit:
                am Handy in genau der bisherigen Reihenfolge untereinander,
-               ab 1024px verteilt auf zwei Spalten. Der Inhalt der
+               ab 960px verteilt auf zwei Spalten. Der Inhalt der
                Bausteine ist in beiden Faellen derselbe. */
             const suchfeld = (
                 <input
@@ -10330,7 +10343,7 @@ export default function App() {
               </div>
             );
 
-            /* Ab 1024px: Filter und Sortieren stehen links als feste
+            /* Ab 960px: Filter und Sortieren stehen links als feste
                Spalte, dauerhaft sichtbar. Das Blatt von unten entfaellt
                hier — mit der Maus gibt es nichts zu wischen. Angewendet
                wird wie bisher ueber "Anwenden"; die Filterlogik selbst
