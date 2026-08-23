@@ -1376,6 +1376,12 @@ const BACKDROP_INTERVAL = 8000;
 const BEWEGUNG_REIN_MS = 200;
 const BEWEGUNG_RAUS_MS = 160;
 
+/* Dieselbe Dauer wie --bewegung-blende, hier noch einmal als Zahl:
+   Falls kein animationend eintrifft, raeumt ein Zeitgeber die alte
+   Bildebene nach diesem Abstand ab. Bei Aenderung beides gemeinsam
+   anpassen. */
+const BLENDE_MS = 600;
+
 /**
  * Zieht zufaellig eines der Bilder — nur nie das, das gerade zu sehen
  * ist. Gezogen wird aus den (anzahl - 1) uebrigen und der Index danach
@@ -1493,6 +1499,19 @@ function HeaderSlideshow({ urls }) {
     return () => { abgebrochen = true; clearInterval(timer); };
   }, [mehrere, reducedMotion, brauchbar.length, index]);
 
+  /* Ist die Ueberblendung durch, wird die alte Ebene aus dem Baum
+     genommen — sonst laege sie unter der neuen weiter und schiene
+     dauerhaft durch. Ueblich meldet das die Animation selbst; der
+     Zeitgeber faengt die Faelle ab, in denen kein animationend kommt
+     (etwa weil der Browser die Animation gar nicht erst startet). */
+  const blendeFertig = () => setPrevIndex(null);
+
+  useEffect(() => {
+    if (prevIndex === null) return undefined;
+    const timer = setTimeout(() => setPrevIndex(null), BLENDE_MS + 150);
+    return () => clearTimeout(timer);
+  }, [prevIndex, tick]);
+
   if (!brauchbar.length) return null;
 
   const aktuell = brauchbar[index % brauchbar.length];
@@ -1505,39 +1524,51 @@ function HeaderSlideshow({ urls }) {
     height: "100%",
     objectFit: "cover",
     objectPosition: "center",
-    opacity: 0.9,
   };
+
+  /* Die 90 % liegen auf dieser Huelle, nicht auf den Bildern: die
+     beiden Ebenen blenden darin von 0 auf 1, decken sich also
+     vollstaendig ab, und erst das Ergebnis wird gemeinsam
+     abgeschwaecht. Die Abdunkelung darunter ist Geschwister der
+     Huelle und bleibt dadurch unveraendert. */
+  const huelle = { position: "absolute", inset: 0, opacity: 0.9 };
 
   const kaputtMerken = (url) =>
     setKaputt((alt) => (alt.has(url) ? alt : new Set([...alt, url])));
 
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden" }} aria-hidden="true">
-      {/* Das scheidende Bild bleibt liegen; das neue blendet darueber
-          auf. Damit gibt es keinen Moment, in dem der Kopfbereich leer
-          waere. */}
-      {vorher && vorher !== aktuell && !reducedMotion && (
+      <div style={huelle}>
+        {/* Das scheidende Bild bleibt waehrend der Ueberblendung liegen
+            — es gibt also keinen Moment, in dem der Kopfbereich leer
+            waere. Danach faellt es heraus, damit es nicht als Schatten
+            unter dem neuen Bild stehen bleibt. */}
+        {vorher && vorher !== aktuell && !reducedMotion && (
+          <img
+            key={"weg" + tick}
+            src={vorher}
+            alt=""
+            className="backdrop-layer"
+            style={bild}
+            onError={() => kaputtMerken(vorher)}
+          />
+        )}
         <img
-          key={"weg" + tick}
-          src={vorher}
+          key={"da" + tick}
+          src={aktuell}
           alt=""
-          className="backdrop-layer"
+          /* Das erste Bild holt der Browser vorrangig — bisher erschien
+             es rund eine Sekunde nach dem Rest. Gemessen wird am Takt,
+             nicht an prevIndex: der steht nach jeder Ueberblendung
+             wieder auf null. */
+          fetchPriority={tick === 0 ? "high" : undefined}
+          decoding="async"
+          className={"backdrop-layer" + (reducedMotion || prevIndex === null ? "" : " backdrop-blende")}
           style={bild}
-          onError={() => kaputtMerken(vorher)}
+          onError={() => kaputtMerken(aktuell)}
+          onAnimationEnd={blendeFertig}
         />
-      )}
-      <img
-        key={"da" + tick}
-        src={aktuell}
-        alt=""
-        /* Das erste Bild holt der Browser vorrangig — bisher erschien
-           es rund eine Sekunde nach dem Rest. */
-        fetchPriority={prevIndex === null ? "high" : undefined}
-        decoding="async"
-        className={"backdrop-layer" + (reducedMotion || prevIndex === null ? "" : " backdrop-blende")}
-        style={bild}
-        onError={() => kaputtMerken(aktuell)}
-      />
+      </div>
       {/* Abdunkelung: oben genug Kontrast fuer den Titel, unten weicher
           Uebergang in die Seitenfarbe. */}
       <div
@@ -9226,9 +9257,11 @@ export default function App() {
         input[type=range]::-moz-range-thumb { width: 24px; height: 24px; border-radius: 50%; background: var(--accent, #C9A227); border: 3px solid #17171A; }
 
         /* Bildwechsel im Kopfbereich: das neue Bild blendet ueber dem
-           liegengebliebenen alten auf. Der Zielwert 0.9 ist die
-           Deckkraft, mit der die Ebene ohnehin liegt. */
-        @keyframes backdropBlende { from { opacity: 0; } to { opacity: 0.9; } }
+           alten auf — bis 1, damit es das alte vollstaendig abdeckt.
+           Die 90 % Deckkraft des Kopfbildes liegen auf der Huelle um
+           beide Ebenen (siehe HeaderSlideshow), nicht auf den Ebenen
+           selbst. */
+        @keyframes backdropBlende { from { opacity: 0; } to { opacity: 1; } }
         .backdrop-blende { animation: backdropBlende var(--bewegung-blende) backwards; }
 
         @media (prefers-reduced-motion: reduce) {
