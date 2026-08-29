@@ -15,6 +15,8 @@
  *      bekommt dabei die Standardwerte (elo = 1000, duels = 0).
  *   3. Das Zuruecksetzen setzt `elo` auf den Startwert und laesst die
  *      Duell-Historie stehen.
+ *   4. Jedes entschiedene Duell haelt seine Paarung fest — sortiert,
+ *      und nur wenn wirklich gespielt wurde.
  *
  *   npm test
  */
@@ -30,7 +32,7 @@ import { pathToFileURL } from "node:url";
    was der jeweilige Aufrufer zum Weiterlaufen braucht. */
 const STUB = `
 export const anweisungen = [];
-export const zustand = { elo: new Map() };
+export const zustand = { elo: new Map(), paare: [] };
 
 function fuegeZusammen(strings, werte) {
   let text = strings[0];
@@ -61,6 +63,8 @@ function antwort(text, werte) {
   if (/SELECT\\s+id\\s+FROM\\s+media_items/i.test(text)) return [{ id: werte[0] }];
   if (/FROM\\s+seasons/i.test(text)) return [];
   if (/duel_counts/i.test(text)) return [{ category: werte[0], duels: 5, updated_at: 1 }];
+  // Die gespielten Paarungen einer Kategorie.
+  if (/FROM\\s+duell_paare/i.test(text)) return zustand.paare;
   if (/media_items/i.test(text) && /RETURNING/i.test(text)) return [zeile(werte[werte.length - 1])];
   return [];
 }
@@ -321,4 +325,103 @@ test("Ein Speichervorgang ohne die Felder laesst den Stand stehen", async () => 
   // Eingesetzt wird NULL — COALESCE nimmt dann den gespeicherten Wert.
   const stelle = Number((update.text.match(/elo\s*=\s*COALESCE\(\$(\d+)/i) || [])[1]);
   assert.equal(update.werte[stelle - 1], null);
+});
+
+/* ---------------------------------------------------------------- *
+ * Die gespielten Paarungen (duell_paare)
+ * ---------------------------------------------------------------- */
+
+test("Ein entschiedenes Duell haelt seine Paarung fest", async () => {
+  api.stub.zustand.elo.set("sieger", 1000);
+  api.stub.zustand.elo.set("verlierer", 1000);
+
+  const { res, anweisungen } = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie", winnerId: "sieger", loserId: "verlierer" },
+  });
+  assert.equal(res.status_, 200);
+
+  const paar = anweisungen.find((a) => /INSERT\s+INTO\s+duell_paare/i.test(a.text));
+  assert.ok(paar, "die Paarung wird nicht festgehalten");
+  assert.match(paar.text, /ON\s+CONFLICT\s*\(kategorie,\s*item_a,\s*item_b\)/i);
+  // Kategorie, beide IDs und der Zeitpunkt gehen mit.
+  assert.equal(paar.werte[0], "movie");
+});
+
+test("Die beiden IDs liegen sortiert — A gegen B ist B gegen A", async () => {
+  api.stub.zustand.elo.set("zzz", 1000);
+  api.stub.zustand.elo.set("aaa", 1000);
+
+  /* Einmal so herum, einmal andersherum: beide Male muss dieselbe
+     Reihenfolge in der Datenbank landen, sonst greift die Sperrfrist
+     nur in eine Richtung. */
+  const hin = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie", winnerId: "zzz", loserId: "aaa" },
+  });
+  const zurueck = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie", winnerId: "aaa", loserId: "zzz" },
+  });
+
+  const idsVon = (lauf) => {
+    const paar = lauf.anweisungen.find((a) => /INSERT\s+INTO\s+duell_paare/i.test(a.text));
+    assert.ok(paar, "die Paarung wird nicht festgehalten");
+    return [paar.werte[1], paar.werte[2]];
+  };
+  assert.deepEqual(idsVon(hin), ["aaa", "zzz"], "die kleinere ID steht nicht vorn");
+  assert.deepEqual(idsVon(zurueck), ["aaa", "zzz"], "andersherum entsteht ein anderer Eintrag");
+
+  // Und dieselbe Reihenfolge kommt zurueck an das Frontend.
+  assert.deepEqual(hin.res.body.pair.a, "aaa");
+  assert.deepEqual(hin.res.body.pair.b, "zzz");
+});
+
+test("Ohne Beteiligte entsteht keine Paarung", async () => {
+  /* Genau das passiert beim Ueberspringen: es wird gar nichts
+     gemeldet. Und selbst der reine Zaehler-Aufruf legt keine
+     Paarung an. */
+  const { anweisungen } = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie" },
+  });
+  assert.equal(
+    anweisungen.filter((a) => /duell_paare/i.test(a.text)).length,
+    0,
+    "ein Duell ohne Beteiligte legt eine Paarung an"
+  );
+});
+
+test("Ein Selbstduell legt keine Paarung an", async () => {
+  const { res, anweisungen } = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie", winnerId: "a", loserId: "a" },
+  });
+  assert.equal(res.status_, 400);
+  assert.equal(anweisungen.filter((a) => /duell_paare/i.test(a.text)).length, 0);
+});
+
+test("Die Paarungen einer Kategorie lassen sich abrufen", async () => {
+  api.stub.zustand.paare = [
+    { item_a: "aaa", item_b: "zzz", gespielt_am: "1700000000000" },
+  ];
+  const { res } = await ruf(api.duels, { method: "GET", query: { category: "movie" } });
+  assert.equal(res.status_, 200);
+  assert.deepEqual(res.body, {
+    category: "movie",
+    pairs: [{ a: "aaa", b: "zzz", at: 1700000000000 }],
+  });
+  api.stub.zustand.paare = [];
+});
+
+test("Ohne Kategorie bleibt es bei den Zaehlern", async () => {
+  const { res } = await ruf(api.duels, { method: "GET" });
+  assert.equal(res.status_, 200);
+  assert.ok(res.body.counts, "die Zaehler fehlen");
+  assert.ok(!("pairs" in res.body), "die Paarungen stehen ungefragt dabei");
+});
+
+test("Eine unbekannte Kategorie wird abgewiesen", async () => {
+  const { res } = await ruf(api.duels, { method: "GET", query: { category: "quatsch" } });
+  assert.equal(res.status_, 400);
 });

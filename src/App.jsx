@@ -557,6 +557,61 @@ function zuschlagText(wert) {
   return (gerundet >= 0 ? "+" : "−") + Math.abs(gerundet).toFixed(2);
 }
 
+/* ----------------------------------------------------------------
+   Auffaellige Bewertungen
+
+   Schneidet ein Titel im Duell dauerhaft anders ab, als seine
+   Kriterien hergeben, passt womoeglich die Bewertung selbst nicht
+   mehr. Genau das sagt ein grosser Zuschlag: er ist der Abstand
+   zwischen dem, was die Kriterien ergeben, und dem, was die Duelle
+   zeigen.
+
+   Auffaellig ist ein Titel nur, wenn BEIDES zutrifft — ein grosser
+   Zuschlag aus einem einzigen Duell waere Zufall und kein Hinweis.
+
+   Beide Zahlen stehen hier an einer Stelle und sonst nirgends,
+   damit sich die Schwelle spaeter mit einem Griff verschieben laesst.
+   Die Duell-Wertung selbst fassen sie nicht an: es ist eine
+   Kennzeichnung, keine Rechnung.
+   ---------------------------------------------------------------- */
+
+/* Ab diesem Betrag gilt der Zuschlag als deutlich. */
+const AUFFAELLIG_ZUSCHLAG = 0.2;
+
+/* So viele Duelle muessen dahinterstehen. */
+const AUFFAELLIG_DUELLE = 3;
+
+/**
+ * Ob Zuschlag und Duellzahl die Schwelle erreichen.
+ *
+ * Gemessen wird am Betrag: nach oben wie nach unten gleichwertig.
+ * Verglichen wird der Zuschlag so, wie er auch dasteht — auf zwei
+ * Nachkommastellen gerundet (siehe zuschlagText). Sonst stuende in
+ * der Detailansicht "+0,20" ohne Hinweis daneben, weil der ungerundete
+ * Wert knapp darunter liegt.
+ */
+function auffaelligeBewertung(zuschlag, duelle) {
+  if (typeof zuschlag !== "number" || !Number.isFinite(zuschlag)) return false;
+  if (typeof duelle !== "number" || !Number.isFinite(duelle)) return false;
+  const betrag = Math.round(Math.abs(zuschlag) * 100) / 100;
+  return duelle >= AUFFAELLIG_DUELLE && betrag >= AUFFAELLIG_ZUSCHLAG;
+}
+
+/** Dasselbe fuer einen Eintrag. */
+function entryAuffaellig(entry) {
+  return auffaelligeBewertung(entryZuschlag(entry), entryDuels(entry));
+}
+
+/* Was in der Detailansicht unter der Zuschlag-Zeile steht — die
+   Richtung entscheidet, in welche der beiden Formulierungen. */
+function auffaelligText(zuschlag) {
+  return zuschlag >= 0
+    ? "Du stellst diesen Titel im Duell regelmäßig höher, als seine Kriterien " +
+      "hergeben. Vielleicht passt die Bewertung nicht mehr."
+    : "Du stellst diesen Titel im Duell regelmäßig niedriger, als seine Kriterien " +
+      "hergeben. Vielleicht passt die Bewertung nicht mehr.";
+}
+
 /* Wie weit die Endnote des Gegners hoechstens abweichen darf.
    Frueher stand hier ein Fenster von fuenf Raengen. Das Mass ist
    jetzt die Endnote selbst, und zwar aus einem handfesten Grund: Der
@@ -597,6 +652,31 @@ const DUELL_VERSUCHE = 24;
 /* Eine Paarung ist dieselbe, egal wer links steht. */
 function paarungsSchluessel(a, b) {
   return String(a) < String(b) ? a + "|" + b : b + "|" + a;
+}
+
+/**
+ * Die schon gespielten Paarungen als Nachschlagewerk:
+ * Paarungsschluessel -> Zeitpunkt des letzten Duells.
+ *
+ * Was hereinkommt, sind die Zeilen aus duell_paare ({ a, b, at }) —
+ * je Paarung eine. Doppelte oder unvollstaendige Eintraege stoeren
+ * nicht: unvollstaendige fallen heraus, bei doppelten gilt der
+ * juengste Zeitpunkt.
+ *
+ * Ist nichts gespielt (oder konnte die Liste nicht geladen werden),
+ * bleibt die Karte leer — und damit laeuft die Ziehung genau so wie
+ * vor der Sperrfrist.
+ */
+function gespielteZeiten(gespielt) {
+  const zeiten = new Map();
+  for (const eintrag of Array.isArray(gespielt) ? gespielt : []) {
+    if (!eintrag || !eintrag.a || !eintrag.b) continue;
+    const zeit = typeof eintrag.at === "number" && Number.isFinite(eintrag.at) ? eintrag.at : 0;
+    const schluessel = paarungsSchluessel(eintrag.a, eintrag.b);
+    const bisher = zeiten.get(schluessel);
+    if (bisher === undefined || zeit > bisher) zeiten.set(schluessel, zeit);
+  }
+  return zeiten;
 }
 
 /* Endnote eines Teilnehmers fuer das Fenster. Die Liste kommt aus der
@@ -684,6 +764,17 @@ function wenigsteDuelle(liste, auswahl, zufall) {
  * `verlauf` sind die zuletzt gezogenen Paarungen als Paare von IDs,
  * die juengste zuletzt. Keine davon soll gleich wieder drankommen.
  *
+ * `gespielt` sind die Paarungen, die es schon einmal gab, mit dem
+ * Zeitpunkt ihres letzten Duells ({ a, b, at } — aus duell_paare).
+ * Sie bilden die Sperrfrist, und die ist ausdruecklich kein
+ * dauerhaftes Verbot: im Fenster zaehlen zuerst nur die ungespielten
+ * Paarungen; ist dort keine mehr uebrig, kommt die am laengsten
+ * zurueckliegende wieder dran. Ein Zustand, in dem gar kein Duell
+ * mehr angeboten wird, kann dadurch nicht entstehen.
+ *
+ * Am Notenfenster selbst und an seinen Erweiterungsstufen aendert das
+ * nichts (siehe duellKandidaten) — die Stufe sitzt davor.
+ *
  * Innerhalb des Fensters kommt bevorzugt, wer die wenigsten Duelle
  * hinter sich hat — gesucht wird also zuerst unter den freien
  * Kandidaten, und erst wenn dort keiner uebrig ist, unter den
@@ -698,13 +789,15 @@ function wenigsteDuelle(liste, auswahl, zufall) {
  *    Bei genau zwei Titeln bleibt es zwangslaeufig beim einzigen
  *    moeglichen Paar.
  */
-function ziehePaarung(liste, verlauf, zufall = Math.random) {
+function ziehePaarung(liste, verlauf, zufall = Math.random, gespielt = null) {
   if (!Array.isArray(liste) || liste.length < MIN_DUELL_TEILNEHMER) return null;
 
   const gesperrt = (Array.isArray(verlauf) ? verlauf : [])
     .filter((eintrag) => Array.isArray(eintrag) && eintrag.length === 2)
     .map((eintrag) => paarungsSchluessel(eintrag[0], eintrag[1]));
   const vorige = gesperrt.length ? gesperrt[gesperrt.length - 1] : null;
+
+  const zeitVon = gespielteZeiten(gespielt);
 
   const seitenLos = (a, b) => (zufall() < 0.5 ? [a, b] : [b, a]);
 
@@ -715,7 +808,16 @@ function ziehePaarung(liste, verlauf, zufall = Math.random) {
     const anker = liste[ankerIndex];
     if (!anker) continue;
 
-    const kandidaten = duellKandidaten(liste, ankerIndex);
+    const imFenster = duellKandidaten(liste, ankerIndex);
+    if (!imFenster.length) continue;
+
+    /* Die vorgelagerte Stufe: im Fenster zaehlen zuerst nur die
+       Paarungen, die es noch nie gab. Steht dort keine, hat dieser
+       Anker nichts zu bieten — dann kommt der naechste dran, und ganz
+       zum Schluss die aelteste Paarung (unten). */
+    const kandidaten = zeitVon.size
+      ? imFenster.filter((i) => !zeitVon.has(paarungsSchluessel(anker.id, liste[i].id)))
+      : imFenster;
     if (!kandidaten.length) continue;
 
     const frei = kandidaten.filter(
@@ -734,7 +836,50 @@ function ziehePaarung(liste, verlauf, zufall = Math.random) {
     if (frei.length) return paar;
     if (!ersatz && schluessel !== vorige) ersatz = paar;
   }
-  return ersatz || zuletztGezogen;
+  if (ersatz || zuletztGezogen) return ersatz || zuletztGezogen;
+
+  /* Kein Anker hatte eine ungespielte Paarung im Fenster. Statt hier
+     aufzugeben, kommt die Begegnung wieder, die am laengsten
+     zurueckliegt. */
+  return aeltestePaarung(liste, zeitVon, seitenLos, zufall);
+}
+
+/**
+ * Der Ausweg, wenn im Fenster nichts Ungespieltes mehr steht: die
+ * Paarung mit dem aeltesten Zeitpunkt.
+ *
+ * Gesucht wird ueber alle Anker — die zufaellige Ziehung oben sieht
+ * immer nur das Fenster eines einzelnen und wuesste deshalb nichts
+ * davon, welche Begegnung im Ganzen am laengsten her ist.
+ *
+ * Sollte sich dabei doch noch eine ungespielte Paarung finden (die
+ * Ziehung oben nimmt ihre Anker zufaellig und kann eine uebersehen),
+ * hat die Vorrang — die Sperrfrist greift immer erst, wenn wirklich
+ * keine ungespielte mehr uebrig ist.
+ */
+function aeltestePaarung(liste, zeitVon, seitenLos, zufall) {
+  const ungespielt = [];
+  let aelteste = null;
+  for (let i = 0; i < liste.length; i++) {
+    const anker = liste[i];
+    if (!anker) continue;
+    for (const j of duellKandidaten(liste, i)) {
+      const gegner = liste[j];
+      if (!gegner) continue;
+      const schluessel = paarungsSchluessel(anker.id, gegner.id);
+      if (!zeitVon.has(schluessel)) {
+        ungespielt.push([anker, gegner]);
+        continue;
+      }
+      const zeit = zeitVon.get(schluessel);
+      if (!aelteste || zeit < aelteste.zeit) aelteste = { paar: [anker, gegner], zeit };
+    }
+  }
+  if (ungespielt.length) {
+    const gewaehlt = ungespielt[Math.floor(zufall() * ungespielt.length)];
+    return seitenLos(gewaehlt[0], gewaehlt[1]);
+  }
+  return aelteste ? seitenLos(aelteste.paar[0], aelteste.paar[1]) : null;
 }
 
 /* Ankerpunkte der Notenfarbe. Zwischen zwei Ankern wird pro Kanal
@@ -2023,10 +2168,19 @@ const api = {
     const data = await res.json();
     return data && data.counts ? data.counts : {};
   },
+  /* Die schon gespielten Paarungen einer Kategorie — je Paarung der
+     Zeitpunkt ihres letzten Duells. Daraus baut das Head-to-Head
+     seine Sperrfrist (siehe ziehePaarung). */
+  async loadDuellPaare(category) {
+    const res = await fetch("/api/duels?category=" + encodeURIComponent(category));
+    if (!res.ok) throw new Error("Paarungen konnten nicht geladen werden (" + res.status + ")");
+    const data = await res.json();
+    return Array.isArray(data.pairs) ? data.pairs : [];
+  },
   /* Ein entschiedenes Duell melden. Der Server verschiebt die
      Elo-Zahlen der beiden Beteiligten, zaehlt je Eintrag und je
-     Kategorie hoch und gibt beides zurueck. Bauchgefuehl und
-     Kriterienwerte fasst dieser Weg nicht an. */
+     Kategorie hoch, haelt die Paarung fest und gibt das zurueck.
+     Bauchgefuehl und Kriterienwerte fasst dieser Weg nicht an. */
   async duell(category, winnerId, loserId) {
     const res = await fetch("/api/duels", {
       method: "POST",
@@ -2342,6 +2496,24 @@ function IconSpiele() {
       <line x1="5.8" y1="13" x2="8.6" y2="13" />
       <line x1="15.4" y1="12.6" x2="15.4" y2="12.6" />
       <line x1="17.6" y1="14.4" x2="17.6" y2="14.4" />
+    </svg>
+  );
+}
+
+/* Warndreieck fuer eine auffaellige Bewertung (siehe
+   entryAuffaellig). Es traegt keine eigene Farbe, sondern die
+   uebergebene — in den Listen ist das der Akzent der Kategorie. */
+function IconWarndreieck({ farbe, groesse = 13 }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      style={{ ...symbolBasis, width: groesse, height: groesse, stroke: farbe, flexShrink: 0 }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M12 4.2 2.8 20.1h18.4L12 4.2Z" />
+      <line x1="12" y1="10.2" x2="12" y2="14.4" />
+      <line x1="12" y1="17.2" x2="12" y2="17.2" />
     </svg>
   );
 }
@@ -2708,7 +2880,7 @@ function BottomSheet({ title, onClose, children }) {
   );
 }
 
-function ConfirmDialog({ title, text, confirmLabel, danger, onConfirm, onCancel }) {
+function ConfirmDialog({ title, text, confirmLabel, cancelLabel = "Abbrechen", danger, onConfirm, onCancel }) {
   return (
     <BottomSheet title={title} onClose={onCancel}>
       {(schliessen) => (
@@ -2719,7 +2891,7 @@ function ConfirmDialog({ title, text, confirmLabel, danger, onConfirm, onCancel 
               onClick={() => schliessen(onCancel)}
               style={{ flex: 1, padding: "14px", background: "transparent", color: "#9A968C", border: "1px solid #33333a", borderRadius: 8, fontSize: 15, cursor: "pointer" }}
             >
-              Abbrechen
+              {cancelLabel}
             </button>
             <button
               onClick={() => schliessen(onConfirm)}
@@ -5349,6 +5521,29 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
               </div>
             </div>
           )}
+
+          {/* Direkt unter der Zuschlag-Zeile: der Hinweis, dass die
+              Bewertung selbst nicht mehr zu passen scheint. Er steht
+              nur, wenn die Schwelle erreicht ist (siehe
+              entryAuffaellig) — sonst waere er ein Alarm ohne Anlass.
+              Ohne gespielte Duelle kann das nie zutreffen, der Hinweis
+              steht also nie ohne die Zeile darueber. */}
+          {entryAuffaellig(entry) && (
+            <div
+              style={{
+                display: "flex", alignItems: "flex-start", gap: 9,
+                background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 8,
+                padding: 12, marginBottom: 4,
+              }}
+            >
+              <span style={{ display: "flex", alignItems: "center", height: 19, flexShrink: 0 }}>
+                <IconWarndreieck farbe="var(--accent, #C9A227)" groesse={14} />
+              </span>
+              <div style={{ fontSize: 12.5, color: "#9A968C", lineHeight: 1.5 }}>
+                {auffaelligText(entryZuschlag(entry))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
@@ -5492,6 +5687,87 @@ function TopTen({ ranked }) {
       ) : (
         liste.map((f, i) => <RanglistenZeile key={f.id} platz={i + 1} eintrag={f} />)
       )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------
+   Bewertung pruefen — die auffaelligen Titel aller Kategorien
+
+   Gesammelt steht hier, was in den Listen einzeln als Warndreieck
+   auftaucht: Titel, deren Duell-Zuschlag deutlich von ihren Kriterien
+   abweicht (siehe entryAuffaellig). Sortiert nach dem Betrag des
+   Zuschlags, der groesste zuerst — dort lohnt das Nachsehen am
+   ehesten.
+
+   Erreicht kein Titel die Schwelle, gibt es den Abschnitt nicht: eine
+   leere Liste mit Ueberschrift waere ein Hinweis auf nichts.
+   ------------------------------------------------------------ */
+function auffaelligeTitel(ranked) {
+  const gesammelt = [];
+  for (const c of CATEGORIES) {
+    for (const eintrag of ranked[c.key] || []) {
+      if (!entryAuffaellig(eintrag)) continue;
+      gesammelt.push({
+        eintrag,
+        kategorie: c,
+        zuschlag: entryZuschlag(eintrag),
+        duelle: entryDuels(eintrag),
+      });
+    }
+  }
+  return gesammelt.sort((a, b) => Math.abs(b.zuschlag) - Math.abs(a.zuschlag));
+}
+
+function BewertungPruefen({ ranked, onOeffnen }) {
+  const liste = useMemo(() => auffaelligeTitel(ranked), [ranked]);
+  if (!liste.length) return null;
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>
+        Bewertung prüfen
+      </h3>
+      <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
+        Diese Titel schneiden im Duell dauerhaft anders ab, als ihre Kriterien
+        hergeben — ab {AUFFAELLIG_ZUSCHLAG.toFixed(2).replace(".", ",")} Zuschlag
+        und {AUFFAELLIG_DUELLE} Duellen.
+      </div>
+
+      {liste.map(({ eintrag, kategorie, zuschlag, duelle }) => (
+        <button
+          key={kategorie.key + "|" + eintrag.id}
+          onClick={() => onOeffnen && onOeffnen(kategorie.key, eintrag.id)}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 10, width: "100%", textAlign: "left", padding: "8px 0",
+            background: "transparent", border: "none",
+            borderBottom: "1px solid #232326",
+            color: "#EDEAE3", cursor: "pointer", fontFamily: "inherit",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <IconWarndreieck farbe={accentFor(kategorie.key)} />
+            <Poster url={eintrag.poster} title={eintrag.title} size={28} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {eintrag.title}
+              </div>
+              <div style={{ fontSize: 11.5, color: "#77746c", marginTop: 2 }}>
+                {kategorie.label} · {duelle} {duelle === 1 ? "Duell" : "Duelle"}
+              </div>
+            </div>
+          </div>
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700,
+              color: accentFor(kategorie.key), flexShrink: 0,
+            }}
+          >
+            {zuschlagText(zuschlag)}
+          </span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -5908,7 +6184,7 @@ function RueckblickZeile({ label, wert, zusatz, zusatzFarbe, letzte }) {
   );
 }
 
-function StatsPage({ ranked, watchlist }) {
+function StatsPage({ ranked, watchlist, onOeffnen }) {
   const [scope, setScope] = useState("all");
 
   const overall = useMemo(() => {
@@ -6024,6 +6300,10 @@ function StatsPage({ ranked, watchlist }) {
       {/* Top 10 steht mit eigenem Filter zwischen Detailauswertung und
           Bewertungsverteilung — unabhaengig von der Auswahl darueber. */}
       <TopTen ranked={ranked} />
+
+      {/* Die auffaelligen Titel ueber alle Kategorien. Der Abschnitt
+          zeigt sich nur, wenn es welche gibt. */}
+      <BewertungPruefen ranked={ranked} onOeffnen={onOeffnen} />
 
       {scopedList.length > 0 && (
         <>
@@ -6354,9 +6634,29 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      dieselbe Begegnung fuer ein paar Zuege draussen. */
   const verlaufRef = useRef([]);
 
+  /* Die schon gespielten Paarungen dieser Kategorie — auch die aus
+     frueheren Sitzungen und aus dem Turnier. Sie kommen vom Server
+     (duell_paare) und wachsen waehrend des Spielens mit. */
+  const paareRef = useRef([]);
+  /* Solange die Liste noch unterwegs ist, steht noch kein Duell da —
+     ohne sie gezogen zu haben hiesse, die Sperrfrist beim ersten
+     Duell zu uebergehen. */
+  const [laedtPaare, setLaedtPaare] = useState(false);
+
   function merkePaarung(gezogen) {
     if (!gezogen) return;
     verlaufRef.current = [...verlaufRef.current, [gezogen[0].id, gezogen[1].id]].slice(-DUELL_VERLAUF);
+  }
+
+  /* Eine gerade gespielte Paarung nachtragen. Je Paarung bleibt ein
+     Eintrag stehen, mit dem juengsten Zeitpunkt. */
+  function merkeGespielt(paar) {
+    if (!paar || !paar.a || !paar.b) return;
+    const schluessel = paarungsSchluessel(paar.a, paar.b);
+    paareRef.current = [
+      ...paareRef.current.filter((p) => paarungsSchluessel(p.a, p.b) !== schluessel),
+      { a: paar.a, b: paar.b, at: typeof paar.at === "number" ? paar.at : Date.now() },
+    ];
   }
 
   const speicherungRef = useRef(null);
@@ -6376,7 +6676,9 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       if (!lebtRef.current) return;
       setGewaehlt(null);
       setRueckmeldung(null);
-      const naechste = ziehePaarung(listeRef.current, verlaufRef.current);
+      const naechste = ziehePaarung(
+        listeRef.current, verlaufRef.current, Math.random, paareRef.current
+      );
       merkePaarung(naechste);
       setPaar(naechste);
     };
@@ -6399,7 +6701,12 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
        Der Platz danach wird beim Zeichnen aus der dann aktuellen
        Rangliste gelesen — beide Zustandsaenderungen kommen im selben
        Durchlauf an. */
-    const fertig = () => {
+    const fertig = (gespielt) => {
+      /* Die Paarung ist gelaufen — ab jetzt steht sie der Ziehung im
+         Weg, solange es ungespielte gibt. Zurueck kommt sie sortiert
+         vom Server; schlaegt das Speichern fehl, kommt hier nichts an
+         und die Paarung bleibt ungespielt. */
+      merkeGespielt(gespielt);
       if (!lebtRef.current) return;
       setRueckmeldung({ id: gewinner.id, titel: gewinner.title, platzVorher });
     };
@@ -6415,9 +6722,30 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
     /* Neue Kategorie, neuer Verlauf — die gesperrten Paarungen der
        vorigen Kategorie kommen hier ohnehin nicht vor. */
     verlaufRef.current = [];
-    const erste = kategorie ? ziehePaarung(listeRef.current, null) : null;
-    merkePaarung(erste);
-    setPaar(erste);
+    paareRef.current = [];
+    setPaar(null);
+    if (!kategorie) {
+      setLaedtPaare(false);
+      return undefined;
+    }
+
+    let abgebrochen = false;
+    setLaedtPaare(true);
+    (async () => {
+      try {
+        paareRef.current = await api.loadDuellPaare(kategorie);
+      } catch {
+        /* Ohne die Liste wird gespielt wie vor der Sperrfrist. Ein
+           Ausfall darf das Minispiel nicht anhalten. */
+        paareRef.current = [];
+      }
+      if (abgebrochen) return;
+      setLaedtPaare(false);
+      const erste = ziehePaarung(listeRef.current, null, Math.random, paareRef.current);
+      merkePaarung(erste);
+      setPaar(erste);
+    })();
+    return () => { abgebrochen = true; };
   }, [kategorie]);
 
   /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt.
@@ -6524,7 +6852,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
 
       {!paar ? (
         <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
-          In dieser Kategorie gibt es gerade kein Duell.
+          {laedtPaare ? "Wird geladen …" : "In dieser Kategorie gibt es gerade kein Duell."}
         </div>
       ) : (
         <>
@@ -8411,6 +8739,10 @@ export default function App() {
   const [bewerteVorgemerkt, setBewerteVorgemerkt] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  /* Die Rueckfrage nach dem Speichern einer auffaelligen Bewertung:
+     { catKey, id }, solange sie offen steht. Zurueckgesetzt wird nur
+     auf ausdrueckliches "Ja" — von selbst passiert nichts. */
+  const [zuschlagRueckfrage, setZuschlagRueckfrage] = useState(null);
   const [showExport, setShowExport] = useState(false);
   /* Der Bilder-Abschnitt im Daten-Panel startet bei jedem Oeffnen
      zugeklappt — gemerkt wird der Zustand bewusst nicht. */
@@ -9373,6 +9705,11 @@ export default function App() {
     const current = (items[category] || []).find((f) => f.id === id);
     if (!current) return;
 
+    /* Ob der Titel VOR dem Speichern auffaellig war. Nur dann kommt
+       die Rueckfrage nach dem Zuschlag — bei allen anderen aendert
+       sich am Ablauf nichts. */
+    const warAuffaellig = entryAuffaellig(current);
+
     let nextPoster = poster;
     let nextSource = current.posterSource;
     // Das Backdrop bleibt am Eintrag; es wird nur mit verworfen, wenn
@@ -9451,6 +9788,10 @@ export default function App() {
       }));
       setSaveError("");
       setMode("list");
+      /* Die Kriterien sind nachgebessert — soll der Zuschlag aus den
+         alten Duellen stehen bleiben? Das entscheidet der Nutzer;
+         von selbst wird hier nichts zurueckgesetzt. */
+      if (warAuffaellig) setZuschlagRueckfrage({ catKey: category, id });
     } catch (e) {
       setSaveError("Änderung nicht gespeichert: " + e.message);
     } finally {
@@ -9608,12 +9949,16 @@ export default function App() {
      Gerechnet und geschrieben wird auf dem Server in einer
      Transaktion. Uebersprungene Duelle kommen hier nie an. */
   async function duellAuswerten(catKey, gewinnerId, verliererId) {
-    if (gewinnerId === verliererId) return;
+    if (gewinnerId === verliererId) return null;
     const liste = items[catKey] || [];
     const gewinner = liste.find((f) => f.id === gewinnerId);
     const verlierer = liste.find((f) => f.id === verliererId);
-    if (!gewinner || !verlierer) return;
+    if (!gewinner || !verlierer) return null;
 
+    /* Die gespielte Paarung, so wie der Server sie abgelegt hat. Sie
+       geht an das Head-to-Head zurueck, damit dessen Sperrfrist ohne
+       erneutes Laden weiterrechnet. */
+    let gespielt = null;
     try {
       const ergebnis = await api.duell(catKey, gewinnerId, verliererId);
       /* Zurueck kommen nur `elo` und `duels` je Eintrag. Genau diese
@@ -9641,14 +9986,19 @@ export default function App() {
       } else {
         setDuellZahlen((prev) => ({ ...prev, [catKey]: (prev[catKey] || 0) + 1 }));
       }
+      gespielt =
+        ergebnis && ergebnis.pair && ergebnis.pair.a && ergebnis.pair.b
+          ? ergebnis.pair
+          : { a: gewinnerId, b: verliererId, at: Date.now() };
       setDuellFehler("");
     } catch (e) {
       setDuellFehler("Duell nicht gespeichert: " + e.message);
-      return;
+      return null;
     }
 
     // Punkte fuer das gespielte Duell.
     await xpGeben("duell");
+    return gespielt;
   }
 
   /* Die Duell-Wertung eines Eintrags auf den Startwert zuruecksetzen.
@@ -9696,6 +10046,24 @@ export default function App() {
     setFilterState((f) => ({ ...f, genre: "", jahrzehnt: "", regie: "", reihe: "" }));
     setBewerteVorgemerkt(eintrag);
     setMode("watchlist-form");
+  }
+
+  /* Einen Eintrag aus der Statistik heraus oeffnen — aus der Liste
+     "Bewertung pruefen". Gewechselt wird in seine Kategorie und
+     direkt auf seine Detailansicht; gesetzt wird dabei dasselbe wie
+     beim Klick auf einen Kategorie-Tab, damit die Liste dahinter
+     stimmt. */
+  function eintragOeffnen(catKey, id) {
+    if (!CATEGORY_KEYS.includes(catKey) || !id) return;
+    setCategory(catKey);
+    setActiveTab(catKey);
+    setUnterReiter("bewertet");
+    setMode("list");
+    setSearch("");
+    /* Genre, Jahrzehnt, Regie und Reihe gehoeren zur Kategorie, aus der
+       sie stammen; nach dem Wechsel gelten sie nicht mehr. */
+    setFilterState((f) => ({ ...f, genre: "", jahrzehnt: "", regie: "", reihe: "" }));
+    setSelectedId(id);
   }
 
   async function deleteEntry(id) {
@@ -10860,7 +11228,11 @@ export default function App() {
           Bewegung bei jedem Oeffnen neu laeuft. */}
       {activeTab === "stats" ? (
         <div key="seite-stats" className="seite-rein">
-        <StatsPage ranked={rankedByCategory} watchlist={watchlistByCategory} />
+        <StatsPage
+          ranked={rankedByCategory}
+          watchlist={watchlistByCategory}
+          onOeffnen={eintragOeffnen}
+        />
         </div>
       ) : activeTab === "minigames" ? (
         <div key="seite-minigames" className="seite-rein">
@@ -11234,6 +11606,19 @@ export default function App() {
                         <AngabenZeile eintrag={f} mitImdb />
                       </div>
                     </div>
+                    {/* Auffaellige Bewertung: das Zeichen steht als
+                        eigenes Element unmittelbar vor der Note. Es
+                        sitzt damit zwischen dem linken Block und der
+                        Note und rueckt nichts von beidem — Rangnummer,
+                        Poster, Titel und Note bleiben, wo sie sind. */}
+                    {entryAuffaellig(f) && (
+                      <span
+                        title="Der Duell-Zuschlag weicht deutlich von den Kriterien ab — Bewertung prüfen."
+                        style={{ display: "flex", alignItems: "center", flexShrink: 0 }}
+                      >
+                        <IconWarndreieck farbe={accent} />
+                      </span>
+                    )}
                     <ScoreBadge score={f.score} />
                   </div>
                   );
@@ -11341,6 +11726,24 @@ export default function App() {
           danger
           onConfirm={() => deleteEntry(confirmDelete)}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {zuschlagRueckfrage && (
+        <ConfirmDialog
+          title="Duell-Zuschlag zurücksetzen?"
+          text={
+            "Die Bewertung dieses Titels ist geändert. Soll sein Duell-Zuschlag " +
+            "wieder bei 0 anfangen? Die gespielten Duelle bleiben gezählt."
+          }
+          confirmLabel="Ja"
+          cancelLabel="Nein"
+          onConfirm={() => {
+            const offen = zuschlagRueckfrage;
+            setZuschlagRueckfrage(null);
+            eloZuruecksetzen(offen.catKey, offen.id);
+          }}
+          onCancel={() => setZuschlagRueckfrage(null)}
         />
       )}
 
