@@ -1485,6 +1485,116 @@ function merklisteLabel(category) {
 }
 
 /* ------------------------------------------------------------
+   Am Schauen
+
+   Ein eigenes, unabhaengiges Kennzeichen — es ersetzt weder
+   "bewertet" noch "vorgemerkt", sondern steht daneben. Genau darum
+   geht es: Ein bereits bewerteter Titel muss beim Rewatch gleichzeitig
+   am Schauen sein koennen, ohne aus der Rangliste zu verschwinden, und
+   bei einer Serie kann Staffel 1 bewertet sein, waehrend Staffel 2
+   noch laeuft.
+
+   Gesetzt und geloescht wird es ausschliesslich ueber seinen eigenen
+   Schalter. Keine Bewertung, kein Nachladen und kein anderer
+   Speichervorgang fasst es an (siehe amSchauenColumns in
+   api/items.js).
+   ------------------------------------------------------------ */
+function istAmSchauen(entry) {
+  return entry && entry.amSchauen === true;
+}
+
+/* Bei Spielen heisst der Reiter "Am Spielen". Wie beim Backlog wechselt
+   nur die Beschriftung; Funktion und Daten sind dieselben. */
+function amSchauenLabel(category) {
+  return category === "game" ? "Am Spielen" : "Am Schauen";
+}
+
+/* Dieselbe Beschriftung mitten im Satz: "Am Schauen" -> "am Schauen".
+   Klein wird nur das "Am"; die Taetigkeit bleibt gross. */
+function amSchauenLabelKlein(category) {
+  return amSchauenLabel(category).replace(/^Am /, "am ");
+}
+
+/**
+ * Der Fortschritt eines Eintrags, so wie die Zeile ihn anzeigt — oder
+ * null, wenn es keinen anzuzeigen gibt.
+ *
+ * Gelesen werden ausschliesslich die Episodenzahlen je Staffel, die
+ * ohnehin fuer die Laufzeit gespeichert sind. Sie fehlen bei Filmen,
+ * bei Spielen und ueberall dort, wo das automatische Nachladen sie
+ * nicht ermitteln konnte — dann steht der Eintrag einfach ohne Zusatz
+ * im Reiter. Geschrieben wird an diesen Daten hier nichts.
+ *
+ * `staffelNr` und `folgeNr` duerfen null sein ("nie gesetzt"); dann
+ * gilt Staffel 1, Folge 0 — dasselbe, was das Einschalten des
+ * Kennzeichens setzt.
+ */
+function fortschrittStand(entry) {
+  if (!entry) return null;
+  const jeStaffel = Array.isArray(entry.episodesPerSeason) ? entry.episodesPerSeason : [];
+  if (!jeStaffel.length) return null;
+
+  const staffel =
+    typeof entry.staffelNr === "number" && entry.staffelNr >= 1 ? Math.round(entry.staffelNr) : 1;
+  const gesamt = jeStaffel[staffel - 1];
+  // Eine Staffel, zu der keine Folgenzahl bekannt ist (der Stand steht
+  // hinter der Liste, oder die Quelle kannte sie nicht): kein
+  // Fortschritt, aber auch kein Fehler.
+  if (typeof gesamt !== "number" || gesamt <= 0) return null;
+
+  const folge =
+    typeof entry.folgeNr === "number" && entry.folgeNr >= 0 ? Math.round(entry.folgeNr) : 0;
+  return { staffel, folge, gesamt, staffeln: jeStaffel.length };
+}
+
+/**
+ * Was ein Druck auf "+1" aus dem Stand macht — oder null, wenn sich
+ * nichts mehr aendert.
+ *
+ * Innerhalb der Staffel geht es Folge um Folge weiter. Ist die letzte
+ * Folge erreicht, springt der naechste Druck auf die naechste Staffel,
+ * Folge 1. Gibt es keine naechste, bleibt der Stand auf der letzten
+ * Folge stehen — das Kennzeichen wird dabei ausdruecklich nicht von
+ * selbst ausgeschaltet.
+ */
+function fortschrittWeiter(stand) {
+  if (!stand) return null;
+  if (stand.folge < stand.gesamt) return { staffelNr: stand.staffel, folgeNr: stand.folge + 1 };
+  if (stand.staffel < stand.staffeln) return { staffelNr: stand.staffel + 1, folgeNr: 1 };
+  return null;
+}
+
+/** "S2 · 4/10" — der Stand in einer Zeile. */
+function fortschrittText(stand) {
+  return "S" + stand.staffel + " · " + stand.folge + "/" + stand.gesamt;
+}
+
+/* ------------------------------------------------------------
+   Wer steht in welchem Unter-Reiter?
+
+   Als eigene Funktionen, damit die eine Zusage pruefbar ist, an der
+   alles haengt: Es darf keinen Zustand geben, in dem ein Eintrag in
+   gar keinem Reiter erscheint. Aus den drei Regeln folgt sie
+   unmittelbar — wer nicht vorgemerkt ist, steht unter "Bewertet"; wer
+   vorgemerkt ist, steht je nach Kennzeichen unter "Am Schauen" oder in
+   der Watchlist.
+
+   Die Watchlist blendet dabei nur die Anzeige aus: `watchlist` bleibt
+   am Eintrag stehen, damit er beim Ausschalten wieder dort auftaucht.
+   ------------------------------------------------------------ */
+function inReiterBewertet(entry) {
+  return !istVorgemerkt(entry);
+}
+
+function inReiterAmSchauen(entry) {
+  return istAmSchauen(entry);
+}
+
+function inReiterWatchlist(entry) {
+  return istVorgemerkt(entry) && !istAmSchauen(entry);
+}
+
+/* ------------------------------------------------------------
    Zaehler: wie oft geschaut bzw. gespielt?
 
    Grenzen und Startwert wie in api/_db.js. Ein bewerteter Eintrag wurde
@@ -3372,7 +3482,7 @@ function NeuerEintrag({ category, categoryLabel, bekannt, onWatchlist, onBewerte
       {warnung && (
         <ConfirmDialog
           title="Steht schon in der Liste"
-          text={duplikatText(warnung, categoryLabel)}
+          text={duplikatText(warnung, categoryLabel, category)}
           confirmLabel="Trotzdem hinzufügen"
           onConfirm={trotzdem}
           onCancel={() => setWarnung(null)}
@@ -3388,10 +3498,20 @@ function NeuerEintrag({ category, categoryLabel, bekannt, onWatchlist, onBewerte
  * nach dem gerade gesucht wurde, und ohne diese Angabe waere die
  * Warnung ein Raetsel.
  */
-function duplikatText(warnung, categoryLabel) {
+function duplikatText(warnung, categoryLabel, category) {
   const gefunden = warnung.treffer.title;
   const gesucht = warnung.kandidat.title;
-  const wo = warnung.treffer.watchlist ? "ist bereits vorgemerkt" : "ist bereits bewertet";
+  /* Drei Faelle, und mehrere koennen zugleich zutreffen: ein
+     bewerteter Eintrag darf beim Rewatch gleichzeitig am Schauen sein.
+     Die Reihenfolge entscheidet, welcher genannt wird — bewertet vor
+     "am Schauen" vor vorgemerkt. Gelesen wird ausschliesslich das,
+     was `bekannteEintraege` mitgibt; an der Erkennung des Treffers
+     selbst (trefferSchluessel/findeDuplikat) aendert sich nichts. */
+  const wo = !warnung.treffer.watchlist
+    ? "ist bereits bewertet"
+    : warnung.treffer.amSchauen
+      ? "ist bereits " + amSchauenLabelKlein(category)
+      : "ist bereits vorgemerkt";
 
   const anders =
     titelSchluessel(gefunden) === titelSchluessel(gesucht)
@@ -3404,10 +3524,16 @@ function duplikatText(warnung, categoryLabel) {
   );
 }
 
+/* Kantenlaenge der beiden schmalen Quadratknoepfe: "▶" an der
+   Watchlist-Zeile und "+1" an der Zeile im Reiter "Am Schauen".
+   Bewusst schmal und rechts statt als breite Zeile darunter — bei
+   430 px Breite wurde es sonst zu eng. */
+const PLUS_EINS_GROESSE = 34;
+
 /* ============================================================
    WATCHLIST — vorgemerkt, noch ohne Note
    ============================================================ */
-function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen, reihe = 0, vorrang = false }) {
+function WatchlistZeile({ eintrag, busy, merkliste, amSchauenLabelText, onAmSchauen, onBewerten, onEntfernen, reihe = 0, vorrang = false }) {
   /* Die eigene Laufzeit des Eintrags. Ist sie nicht bekannt — oder
      handelt es sich um ein Spiel —, bleibt sie einfach weg. */
   const laufzeit = eintragLaufzeit(eintrag);
@@ -3431,6 +3557,27 @@ function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen, rei
           </div>
         )}
       </div>
+      {/* Der Einstieg ins "Am Schauen" fuer vorgemerkte Eintraege.
+          Sie haben keine Detailansicht, in der der Schalter sonst
+          steht — und gerade sie sind der Hauptfall: ein Titel, den man
+          von der Watchlist angefangen hat. Bewusst schmal: die Zeile
+          traegt auf dem Telefon schon Titel, Jahr und zwei Knoepfe.
+          Ausgeschaltet wird im eigenen Reiter, hier steht nie ein
+          Eintrag, der bereits am Schauen ist. */}
+      <button
+        onClick={onAmSchauen}
+        disabled={busy}
+        title={amSchauenLabelText + " beginnen"}
+        aria-label={eintrag.title + ": " + amSchauenLabelText + " beginnen"}
+        style={{
+          flexShrink: 0, width: PLUS_EINS_GROESSE, height: PLUS_EINS_GROESSE, padding: 0,
+          borderRadius: 6, fontSize: 12, fontFamily: "inherit",
+          background: "transparent", color: "#9A968C", border: "1px solid #33333a",
+          cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1,
+        }}
+      >
+        ▶
+      </button>
       <button
         onClick={onBewerten}
         disabled={busy}
@@ -3450,6 +3597,171 @@ function WatchlistZeile({ eintrag, busy, merkliste, onBewerten, onEntfernen, rei
         style={{
           flexShrink: 0, background: "transparent", border: "none", color: "#d9736a",
           fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1,
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   AM SCHAUEN — angefangen, noch nicht fertig
+
+   Dieselbe Zeile wie in der Watchlist, nur mit dem Fortschritt statt
+   der Knopfreihe. Der Fortschritt erscheint nur, wo die Episodenzahlen
+   je Staffel vorliegen (siehe fortschrittStand) — bei Filmen, bei
+   Spielen und bei Eintraegen ohne diese Daten steht der Titel einfach
+   ohne Zusatz da.
+
+   Der "+1"-Knopf ist bewusst schmal und rechts statt als breite Zeile
+   darunter: bei 430 px Breite wurde es sonst zu eng.
+   ============================================================ */
+function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLabel, reihe = 0, vorrang = false }) {
+  const stand = fortschrittStand(eintrag);
+  /* Die Eingabe von Hand — gebraucht, wenn ein Titel mitten in einer
+     Staffel aufgenommen wird. Sie oeffnet sich mit einem Druck auf den
+     Text und schliesst sich nach dem Uebernehmen wieder. */
+  const [offen, setOffen] = useState(false);
+  const [staffelText, setStaffelText] = useState("");
+  const [folgeText, setFolgeText] = useState("");
+
+  function oeffnen() {
+    if (!stand) return;
+    setStaffelText(String(stand.staffel));
+    setFolgeText(String(stand.folge));
+    setOffen(true);
+  }
+
+  function uebernehmen() {
+    const staffel = Math.round(Number(staffelText));
+    const folge = Math.round(Number(folgeText));
+    setOffen(false);
+    if (!Number.isFinite(staffel) || !Number.isFinite(folge)) return;
+    if (staffel < 1 || folge < 0) return;
+    if (staffel === stand.staffel && folge === stand.folge) return;
+    onStand(staffel, folge);
+  }
+
+  // Weiter geht es nur, solange es etwas weiterzuzaehlen gibt.
+  const weiterMoeglich = !busy && !!fortschrittWeiter(stand);
+  const anteil = stand ? Math.min(1, stand.folge / stand.gesamt) : 0;
+
+  const zahlenfeld = {
+    width: 54, boxSizing: "border-box", background: "#141416",
+    border: "1px solid #33333a", borderRadius: 6, padding: "6px 8px",
+    color: "#EDEAE3", fontSize: 14, fontFamily: "'JetBrains Mono', monospace",
+  };
+
+  return (
+    <div className="listen-eintrag" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326", animationDelay: listenVersatz(reihe) }}>
+      <Poster url={eintrag.poster} title={eintrag.title} size={34} vorrang={vorrang} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {eintrag.title}
+        </div>
+        {stand && !offen && (
+          /* Balken und Stand in einer Zeile: der Balken nimmt den
+             Platz, der uebrig bleibt, der Text steht in fester Breite
+             daneben. */
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+            <div
+              style={{ flex: "1 1 auto", minWidth: 0, height: 3, borderRadius: 2, background: "#2A2A2E", overflow: "hidden" }}
+              role="progressbar"
+              aria-valuenow={stand.folge}
+              aria-valuemin={0}
+              aria-valuemax={stand.gesamt}
+              aria-label={"Staffel " + stand.staffel}
+            >
+              <div style={{ width: Math.round(anteil * 100) + "%", height: "100%", background: akzent }} />
+            </div>
+            <button
+              onClick={oeffnen}
+              title="Staffel und Folge von Hand setzen"
+              style={{
+                flexShrink: 0, background: "transparent", border: "none", padding: 0,
+                color: "#9A968C", fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+                cursor: "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              {fortschrittText(stand)}
+            </button>
+          </div>
+        )}
+        {stand && offen && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 11, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+              S
+              <input
+                type="number"
+                min="1"
+                value={staffelText}
+                onChange={(e) => setStaffelText(e.target.value)}
+                aria-label="Staffel"
+                style={{ ...zahlenfeld, marginLeft: 4 }}
+              />
+            </label>
+            <label style={{ fontSize: 11, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+              F
+              <input
+                type="number"
+                min="0"
+                value={folgeText}
+                onChange={(e) => setFolgeText(e.target.value)}
+                aria-label="Folge"
+                style={{ ...zahlenfeld, marginLeft: 4 }}
+              />
+            </label>
+            <button
+              onClick={uebernehmen}
+              disabled={busy}
+              style={{
+                padding: "6px 10px", borderRadius: 6, fontSize: 12, cursor: busy ? "default" : "pointer",
+                background: "transparent", color: akzent, border: "1px solid " + akzent,
+                fontWeight: 600, opacity: busy ? 0.5 : 1,
+              }}
+            >
+              Übernehmen
+            </button>
+            <button
+              onClick={() => setOffen(false)}
+              style={{
+                padding: "6px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                background: "transparent", color: "#9A968C", border: "1px solid #33333a",
+              }}
+            >
+              Abbrechen
+            </button>
+          </div>
+        )}
+      </div>
+      {stand && !offen && (
+        <button
+          onClick={onWeiter}
+          disabled={!weiterMoeglich}
+          title="Eine Folge weiter"
+          aria-label={eintrag.title + ": eine Folge weiter"}
+          style={{
+            flexShrink: 0, width: PLUS_EINS_GROESSE, height: PLUS_EINS_GROESSE, padding: 0,
+            borderRadius: 6, fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+            background: "transparent",
+            color: weiterMoeglich ? akzent : "#3a3a40",
+            border: "1px solid " + (weiterMoeglich ? akzent : "#232326"),
+            cursor: weiterMoeglich ? "pointer" : "default",
+          }}
+        >
+          +1
+        </button>
+      )}
+      <button
+        onClick={onAus}
+        disabled={busy}
+        title={ausLabel + " beenden"}
+        aria-label={eintrag.title + ": " + ausLabel + " beenden"}
+        style={{
+          flexShrink: 0, background: "transparent", border: "none", color: "#9A968C",
+          fontSize: 18, cursor: busy ? "default" : "pointer", padding: "0 4px", lineHeight: 1,
+          opacity: busy ? 0.5 : 1,
         }}
       >
         ×
@@ -4679,6 +4991,48 @@ function AngabenEditor({ entry, regieLabel, busy, onSave, onCancel }) {
   );
 }
 
+/**
+ * Der Schalter "Am Schauen" (bei Spielen "Am Spielen").
+ *
+ * Er steht in der Detailansicht eines bewerteten Eintrags. Vorgemerkte
+ * Eintraege haben keine Detailansicht — dort sitzt stattdessen der
+ * kleine Startknopf an der Watchlist-Zeile (siehe WatchlistZeile).
+ *
+ * Der Schalter ist die einzige Stelle, die das Kennzeichen aendert:
+ * Es wird nirgends automatisch gesetzt und nirgends automatisch
+ * geloescht.
+ */
+function AmSchauenSchalter({ an, label, busy, onChange }) {
+  return (
+    <button
+      onClick={() => !busy && onChange(!an)}
+      disabled={busy}
+      role="switch"
+      aria-checked={an}
+      title={an ? label + " beenden" : label + " beginnen"}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 8,
+        padding: "6px 12px", borderRadius: 999, fontFamily: "inherit", fontSize: 13,
+        background: "transparent",
+        color: an ? "var(--accent, #C9A227)" : "#9A968C",
+        border: "1px solid " + (an ? "var(--accent, #C9A227)" : "#33333a"),
+        fontWeight: an ? 700 : 400,
+        cursor: busy ? "default" : "pointer",
+        opacity: busy ? 0.5 : 1,
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          width: 8, height: 8, borderRadius: 999, flexShrink: 0,
+          background: an ? "var(--accent, #C9A227)" : "#3a3a40",
+        }}
+      />
+      {label}
+    </button>
+  );
+}
+
 /* ------------------------------------------------------------
    Zaehler "wie oft geschaut/gespielt" als schmale Meta-Angabe.
 
@@ -4731,7 +5085,7 @@ function ZaehlerFeld({ label, wert, busy, onChange }) {
   );
 }
 
-function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount, onEloZuruecksetzen }) {
+function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount, onAmSchauen, onEloZuruecksetzen }) {
   const criteria = criteriaFor(category);
   const criteriaScore = entryCriteriaScore(entry, category);
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
@@ -4886,6 +5240,15 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
             wert={entryWatchCount(entry)}
             busy={busy}
             onChange={(n) => onSaveWatchCount(n)}
+          />
+          {/* Der Rewatch-Fall: ein bewerteter Eintrag darf gleichzeitig
+              am Schauen sein. Er bleibt dabei in der Rangliste und
+              steht zusaetzlich im eigenen Reiter. */}
+          <AmSchauenSchalter
+            an={istAmSchauen(entry)}
+            label={amSchauenLabel(category)}
+            busy={busy}
+            onChange={(an) => onAmSchauen(an)}
           />
         </div>
 
@@ -8040,7 +8403,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   // list | suche | form | edit | watchlist-form
   const [mode, setMode] = useState("list");
-  // Unter-Reiter innerhalb einer Kategorie: bewertet | watchlist
+  // Unter-Reiter innerhalb einer Kategorie: bewertet | amschauen | watchlist
   const [unterReiter, setUnterReiter] = useState("bewertet");
   // Der aus der Suche gewaehlte Treffer, den das Formular vorbelegt.
   const [gewaehlterTreffer, setGewaehlterTreffer] = useState(null);
@@ -8119,6 +8482,15 @@ export default function App() {
       imdbRating: typeof e.imdbRating === "number" ? e.imdbRating : null,
       // Vorgemerkt statt bewertet — ohne Werte und ohne Endnote.
       watchlist: e.watchlist === true,
+      /* Am Schauen — ein eigenes Kennzeichen neben `watchlist`, kein
+         dritter Wert davon. Fehlt es (aeltere Server-Antwort, Backup
+         von vor dieser Aenderung), gilt der Standardwert. */
+      amSchauen: e.amSchauen === true,
+      /* Der Stand darin. null heisst "nie gesetzt" und ist etwas
+         anderes als 0: eine 0 bei der Folge heisst "Staffel begonnen,
+         noch keine Folge gesehen". */
+      staffelNr: typeof e.staffelNr === "number" && e.staffelNr >= 1 ? Math.round(e.staffelNr) : null,
+      folgeNr: typeof e.folgeNr === "number" && e.folgeNr >= 0 ? Math.round(e.folgeNr) : null,
       // Wie oft geschaut/gespielt. Wer bewertet hat, hat einmal gesehen.
       watchCount: typeof e.watchCount === "number" ? e.watchCount : WATCH_COUNT_MIN,
       seasons: Array.isArray(e.seasons)
@@ -8465,7 +8837,7 @@ export default function App() {
       // Vorgemerkte Eintraege haben keine Note und gehoeren deshalb in
       // keine Rangliste — und damit auch in keine Statistik.
       const list = (items[cat.key] || [])
-        .filter((f) => !istVorgemerkt(f))
+        .filter(inReiterBewertet)
         .map((f) => ({
           ...f,
           score: entryScore(f, cat.key),
@@ -8477,7 +8849,13 @@ export default function App() {
   }, [items]);
 
   /* Die Watchlist je Kategorie: neueste Vormerkung zuerst. Eine
-     Sortierung nach Note gibt es hier nicht — es gibt noch keine. */
+     Sortierung nach Note gibt es hier nicht — es gibt noch keine.
+
+     Das ist die VOLLSTAENDIGE Vormerkliste, samt allem, was gerade am
+     Schauen ist. Sie geht so an die Zeitaufwand-Statistik und an das
+     Minispiel "Was schau ich?" — an beiden aendert dieser Schritt
+     ausdruecklich nichts. Nur die Anzeige im Unter-Reiter blendet
+     Laufendes aus (siehe `watchlistList` unten). */
   const watchlistByCategory = useMemo(() => {
     const result = {};
     for (const cat of CATEGORIES) {
@@ -8488,8 +8866,26 @@ export default function App() {
     return result;
   }, [items]);
 
+  /* Was gerade am Schauen ist — bewertet wie vorgemerkt, beides steht
+     hier nebeneinander. Zuletzt geaendert zuerst: der Titel, an dem
+     gerade gearbeitet wird, steht damit oben. */
+  const amSchauenByCategory = useMemo(() => {
+    const result = {};
+    for (const cat of CATEGORIES) {
+      result[cat.key] = (items[cat.key] || [])
+        .filter(inReiterAmSchauen)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    }
+    return result;
+  }, [items]);
+
   const currentList = rankedByCategory[category];
-  const watchlistList = watchlistByCategory[category] || [];
+  /* Was der Unter-Reiter "Watchlist" zeigt: dieselbe Liste ohne das,
+     was gerade am Schauen ist. Ausgeblendet wird ausschliesslich die
+     Anzeige — das Merkmal `watchlist` bleibt am Eintrag stehen, damit
+     er beim Ausschalten wieder hier auftaucht. */
+  const watchlistList = (watchlistByCategory[category] || []).filter(inReiterWatchlist);
+  const amSchauenList = amSchauenByCategory[category] || [];
   const accent = accentFor(category);
 
   /* ---- Anzeige-Cache: nur zum Hinsehen ----
@@ -8503,7 +8899,7 @@ export default function App() {
   const cacheListe = useMemo(() => {
     if (!anzeigeCache) return null;
     const liste = (anzeigeCache[category] || [])
-      .filter((f) => !istVorgemerkt(f))
+      .filter(inReiterBewertet)
       .map((f) => ({ ...f, score: entryScore(f, category) }));
     liste.sort((a, b) => sortWert(b.score) - sortWert(a.score));
     return liste;
@@ -8512,13 +8908,21 @@ export default function App() {
   const cacheWatchlist = useMemo(() => {
     if (!anzeigeCache) return null;
     return (anzeigeCache[category] || [])
-      .filter(istVorgemerkt)
+      .filter(inReiterWatchlist)
       .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }, [anzeigeCache, category]);
+
+  const cacheAmSchauen = useMemo(() => {
+    if (!anzeigeCache) return null;
+    return (anzeigeCache[category] || [])
+      .filter(inReiterAmSchauen)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   }, [anzeigeCache, category]);
 
   /* Was die Liste zeigt — echte Daten, sobald sie da sind. */
   const anzeigeListe = zeigtCache && cacheListe ? cacheListe : currentList;
   const anzeigeWatchlist = zeigtCache && cacheWatchlist ? cacheWatchlist : watchlistList;
+  const anzeigeAmSchauen = zeigtCache && cacheAmSchauen ? cacheAmSchauen : amSchauenList;
 
   /* Steht der Cache noch, obwohl der Abruf durch ist, ist er
      fehlgeschlagen — dann sagt ein dezenter Hinweis, woher die Liste
@@ -8828,7 +9232,12 @@ export default function App() {
     for (const f of items[category] || []) {
       const key = titelSchluessel(f.title);
       if (key && !map.has(key)) {
-        map.set(key, { id: f.id, title: f.title, watchlist: istVorgemerkt(f) });
+        map.set(key, {
+          id: f.id,
+          title: f.title,
+          watchlist: istVorgemerkt(f),
+          amSchauen: istAmSchauen(f),
+        });
       }
     }
     return map;
@@ -9109,6 +9518,80 @@ export default function App() {
       setSaveError("");
     } catch (e) {
       setSaveError("Zähler nicht gespeichert: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ---- Am Schauen ----
+     Das Kennzeichen und der Stand darin. Beides aendert sich
+     ausschliesslich hier: es gibt kein automatisches Setzen und kein
+     automatisches Loeschen. Insbesondere entfernt eine Bewertung das
+     Kennzeichen nicht — bei einer Serie kann Staffel 1 bewertet sein,
+     waehrend Staffel 2 noch laeuft.
+
+     Wie beim Zaehler geht alles Uebrige des Eintrags unveraendert mit;
+     diese Aufrufe fassen nur die drei Felder an. Sie gelten fuer
+     bewertete und vorgemerkte Eintraege gleichermassen, deshalb wird
+     hier ueber `items` gesucht und nicht ueber die Rangliste. */
+  async function amSchauenSchalten(id, an) {
+    const current = (items[category] || []).find((f) => f.id === id);
+    if (!current) return;
+
+    /* Beim Einschalten bekommt ein Eintrag ohne Stand seinen Anfang:
+       Staffel 1, Folge 0. Ein vorhandener Stand bleibt stehen — auch
+       beim Ausschalten —, damit ein spaeteres Wiederaufnehmen ihn
+       kennt. */
+    const staffelNr = an && current.staffelNr === null ? 1 : current.staffelNr;
+    const folgeNr = an && current.folgeNr === null ? 0 : current.folgeNr;
+
+    setBusy(true);
+    try {
+      const saved = await api.update(id, {
+        ...current,
+        seasons: current.seasons || [],
+        category,
+        amSchauen: an === true,
+        staffelNr,
+        folgeNr,
+      });
+      setItems((prev) => ({
+        ...prev,
+        [category]: prev[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      }));
+      setSaveError("");
+    } catch (e) {
+      setSaveError(amSchauenLabel(category) + " nicht gespeichert: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* Der Stand innerhalb des Kennzeichens — von "+1" und von der
+     Eingabe von Hand. Das Kennzeichen selbst bleibt dabei
+     unveraendert: auch die letzte Folge der letzten Staffel schaltet
+     es nicht aus. */
+  async function fortschrittSpeichern(id, staffelNr, folgeNr) {
+    const current = (items[category] || []).find((f) => f.id === id);
+    if (!current) return;
+
+    setBusy(true);
+    try {
+      const saved = await api.update(id, {
+        ...current,
+        seasons: current.seasons || [],
+        category,
+        amSchauen: istAmSchauen(current),
+        staffelNr,
+        folgeNr,
+      });
+      setItems((prev) => ({
+        ...prev,
+        [category]: prev[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      }));
+      setSaveError("");
+    } catch (e) {
+      setSaveError("Fortschritt nicht gespeichert: " + e.message);
     } finally {
       setBusy(false);
     }
@@ -9412,6 +9895,21 @@ export default function App() {
                    damit hinueber. Aeltere Sicherungen haben das Feld
                    nicht; dann setzt der Server das heutige Datum. */
                 ratedAt: typeof entry.ratedAt === "number" && entry.ratedAt > 0 ? entry.ratedAt : undefined,
+                /* Am Schauen und der Stand darin. Ein aelteres Backup
+                   kennt die drei Felder nicht — dann gelten die
+                   Standardwerte: nicht am Schauen, kein Stand. Die
+                   Feldliste hier ist fest, deshalb muessen sie
+                   ausdruecklich darin stehen; ein `...entry` gibt es
+                   an dieser Stelle bewusst nicht. */
+                amSchauen: entry.amSchauen === true,
+                staffelNr:
+                  typeof entry.staffelNr === "number" && entry.staffelNr >= 1
+                    ? Math.round(entry.staffelNr)
+                    : null,
+                folgeNr:
+                  typeof entry.folgeNr === "number" && entry.folgeNr >= 0
+                    ? Math.round(entry.folgeNr)
+                    : null,
               });
               totalValid++;
             }
@@ -10459,10 +10957,17 @@ export default function App() {
 
           {mode === "list" && (
             <>
-              {/* Unter-Reiter: bewertete Eintraege oder Watchlist. */}
+              {/* Unter-Reiter: bewertete Eintraege, was gerade laeuft,
+                  oder die Watchlist. */}
               <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
                 {[
                   { key: "bewertet", label: "Bewertet" },
+                  {
+                    key: "amschauen",
+                    label:
+                      amSchauenLabel(category) +
+                      (anzeigeAmSchauen.length ? " · " + anzeigeAmSchauen.length : ""),
+                  },
                   {
                     key: "watchlist",
                     label:
@@ -10496,6 +11001,61 @@ export default function App() {
                 + Neu hinzufügen
               </button>
             </>
+          )}
+
+          {mode === "list" && unterReiter === "amschauen" && (
+            <Uebergang trigger={unterReiter}>
+            <>
+              <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
+                {!loaded && !zeigtCache ? (
+                  <SkelettFlaeche breite={120} hoehe={11} rund={3} style={{ margin: "3px 0" }} />
+                ) : anzeigeAmSchauen.length === 0 ? (
+                  "Nichts angefangen."
+                ) : (
+                  anzeigeAmSchauen.length +
+                  (anzeigeAmSchauen.length === 1 ? " Eintrag " : " Einträge ") +
+                  amSchauenLabelKlein(category)
+                )}
+              </div>
+              {!loaded && !zeigtCache ? (
+                <SkelettListe />
+              ) : anzeigeAmSchauen.length === 0 ? (
+                /* Wie in der Watchlist erscheint der Satz erst, wenn
+                   der Abruf durch ist — vorher wuesste niemand, ob
+                   wirklich nichts da ist. */
+                loaded && (
+                  <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
+                    {category === "game"
+                      ? "Gerade ist nichts angespielt."
+                      : "Gerade läuft nichts."}{" "}
+                    Was du angefangen, aber noch nicht zu Ende{" "}
+                    {category === "game" ? "gespielt" : "geschaut"} hast, landet hier — den
+                    Schalter „{amSchauenLabel(category)}" findest du am Eintrag selbst.
+                  </div>
+                )
+              ) : (
+                anzeigeAmSchauen.map((f, i) => (
+                  <AmSchauenZeile
+                    key={f.id}
+                    eintrag={f}
+                    reihe={i}
+                    vorrang={i < 10}
+                    akzent={accent}
+                    /* Gecachte Zeilen sind reine Anzeige: aus ihnen
+                       darf kein Schreibvorgang entstehen. */
+                    busy={busy || zeigtCache}
+                    ausLabel={amSchauenLabel(category)}
+                    onWeiter={() => {
+                      const naechster = fortschrittWeiter(fortschrittStand(f));
+                      if (naechster) fortschrittSpeichern(f.id, naechster.staffelNr, naechster.folgeNr);
+                    }}
+                    onStand={(staffel, folge) => fortschrittSpeichern(f.id, staffel, folge)}
+                    onAus={() => amSchauenSchalten(f.id, false)}
+                  />
+                ))
+              )}
+            </>
+            </Uebergang>
           )}
 
           {mode === "list" && unterReiter === "watchlist" && (
@@ -10541,6 +11101,8 @@ export default function App() {
                        weder eine Bewertung noch ein Loeschen entstehen. */
                     busy={busy || zeigtCache}
                     merkliste={merklisteLabel(category)}
+                    amSchauenLabelText={amSchauenLabel(category)}
+                    onAmSchauen={() => amSchauenSchalten(f.id, true)}
                     onBewerten={() => { setBewerteVorgemerkt(f); setMode("watchlist-form"); }}
                     onEntfernen={() => watchlistEntfernen(f.id)}
                   />
@@ -10749,6 +11311,7 @@ export default function App() {
           onDelete={() => setConfirmDelete(selectedEntry.id)}
           onSaveAngaben={(werte) => angabenSpeichern(selectedEntry.id, werte)}
           onSaveWatchCount={(n) => zaehlerSpeichern(selectedEntry.id, n)}
+          onAmSchauen={(an) => amSchauenSchalten(selectedEntry.id, an)}
           onEloZuruecksetzen={() => eloZuruecksetzen(category, selectedEntry.id)}
         />
       )}

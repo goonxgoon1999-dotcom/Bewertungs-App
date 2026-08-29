@@ -4,6 +4,7 @@ import {
   normalizeWatchCount, WATCH_COUNT_DEFAULT, genresZuText,
   normalizeElo, normalizeDuels, ELO_START,
   episodenZuText, positiveZahl, logFehler, fehlerBeschreibung,
+  normalizeStaffelNr, normalizeFolgeNr,
 } from "./_db.js";
 
 /**
@@ -249,6 +250,37 @@ function laufzeitColumns(category, body) {
   };
 }
 
+/* Die drei Felder rund um "Am Schauen". */
+const AM_SCHAUEN_FELDER = ["amSchauen", "staffelNr", "folgeNr"];
+
+/**
+ * "Am Schauen" und der Fortschritt in Spaltenform.
+ *
+ * Sie verhalten sich beim Aktualisieren wie die Laufzeit: Fehlen sie
+ * in der Anfrage ganz, bleibt der gespeicherte Wert stehen. Das ist
+ * hier keine Bequemlichkeit, sondern die Bedingung aus der Aufgabe —
+ * das Kennzeichen darf sich ausschliesslich ueber seinen eigenen
+ * Schalter aendern. Ohne diese Regel wuerde jedes Speichern einer
+ * Bewertung (das Formular schickt nur seine eigenen Felder) und jedes
+ * automatische Nachladen eines Posters das Kennzeichen loeschen — und
+ * damit genau den Fall zerstoeren, um den es geht: Staffel 1 ist
+ * bewertet, waehrend Staffel 2 noch laeuft.
+ *
+ * COALESCE taugt dafuer nicht: Bei `staffel_nr` und `folge_nr` ist
+ * NULL ein echter Wert ("nie gesetzt"). Deshalb entscheidet auch hier
+ * das eigene Kennzeichen `mitgeschickt`, ob ueberhaupt geschrieben
+ * wird.
+ */
+function amSchauenColumns(body) {
+  const mitgeschickt = AM_SCHAUEN_FELDER.some((feld) => body[feld] !== undefined);
+  return {
+    mitgeschickt,
+    amSchauen: body.amSchauen === true,
+    staffelNr: normalizeStaffelNr(body.staffelNr),
+    folgeNr: normalizeFolgeNr(body.folgeNr),
+  };
+}
+
 export default async function handler(req, res) {
   try {
     await ensureReady();
@@ -291,6 +323,7 @@ async function create(req, res) {
   const v = criteriaColumns(body.category, body.values, merkliste);
   const a = angabenColumns(body.category, body);
   const l = laufzeitColumns(body.category, body);
+  const sch = amSchauenColumns(body);
 
   // Eintrag und Staffeln gehen gemeinsam in einer Transaktion in die
   // Datenbank — entweder alles oder nichts.
@@ -302,6 +335,7 @@ async function create(req, res) {
          personal, release_year, director, imdb_rating, genres, collection, studio,
          runtime_minutes, episode_runtime, episode_count, episodes_per_season,
          watchlist, watch_count, elo, duels,
+         am_schauen, staffel_nr, folge_nr,
          created_at, updated_at, rated_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
@@ -324,6 +358,11 @@ async function create(req, res) {
          -- die Endnote ist exakt 0.
          ${normalizeElo(body.elo) ?? ELO_START},
          ${normalizeDuels(body.duels) ?? 0},
+         -- Am Schauen und der Stand darin. Ein Backup ohne diese
+         -- Felder (jede Sicherung von vor dieser Aenderung) bringt sie
+         -- nicht mit — dann gelten die Standardwerte: nicht am
+         -- Schauen, kein Stand.
+         ${sch.amSchauen}, ${sch.staffelNr}, ${sch.folgeNr},
          ${body.createdAt || now}, ${now},
          -- Wann bewertet wurde. Vorgemerktes hat noch kein Datum; es
          -- kommt erst, wenn daraus ein bewerteter Eintrag wird (siehe
@@ -362,6 +401,7 @@ async function update(req, res) {
   const v = criteriaColumns(body.category, body.values, merkliste);
   const a = angabenColumns(body.category, body);
   const l = laufzeitColumns(body.category, body);
+  const sch = amSchauenColumns(body);
   const ergebnis = await sql.transaction([
     sql`
       UPDATE media_items SET
@@ -400,6 +440,13 @@ async function update(req, res) {
         episode_count       = CASE WHEN ${l.mitgeschickt}::boolean THEN ${l.episodeCount}::integer ELSE episode_count END,
         episodes_per_season = CASE WHEN ${l.mitgeschickt}::boolean THEN ${l.episodesPerSeason}::text ELSE episodes_per_season END,
         watchlist       = ${merkliste},
+        -- Am Schauen und der Stand darin: geschrieben wird nur, wenn
+        -- sie in der Anfrage ueberhaupt vorkamen (siehe
+        -- amSchauenColumns). Eine Bewertung fasst das Kennzeichen
+        -- damit nicht an — nur sein eigener Schalter tut das.
+        am_schauen      = CASE WHEN ${sch.mitgeschickt}::boolean THEN ${sch.amSchauen}::boolean ELSE am_schauen END,
+        staffel_nr      = CASE WHEN ${sch.mitgeschickt}::boolean THEN ${sch.staffelNr}::integer ELSE staffel_nr END,
+        folge_nr        = CASE WHEN ${sch.mitgeschickt}::boolean THEN ${sch.folgeNr}::integer ELSE folge_nr END,
         -- Fehlt der Zaehler in der Anfrage, bleibt der gespeicherte Wert
         -- stehen. Nicht jeder Speichervorgang schickt ihn mit (das
         -- automatische Nachladen von Postern und Angaben etwa) — ohne
