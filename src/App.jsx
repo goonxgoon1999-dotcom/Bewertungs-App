@@ -434,6 +434,24 @@ function anzeigeNote(score) {
   return Math.min(10, Math.max(0, score));
 }
 
+/**
+ * Liegt eine Endnote im eingestellten Bereich des Notenfilters?
+ *
+ * Verglichen wird mit der angezeigten, auf 0–10 begrenzten Note.
+ * Sonst fiele ein Eintrag, den ein Duell-Zuschlag ueber die 10
+ * schiebt, schon beim voreingestellten Bereich heraus.
+ *
+ * Die Funktion steht hier, damit die Vorschau im Filterblatt ("N
+ * Einträge") und die Liste danach dieselbe Frage stellen. Standen die
+ * beiden Vergleiche getrennt, konnte die Vorschau eine andere Zahl
+ * nennen als die Liste dann zeigte.
+ */
+function imNotenbereich(score, min, max) {
+  if (typeof score !== "number") return false;
+  const gezeigt = anzeigeNote(score);
+  return gezeigt >= min && gezeigt <= max;
+}
+
 /** Kriterien-Note eines Eintrags (ohne Bauchgefuehl), analog gewichtet. */
 function entryCriteriaScore(entry, category) {
   if (!hasSeasons(entry)) return computeCriteriaScore(entry.values, category);
@@ -2721,11 +2739,7 @@ function FilterSheet({ initial, totalCount, allInCategory, category, onApply, on
     const lo = Math.min(min, max);
     const hi = Math.max(min, max);
     return allInCategory.filter(
-      (f) =>
-        typeof f.score === "number" &&
-        f.score >= lo &&
-        f.score <= hi &&
-        passtZuFiltern(f, entwurf, category)
+      (f) => imNotenbereich(f.score, lo, hi) && passtZuFiltern(f, entwurf, category)
     ).length;
   }, [min, max, allInCategory, category, genre, jahrzehnt, regie, reihe, stimmung]);
 
@@ -5002,9 +5016,17 @@ function sortWert(score) {
 }
 
 /* Kennzahlen einer Liste: Anzahl, Durchschnitt, höchste und
-   niedrigste Endnote. Unbewertete Einträge fließen nicht ein. */
+   niedrigste Endnote. Unbewertete Einträge fließen nicht ein.
+
+   Gerechnet wird mit der angezeigten, auf 0–10 begrenzten Note: Die
+   Skala geht bis 10, ein Höchstwert von 10,21 wäre auf ihr schlicht
+   falsch. Sortiert wird davon unberührt weiter mit dem unbegrenzten
+   Wert — das entscheidet `sortWert` oben, nicht diese Funktion. */
 function statsFor(list) {
-  const noten = list.map((f) => f.score).filter((v) => typeof v === "number");
+  const noten = list
+    .map((f) => f.score)
+    .filter((v) => typeof v === "number")
+    .map(anzeigeNote);
   const count = list.length;
   const avg = noten.length ? noten.reduce((s, v) => s + v, 0) / noten.length : 0;
   const max = noten.length ? Math.max(...noten) : 0;
@@ -8724,12 +8746,9 @@ export default function App() {
     // unauffindbar, obwohl gerade sie Aufmerksamkeit brauchen.
     const bereichOffen =
       filterState.min === DEFAULT_FILTER.min && filterState.max === DEFAULT_FILTER.max;
-    /* Verglichen wird mit der angezeigten, auf 0–10 begrenzten Note.
-       Sonst fiele ein Eintrag, den ein Duell-Zuschlag ueber die 10
-       schiebt, schon beim voreingestellten Bereich aus der Liste. */
     list = list.filter((f) =>
       typeof f.score === "number"
-        ? anzeigeNote(f.score) >= filterState.min && anzeigeNote(f.score) <= filterState.max
+        ? imNotenbereich(f.score, filterState.min, filterState.max)
         : bereichOffen
     );
 

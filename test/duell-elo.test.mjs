@@ -42,6 +42,9 @@ const GEPRUEFT = [
   "anzeigeNote",
   "zuschlagText",
   "sortWert",
+  "statsFor",
+  "imNotenbereich",
+  "DEFAULT_FILTER",
   "ELO_START",
   "ZUSCHLAG_MAX",
   "criteriaFor",
@@ -311,6 +314,222 @@ test("Der Zuschlag steht mit Vorzeichen und zwei Nachkommastellen da", () => {
   assert.equal(app.zuschlagText(-0.3808), "−0.38");
   // Ein Wert, der auf zwei Stellen null ist, bekommt kein Minus.
   assert.equal(app.zuschlagText(-0.001), "+0.00");
+});
+
+/* ---------------------------------------------------------------- *
+ * 4b. Die Statistik-Kennzahlen rechnen mit der begrenzten Note
+ * ---------------------------------------------------------------- */
+
+/* Eine Liste, wie die Rangliste sie liefert: Eintraege mit `score`,
+   also der unbegrenzten Endnote. */
+function mitNoten(noten) {
+  return noten.map((score, i) => ({ id: "id" + i, score }));
+}
+
+test("Der Hoechstwert wird bei 10,00 abgeschnitten", () => {
+  /* Die Skala geht bis 10. Ein Eintrag, den ein Duell-Zuschlag
+     darueber schiebt, darf in den Kennzahlen nicht mit 10,21
+     dastehen. */
+  const stats = app.statsFor(mitNoten([10.21, 8.5, 7.0]));
+  assert.equal(stats.max, 10);
+  assert.equal(stats.count, 3);
+});
+
+test("Der Tiefstwert wird bei 0,00 abgeschnitten", () => {
+  const stats = app.statsFor(mitNoten([-0.34, 2.5, 6.0]));
+  assert.equal(stats.min, 0);
+});
+
+test("Der Durchschnitt rechnet mit den begrenzten Werten", () => {
+  /* Unbegrenzt waere der Schnitt (10.4 + 9 + 8) / 3 = 9.1333…,
+     begrenzt ist er (10 + 9 + 8) / 3 = 9. */
+  const stats = app.statsFor(mitNoten([10.4, 9, 8]));
+  assert.equal(stats.avg, 9);
+  assert.notEqual(stats.avg, (10.4 + 9 + 8) / 3);
+
+  // Und am unteren Ende genauso.
+  assert.equal(app.statsFor(mitNoten([-1, 1, 3])).avg, (0 + 1 + 3) / 3);
+});
+
+test("Aus einer echten Endnote ueber 10 wird in der Statistik 10,00", () => {
+  /* Nicht von Hand gesetzt, sondern ueber den ganzen Weg gerechnet:
+     Klammerteil 10,00 plus Zuschlag aus einer erspielten Elo. */
+  const hoch = eintrag(10, 10, { elo: 1300 });
+  const score = app.entryScore(hoch, "movie");
+  assert.ok(score > 10, "die Endnote muss unbegrenzt ueber 10 liegen, ist " + score);
+
+  const stats = app.statsFor([{ id: "a", score }, { id: "b", score: 7 }]);
+  assert.equal(stats.max, 10);
+  assert.equal(stats.max.toFixed(2), "10.00");
+});
+
+test("Innerhalb von 0 bis 10 aendert die Begrenzung keine Kennzahl", () => {
+  /* Der Regressionsfall: solange keine Endnote den Bereich verlaesst
+     — und ohne gespieltes Duell tut das keine —, muss jede Kennzahl
+     Ziffer fuer Ziffer dieselbe sein wie vorher. */
+  const noten = [9.37, 8.02, 7.5, 6.13, 4.88, 2.4, 0, 10];
+  const stats = app.statsFor(mitNoten(noten));
+  assert.equal(stats.count, noten.length);
+  assert.equal(stats.max, 10);
+  assert.equal(stats.min, 0);
+  assert.equal(stats.avg, noten.reduce((s, v) => s + v, 0) / noten.length);
+});
+
+test("Bei elo = 1000 aendert sich in der Statistik kein Wert", () => {
+  /* Gerechnet ueber echte Eintraege, einmal ohne die neuen Felder und
+     einmal mit ausdruecklichem Startwert — verglichen wird gegen die
+     Kennzahlen aus der alten Endnoten-Formel. */
+  const eintraege = [
+    eintrag([9, 8, 9, 8, 9, 8, 9], 9),
+    eintrag([8, 7, 9, 6, 7, 8, 9], 7.4),
+    eintrag([5, 6, 5, 4, 6, 5, 6], 5.2),
+    eintrag([2, 3, 1, 2, 3, 2, 1], 2),
+  ];
+
+  const vorher = app.statsFor(eintraege.map((e, i) => ({ id: "id" + i, score: endnoteVorher(e) })));
+
+  for (const zusatz of [{}, { elo: app.ELO_START }, { elo: 1000, duels: 9 }]) {
+    const jetzt = app.statsFor(
+      eintraege.map((e, i) => ({ id: "id" + i, score: app.entryScore({ ...e, ...zusatz }, "movie") }))
+    );
+    assert.deepEqual(jetzt, vorher, "Kennzahlen weichen ab bei " + JSON.stringify(zusatz));
+  }
+});
+
+test("Unbewertete Eintraege fliessen weiterhin nicht in die Kennzahlen ein", () => {
+  /* Bestand: sie zaehlen bei `count` mit, aber nicht im Schnitt.
+     Daran aendert die Begrenzung nichts. */
+  const stats = app.statsFor([{ id: "a", score: 8 }, { id: "b", score: null }, { id: "c", score: 6 }]);
+  assert.equal(stats.count, 3);
+  assert.equal(stats.avg, 7);
+  assert.equal(stats.max, 8);
+  assert.equal(stats.min, 6);
+});
+
+test("Eine leere Liste bleibt bei den bisherigen Nullen", () => {
+  assert.deepEqual(app.statsFor([]), { count: 0, avg: 0, max: 0, min: 0 });
+});
+
+test("Sortiert wird trotzdem weiter mit dem unbegrenzten Wert", () => {
+  /* Die Begrenzung sitzt in den Kennzahlen, nicht in der Sortierung —
+     zwei Eintraege, die beide bei 10,00 anstossen, bleiben in der
+     Rangliste unterscheidbar. */
+  const stark = { id: "stark", score: 10.4 };
+  const schwaecher = { id: "schwaecher", score: 10.05 };
+  assert.equal(app.statsFor([stark, schwaecher]).max, 10);
+
+  const sortiert = [schwaecher, stark]
+    .sort((a, b) => app.sortWert(b.score) - app.sortWert(a.score))
+    .map((f) => f.id);
+  assert.deepEqual(sortiert, ["stark", "schwaecher"]);
+});
+
+/* ---------------------------------------------------------------- *
+ * 4c. Notenfilter: Vorschau und Ergebnisliste nennen dieselbe Zahl
+ * ---------------------------------------------------------------- */
+
+test("Ein Eintrag ueber 10,00 faellt beim voreingestellten Bereich nicht heraus", () => {
+  /* Der Notenfilter geht bis 10. Ohne Begrenzung waere ein Eintrag,
+     den ein Duell-Zuschlag darueber schiebt, schon bei der
+     Voreinstellung unsichtbar. */
+  const hoch = eintrag(10, 10, { elo: 1300 });
+  const score = app.entryScore(hoch, "movie");
+  assert.ok(score > 10, "die Endnote muss unbegrenzt ueber 10 liegen, ist " + score);
+
+  assert.equal(app.imNotenbereich(score, app.DEFAULT_FILTER.min, app.DEFAULT_FILTER.max), true);
+});
+
+test("Vorschau und angewendeter Filter zaehlen denselben Eintrag", () => {
+  /* Die Vorschau im Filterblatt ("N Einträge") und die Liste danach
+     stellen dieselbe Frage — beide ueber imNotenbereich. Genau das
+     hielt frueher nicht: die Vorschau verglich unbegrenzt, die Liste
+     begrenzt, und bei einem Eintrag ueber 10,00 wichen die Zahlen
+     auseinander. */
+  const ueberZehn = app.entryScore(eintrag(10, 10, { elo: 1300 }), "movie");
+  const unterNull = app.entryScore(eintrag(0, 0, { elo: 700 }), "movie");
+  assert.ok(ueberZehn > 10 && unterNull < 0);
+
+  const liste = [
+    { id: "drueber", score: ueberZehn },
+    { id: "drunter", score: unterNull },
+    { id: "mittig", score: 7.42 },
+    { id: "ohne", score: null },
+  ];
+
+  /* Nachgestellt wird beides so, wie es in src/App.jsx steht: die
+     Vorschau ohne die unbewerteten Eintraege, die Liste mit dem
+     Rueckfall fuer sie. Beim voreingestellten Bereich ist er offen,
+     die beiden Zahlen muessen also gleich sein. */
+  const vorschau = (min, max) =>
+    liste.filter((f) => app.imNotenbereich(f.score, Math.min(min, max), Math.max(min, max))).length;
+  const angewendet = (min, max) => {
+    const bereichOffen = min === app.DEFAULT_FILTER.min && max === app.DEFAULT_FILTER.max;
+    return liste.filter((f) =>
+      typeof f.score === "number" ? app.imNotenbereich(f.score, min, max) : bereichOffen
+    ).length;
+  };
+
+  // Voreingestellt: alle drei bewerteten Eintraege, der ueber 10 dabei.
+  const { min, max } = app.DEFAULT_FILTER;
+  assert.equal(vorschau(min, max), 3);
+  assert.equal(angewendet(min, max), 3 + 1, "der unbewertete Eintrag bleibt bei offenem Bereich sichtbar");
+
+  /* Und so haette die Vorschau frueher gezaehlt: unbegrenzt. Der
+     Unterschied ist genau der Fehler, um den es geht — stuende er
+     nicht hier, koennte der Test nicht belegen, dass die Aenderung
+     ueberhaupt etwas bewirkt. */
+  const vorschauAlt = (min, max) =>
+    liste.filter(
+      (f) => typeof f.score === "number" && f.score >= Math.min(min, max) && f.score <= Math.max(min, max)
+    ).length;
+  assert.equal(vorschauAlt(min, max), 1, "unbegrenzt fielen zwei der drei heraus");
+  assert.notEqual(vorschauAlt(min, max), vorschau(min, max));
+
+  // Der Eintrag ueber 10,00 zaehlt genau dort, wo seine Anzeige steht.
+  assert.equal(app.imNotenbereich(ueberZehn, 10, 10), true, "10,00 ist seine angezeigte Note");
+  assert.equal(app.imNotenbereich(ueberZehn, 0, 9.9), false);
+  // Und der unter 0,00 genauso.
+  assert.equal(app.imNotenbereich(unterNull, 0, 0), true);
+  assert.equal(app.imNotenbereich(unterNull, 0.1, 10), false);
+});
+
+test("Beide Stellen im Quelltext stellen die Frage ueber imNotenbereich", async () => {
+  /* Der eigentliche Schutz gegen einen Rueckfall: Vorschau und
+     angewendeter Filter duerfen den Bereich nicht mehr selbst
+     vergleichen. Taeten sie es wieder getrennt, koennten sie erneut
+     auseinanderlaufen — und das faellt in einem Test ueber Funktionen
+     allein nicht auf, weil beide Stellen in Komponenten stecken. */
+  const quelle = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+
+  const aufrufe = quelle.match(/imNotenbereich\(/g) || [];
+  assert.ok(aufrufe.length >= 3, "imNotenbereich wird nicht an beiden Stellen benutzt");
+
+  // Kein roher Vergleich einer Endnote gegen eine Filtergrenze mehr.
+  const roh = quelle.match(/\bf\.score\s*[<>]=?\s*(lo|hi|filterState\.(min|max))/g) || [];
+  assert.deepEqual(roh, [], "es wird wieder unbegrenzt verglichen: " + roh.join(", "));
+});
+
+test("Ohne Note gibt es keinen Bereichstreffer", () => {
+  /* Unbewertete Eintraege beantwortet die Frage mit nein. Dass sie
+     bei offenem Bereich trotzdem sichtbar bleiben, entscheidet die
+     Liste daneben — nicht dieser Vergleich. */
+  assert.equal(app.imNotenbereich(null, 0, 10), false);
+  assert.equal(app.imNotenbereich(undefined, 0, 10), false);
+  assert.equal(app.imNotenbereich("8", 0, 10), false);
+});
+
+test("Innerhalb von 0 bis 10 vergleicht der Filter wie vorher", () => {
+  /* Ohne gespieltes Duell liegt jede Endnote im Bereich — dort darf
+     die Begrenzung nichts veraendern. */
+  for (const score of [0, 0.01, 2.5, 5, 7.42, 9.99, 10]) {
+    for (const [von, bis] of [[0, 10], [5, 10], [0, 5], [7, 8]]) {
+      assert.equal(
+        app.imNotenbereich(score, von, bis),
+        score >= von && score <= bis,
+        "Note " + score + " im Bereich " + von + "–" + bis
+      );
+    }
+  }
 });
 
 /* ---------------------------------------------------------------- *
