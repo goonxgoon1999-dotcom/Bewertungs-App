@@ -5002,9 +5002,17 @@ function sortWert(score) {
 }
 
 /* Kennzahlen einer Liste: Anzahl, Durchschnitt, höchste und
-   niedrigste Endnote. Unbewertete Einträge fließen nicht ein. */
+   niedrigste Endnote. Unbewertete Einträge fließen nicht ein.
+
+   Gerechnet wird mit der angezeigten, auf 0–10 begrenzten Note: Die
+   Skala geht bis 10, ein Höchstwert von 10,21 wäre auf ihr schlicht
+   falsch. Sortiert wird davon unberührt weiter mit dem unbegrenzten
+   Wert — das entscheidet `sortWert` oben, nicht diese Funktion. */
 function statsFor(list) {
-  const noten = list.map((f) => f.score).filter((v) => typeof v === "number");
+  const noten = list
+    .map((f) => f.score)
+    .filter((v) => typeof v === "number")
+    .map(anzeigeNote);
   const count = list.length;
   const avg = noten.length ? noten.reduce((s, v) => s + v, 0) / noten.length : 0;
   const max = noten.length ? Math.max(...noten) : 0;

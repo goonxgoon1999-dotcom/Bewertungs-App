@@ -42,6 +42,7 @@ const GEPRUEFT = [
   "anzeigeNote",
   "zuschlagText",
   "sortWert",
+  "statsFor",
   "ELO_START",
   "ZUSCHLAG_MAX",
   "criteriaFor",
@@ -311,6 +312,114 @@ test("Der Zuschlag steht mit Vorzeichen und zwei Nachkommastellen da", () => {
   assert.equal(app.zuschlagText(-0.3808), "−0.38");
   // Ein Wert, der auf zwei Stellen null ist, bekommt kein Minus.
   assert.equal(app.zuschlagText(-0.001), "+0.00");
+});
+
+/* ---------------------------------------------------------------- *
+ * 4b. Die Statistik-Kennzahlen rechnen mit der begrenzten Note
+ * ---------------------------------------------------------------- */
+
+/* Eine Liste, wie die Rangliste sie liefert: Eintraege mit `score`,
+   also der unbegrenzten Endnote. */
+function mitNoten(noten) {
+  return noten.map((score, i) => ({ id: "id" + i, score }));
+}
+
+test("Der Hoechstwert wird bei 10,00 abgeschnitten", () => {
+  /* Die Skala geht bis 10. Ein Eintrag, den ein Duell-Zuschlag
+     darueber schiebt, darf in den Kennzahlen nicht mit 10,21
+     dastehen. */
+  const stats = app.statsFor(mitNoten([10.21, 8.5, 7.0]));
+  assert.equal(stats.max, 10);
+  assert.equal(stats.count, 3);
+});
+
+test("Der Tiefstwert wird bei 0,00 abgeschnitten", () => {
+  const stats = app.statsFor(mitNoten([-0.34, 2.5, 6.0]));
+  assert.equal(stats.min, 0);
+});
+
+test("Der Durchschnitt rechnet mit den begrenzten Werten", () => {
+  /* Unbegrenzt waere der Schnitt (10.4 + 9 + 8) / 3 = 9.1333…,
+     begrenzt ist er (10 + 9 + 8) / 3 = 9. */
+  const stats = app.statsFor(mitNoten([10.4, 9, 8]));
+  assert.equal(stats.avg, 9);
+  assert.notEqual(stats.avg, (10.4 + 9 + 8) / 3);
+
+  // Und am unteren Ende genauso.
+  assert.equal(app.statsFor(mitNoten([-1, 1, 3])).avg, (0 + 1 + 3) / 3);
+});
+
+test("Aus einer echten Endnote ueber 10 wird in der Statistik 10,00", () => {
+  /* Nicht von Hand gesetzt, sondern ueber den ganzen Weg gerechnet:
+     Klammerteil 10,00 plus Zuschlag aus einer erspielten Elo. */
+  const hoch = eintrag(10, 10, { elo: 1300 });
+  const score = app.entryScore(hoch, "movie");
+  assert.ok(score > 10, "die Endnote muss unbegrenzt ueber 10 liegen, ist " + score);
+
+  const stats = app.statsFor([{ id: "a", score }, { id: "b", score: 7 }]);
+  assert.equal(stats.max, 10);
+  assert.equal(stats.max.toFixed(2), "10.00");
+});
+
+test("Innerhalb von 0 bis 10 aendert die Begrenzung keine Kennzahl", () => {
+  /* Der Regressionsfall: solange keine Endnote den Bereich verlaesst
+     — und ohne gespieltes Duell tut das keine —, muss jede Kennzahl
+     Ziffer fuer Ziffer dieselbe sein wie vorher. */
+  const noten = [9.37, 8.02, 7.5, 6.13, 4.88, 2.4, 0, 10];
+  const stats = app.statsFor(mitNoten(noten));
+  assert.equal(stats.count, noten.length);
+  assert.equal(stats.max, 10);
+  assert.equal(stats.min, 0);
+  assert.equal(stats.avg, noten.reduce((s, v) => s + v, 0) / noten.length);
+});
+
+test("Bei elo = 1000 aendert sich in der Statistik kein Wert", () => {
+  /* Gerechnet ueber echte Eintraege, einmal ohne die neuen Felder und
+     einmal mit ausdruecklichem Startwert — verglichen wird gegen die
+     Kennzahlen aus der alten Endnoten-Formel. */
+  const eintraege = [
+    eintrag([9, 8, 9, 8, 9, 8, 9], 9),
+    eintrag([8, 7, 9, 6, 7, 8, 9], 7.4),
+    eintrag([5, 6, 5, 4, 6, 5, 6], 5.2),
+    eintrag([2, 3, 1, 2, 3, 2, 1], 2),
+  ];
+
+  const vorher = app.statsFor(eintraege.map((e, i) => ({ id: "id" + i, score: endnoteVorher(e) })));
+
+  for (const zusatz of [{}, { elo: app.ELO_START }, { elo: 1000, duels: 9 }]) {
+    const jetzt = app.statsFor(
+      eintraege.map((e, i) => ({ id: "id" + i, score: app.entryScore({ ...e, ...zusatz }, "movie") }))
+    );
+    assert.deepEqual(jetzt, vorher, "Kennzahlen weichen ab bei " + JSON.stringify(zusatz));
+  }
+});
+
+test("Unbewertete Eintraege fliessen weiterhin nicht in die Kennzahlen ein", () => {
+  /* Bestand: sie zaehlen bei `count` mit, aber nicht im Schnitt.
+     Daran aendert die Begrenzung nichts. */
+  const stats = app.statsFor([{ id: "a", score: 8 }, { id: "b", score: null }, { id: "c", score: 6 }]);
+  assert.equal(stats.count, 3);
+  assert.equal(stats.avg, 7);
+  assert.equal(stats.max, 8);
+  assert.equal(stats.min, 6);
+});
+
+test("Eine leere Liste bleibt bei den bisherigen Nullen", () => {
+  assert.deepEqual(app.statsFor([]), { count: 0, avg: 0, max: 0, min: 0 });
+});
+
+test("Sortiert wird trotzdem weiter mit dem unbegrenzten Wert", () => {
+  /* Die Begrenzung sitzt in den Kennzahlen, nicht in der Sortierung —
+     zwei Eintraege, die beide bei 10,00 anstossen, bleiben in der
+     Rangliste unterscheidbar. */
+  const stark = { id: "stark", score: 10.4 };
+  const schwaecher = { id: "schwaecher", score: 10.05 };
+  assert.equal(app.statsFor([stark, schwaecher]).max, 10);
+
+  const sortiert = [schwaecher, stark]
+    .sort((a, b) => app.sortWert(b.score) - app.sortWert(a.score))
+    .map((f) => f.id);
+  assert.deepEqual(sortiert, ["stark", "schwaecher"]);
 });
 
 /* ---------------------------------------------------------------- *
