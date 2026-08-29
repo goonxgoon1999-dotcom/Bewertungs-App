@@ -40,7 +40,9 @@ const GEPRUEFT = [
   "duellTeilnehmer",
   "paarungsSchluessel",
   "DUELL_VERLAUF",
-  "DUELL_FENSTER",
+  "DUELL_FENSTER_STUFEN",
+  "DUELL_MIN_KANDIDATEN",
+  "duellKandidaten",
 ];
 
 async function ladeLogik() {
@@ -199,27 +201,112 @@ test("Drei Titel: die direkte Wiederholung bleibt gesperrt, mehr geht nicht", ()
   }
 });
 
-test("Der Gegner bleibt im Fenster von fuenf Plaetzen", () => {
-  /* Die Grundlogik des Matchmakings bleibt unberuehrt: gezogen wird
-     weiter aus dem Rangfenster um den Anker. */
-  const liste = feld(40);
-  const platz = new Map(liste.map((f, i) => [f.id, i]));
+/* ---------------------------------------------------------------- *
+ * Head-to-Head: das Fenster misst die Endnote, nicht den Rang
+ * ---------------------------------------------------------------- */
+
+/* Ein Feld mit frei gewaehlten Endnoten. Anders als feld() rechnet es
+   die Noten nicht aus Zehntelschritten aus — so haengt kein Test an
+   Rundungsresten von 10 - i * 0.1. */
+function feldMitNoten(noten, duelle = []) {
+  return noten.map((note, i) => ({
+    id: "id" + i,
+    title: "Titel " + i,
+    category: "movie",
+    score: note,
+    personal: 8,
+    seasons: null,
+    duels: duelle[i] || 0,
+  }));
+}
+
+test("Der Gegner liegt im engsten Notenfenster, solange es genug hergibt", () => {
+  /* Um den Anker herum stehen genug Titel innerhalb von 0,6 — dann
+     darf keine weitere Stufe gezogen werden. */
+  const noten = [9.0, 8.8, 8.6, 8.4, 8.2, 8.0, 7.8, 7.6, 7.4, 7.2, 7.0, 6.8];
+  const liste = feldMitNoten(noten);
+  const engstes = app.DUELL_FENSTER_STUFEN[0];
   for (const saat of SAATEN) {
     for (const paar of spiele(liste, 3000, saat)) {
-      const abstand = Math.abs(platz.get(paar[0].id) - platz.get(paar[1].id));
-      assert.ok(abstand >= 1 && abstand <= app.DUELL_FENSTER, "Abstand " + abstand);
+      const abstand = Math.abs(paar[0].score - paar[1].score);
+      assert.ok(
+        abstand <= engstes + 1e-9,
+        "Notenabstand " + abstand.toFixed(2) + " ueber dem Fenster " + engstes
+      );
     }
   }
 });
 
-test("Beide Seiten kommen links vor", () => {
-  /* Die Seitenwahl wird weiterhin gelost — sonst saesse der Anker
-     immer links. */
-  const liste = feld(12);
-  const platz = new Map(liste.map((f, i) => [f.id, i]));
-  const paare = spiele(liste, 500);
-  assert.ok(paare.some((p) => platz.get(p[0].id) < platz.get(p[1].id)));
-  assert.ok(paare.some((p) => platz.get(p[0].id) > platz.get(p[1].id)));
+test("Reicht das engste Fenster nicht, wird stufenweise geoeffnet", () => {
+  /* Der Anker (Platz 0) hat im 0,6er-Fenster nur einen Gegner, im
+     1,0er zwei — genommen wird also die zweite Stufe und keine
+     weitere. */
+  const liste = feldMitNoten([9.0, 8.5, 8.1, 7.0, 5.0]);
+  const kandidaten = app.duellKandidaten(liste, 0);
+  assert.deepEqual(kandidaten, [1, 2], "0,6 gibt nur einen her, 1,0 genau zwei");
+  assert.ok(kandidaten.length >= app.DUELL_MIN_KANDIDATEN);
+});
+
+test("Die Stufen werden der Reihe nach genommen", () => {
+  const stufen = app.DUELL_FENSTER_STUFEN;
+  assert.deepEqual(stufen.slice(0, 3), [0.6, 1.0, 1.5]);
+  assert.equal(stufen[stufen.length - 1], Infinity, "die letzte Stufe begrenzt nicht");
+
+  // 1,5er-Stufe: im 0,6er und im 1,0er steht je nur einer.
+  assert.deepEqual(app.duellKandidaten(feldMitNoten([9.0, 8.5, 7.6, 4.0]), 0), [1, 2]);
+
+  /* Ohne Begrenzung: nichts liegt naeher als 1,5 — dann zaehlt das
+     ganze Feld, sonst gaebe es in einer duennen Kategorie gar kein
+     Duell. */
+  assert.deepEqual(app.duellKandidaten(feldMitNoten([9.0, 5.0, 2.0]), 0), [1, 2]);
+});
+
+test("Auch mit nur zwei Titeln kommt eine Paarung zustande", () => {
+  /* Weniger als DUELL_MIN_KANDIDATEN, alle Stufen erschoepft — der
+     einzig moegliche Gegner bleibt uebrig. */
+  const liste = feldMitNoten([9.5, 3.0]);
+  assert.deepEqual(app.duellKandidaten(liste, 0), [1]);
+  const paar = app.ziehePaarung(liste, null, zufallMitSaat(1));
+  assert.ok(paar);
+  assert.deepEqual([paar[0].id, paar[1].id].sort(), ["id0", "id1"]);
+});
+
+test("Im Fenster kommt bevorzugt, wer die wenigsten Duelle hatte", () => {
+  /* Alle vier liegen im engsten Fenster. id2 war noch nie dran und
+     hat damit strikt die wenigsten Duelle — egal, welcher Titel der
+     Anker ist, gezogen werden muss er. So verteilen sich die Duelle
+     ueber die Sammlung, statt sich auf wenige zu haeufen.
+
+     Gezogen wird ohne Verlauf: gesperrte Paarungen wuerden die
+     Bevorzugung zu Recht ueberstimmen, das ist hier nicht der
+     Punkt. */
+  const liste = feldMitNoten([9.0, 8.9, 8.8, 8.7], [5, 12, 0, 12]);
+  assert.deepEqual(app.duellKandidaten(liste, 0), [1, 2, 3], "alle liegen im Fenster");
+
+  for (const saat of SAATEN) {
+    const zufall = zufallMitSaat(saat);
+    for (let i = 0; i < 300; i++) {
+      const paar = app.ziehePaarung(liste, null, zufall);
+      const beteiligt = [paar[0].id, paar[1].id];
+      assert.ok(
+        beteiligt.includes("id2"),
+        "gezogen wurde " + beteiligt.join(" vs ") + " statt des Titels mit den wenigsten Duellen"
+      );
+    }
+  }
+});
+
+test("Bei gleicher Duellzahl entscheidet das Los", () => {
+  /* Stuende alles auf 0 — eine frische Kategorie —, duerfte nicht
+     immer derselbe Gegner kommen. */
+  const liste = feldMitNoten([9.0, 8.9, 8.8, 8.7], [0, 0, 0, 0]);
+  const gegner = new Set();
+  const zufall = zufallMitSaat(42);
+  for (let i = 0; i < 300; i++) {
+    const paar = app.ziehePaarung(liste, null, zufall);
+    gegner.add(schluessel(paar));
+  }
+  assert.ok(gegner.size > 2, "es kamen nur " + gegner.size + " verschiedene Paarungen");
 });
 
 /* ---------------------------------------------------------------- *

@@ -395,12 +395,43 @@ function gewichtetesMittel(entry, wertVon) {
 }
 
 /**
- * Endnote eines Eintrags: mit Staffeln deren gewichtetes Mittel, sonst
- * wie bisher. `null` bedeutet unbewertet (Gewichtssumme 0).
+ * Der Klammerteil der Endnote — ohne Duell-Zuschlag: mit Staffeln das
+ * gewichtete Mittel der Staffelnoten, sonst 75 % Kriterien und 25 %
+ * Bauchgefuehl. `null` bedeutet unbewertet (Gewichtssumme 0).
  */
-function entryScore(entry, category) {
+function entryBasisScore(entry, category) {
   if (!hasSeasons(entry)) return computeFinalScore(entry.values, entry.personal, category);
   return gewichtetesMittel(entry, (sn) => seasonScore(sn, category));
+}
+
+/**
+ * DIE Endnote eines Eintrags — die einzige Stelle, an der sie
+ * entsteht. Rangliste, Top 10, Medaillen, Statistik und Export
+ * hoeren alle hier: Duell-Ergebnisse gelten dadurch ueberall, ohne
+ * dass irgendwo eine Sonderbehandlung noetig waere.
+ *
+ *   Endnote = Klammerteil + Duell-Zuschlag
+ *
+ * Ohne gespieltes Duell steht die Elo auf ELO_START, der Zuschlag ist
+ * dann exakt 0 und heraus kommt Ziffer fuer Ziffer dieselbe Zahl wie
+ * vor der Duell-Wertung.
+ *
+ * Der Rueckgabewert ist NICHT auf 0–10 begrenzt. Sortiert wird mit
+ * ihm, damit zwei Eintraege, die beide bei 10,00 anstossen,
+ * unterscheidbar bleiben; fuer die Anzeige begrenzt `anzeigeNote`.
+ */
+function entryScore(entry, category) {
+  const basis = entryBasisScore(entry, category);
+  if (typeof basis !== "number") return null;
+  return Math.round((basis + entryZuschlag(entry)) * 100) / 100;
+}
+
+/* Die Endnote, wie sie dasteht: begrenzt auf 0 bis 10. Ohne Duelle
+   liegt jede Endnote ohnehin in diesem Bereich — die Begrenzung
+   greift erst, wenn ein Zuschlag ueber die 10 hinausschiebt. */
+function anzeigeNote(score) {
+  if (typeof score !== "number") return score;
+  return Math.min(10, Math.max(0, score));
 }
 
 /** Kriterien-Note eines Eintrags (ohne Bauchgefuehl), analog gewichtet. */
@@ -443,73 +474,88 @@ function seasonFromEntry(entry, nummer) {
 /* ============================================================
    MINISPIEL "HEAD-TO-HEAD" — Duell zweier Titel
 
-   Ein Duell aendert ausschliesslich das gespeicherte Bauchgefuehl der
-   beiden beteiligten Titel. Die Endnote entsteht danach wie immer
-   ueber computeFinalScore (75 % Kriterien, 25 % Bauchgefuehl) — an
-   der Formel selbst aendert das Minispiel nichts.
+   Ein Duell aendert weder das Bauchgefuehl noch einen Kriterienwert.
+   Es verschiebt allein die Elo-Zahl der beiden Beteiligten; daraus
+   entsteht ein gedeckelter Zuschlag auf die Endnote:
+
+     Endnote = (0,75 x Kriteriennote + 0,25 x Bauchgefuehl) + Zuschlag
+
+   Der Klammerteil bleibt unangetastet — er aendert sich nur noch
+   ueber das Bewertungsformular. Gerechnet wird die Elo-Verschiebung
+   auf dem Server (api/duels.js), damit Lesen und Schreiben in einer
+   Transaktion liegen; hier steht, was daraus fuer die Endnote folgt.
    ============================================================ */
 
-/* Skalierung der Erwartung. Beim klassischen Elo steht dort 400, weil
-   dessen Zahlen in Tausendern laufen; unsere Noten laufen von 0 bis
-   10. S = 2 heisst: zwei Notenpunkte Vorsprung entsprechen einer
-   Erwartung von 10:1. */
-const ELO_SKALA = 2;
+/* Startwert jedes Eintrags. Genau hier ist der Zuschlag exakt 0 —
+   ohne gespieltes Duell rechnet die App also wie vorher. Muss zu
+   ELO_START in api/_db.js passen. */
+const ELO_START = 1000;
 
-/* Groesste Verschiebung, die ein einzelnes Duell bewirken kann. Der
-   erwartete Ausgang bleibt deutlich darunter, die Ueberraschung kommt
-   nahe heran. */
-const ELO_K = 0.3;
+/* Groesse des Zuschlags und die Skala, ueber die er sich aufbaut.
+   Der tanh laeuft von -1 bis 1 und erreicht die Grenzen nie: der
+   Zuschlag liegt damit mathematisch immer echt zwischen -0,5 und
+   +0,5, egal wie lang eine Siegesserie wird. Ein Hochschaukeln auf
+   einen unrealistischen Wert ist strukturell ausgeschlossen, nicht
+   nur unwahrscheinlich. Bei 200 Punkten Elo-Vorsprung steht der
+   Zuschlag bei rund +0,38, bei 400 bei rund +0,48. */
+const ZUSCHLAG_MAX = 0.5;
+const ZUSCHLAG_SKALA = 200;
 
-/** Erwartung, dass der erste Titel gewinnt — zwischen 0 und 1. */
-function eloErwartung(noteGewinner, noteVerlierer) {
-  return 1 / (1 + Math.pow(10, (noteVerlierer - noteGewinner) / ELO_SKALA));
+/** Elo-Zahl eines Eintrags. Ohne Angabe gilt der Startwert. */
+function entryElo(entry) {
+  const wert = entry ? entry.elo : undefined;
+  return typeof wert === "number" && Number.isFinite(wert) ? wert : ELO_START;
+}
+
+/** Gespielte Duelle eines Eintrags. Ohne Angabe: noch keines. */
+function entryDuels(entry) {
+  const wert = entry ? entry.duels : undefined;
+  return typeof wert === "number" && Number.isFinite(wert) && wert > 0 ? Math.round(wert) : 0;
 }
 
 /**
- * Verschiebung eines Duells: klein beim erwarteten Ausgang, nahe K bei
- * einer Ueberraschung. Der Gewinner bekommt sie aufgeschlagen, der
- * Verlierer abgezogen.
- */
-function eloDelta(noteGewinner, noteVerlierer) {
-  return ELO_K * (1 - eloErwartung(noteGewinner, noteVerlierer));
-}
-
-/* Bauchgefuehl bleibt eine Note von 0 bis 10 — auf zwei Nachkomma-
-   stellen, wie jede andere gerechnete Note in der App auch. */
-function begrenzteNote(wert) {
-  return Math.round(Math.min(10, Math.max(0, wert)) * 100) / 100;
-}
-
-/**
- * Bauchgefuehl eines Eintrags um `delta` verschieben.
+ * Der Zuschlag zu einer Elo-Zahl.
  *
- * Bei Eintraegen mit Staffeln steht das Bauchgefuehl je Staffel und
- * die Endnote ist deren gewichtetes Mittel — dort wandert deshalb jede
- * Staffel um denselben Betrag, und der Wert am Eintrag zieht auf das
- * neue Mittel nach. Genau das tut auch das Bewertungsformular beim
- * Speichern, der Datensatz bleibt also in sich stimmig.
- *
- * Zurueck kommt null, wenn es nichts zu verschieben gibt.
+ * Gespeichert wird er nirgends — er entsteht immer wieder aus `elo`.
+ * Es gibt damit genau eine Quelle der Wahrheit, und ein
+ * zurueckgesetzter Eintrag ist sofort wieder bei 0.
  */
-function mitVerschobenemBauchgefuehl(entry, delta) {
-  if (!hasSeasons(entry)) {
-    if (typeof entry.personal !== "number") return null;
-    return { personal: begrenzteNote(entry.personal + delta), seasons: [] };
-  }
-  const seasons = entry.seasons.map((sn) =>
-    typeof sn.personal === "number" ? { ...sn, personal: begrenzteNote(sn.personal + delta) } : sn
-  );
-  const personal = entryPersonal({ ...entry, seasons });
-  if (typeof personal !== "number") return null;
-  return { personal: begrenzteNote(personal), seasons };
+function duellZuschlag(elo) {
+  return ZUSCHLAG_MAX * Math.tanh((elo - ELO_START) / ZUSCHLAG_SKALA);
 }
 
-/* Wie weit der Gegner in der Rangliste hoechstens entfernt sein darf.
-   Ein Duell zwischen Platz 2 und Platz 40 sagt wenig: der Ausgang
-   waere ohnehin klar und die Verschiebung entsprechend winzig.
-   Innerhalb weniger Plaetze liegen die Endnoten dicht beieinander —
-   dort traegt die Wahl echte Auskunft. */
-const DUELL_FENSTER = 5;
+/** Der Zuschlag eines Eintrags. Bei ELO_START exakt 0. */
+function entryZuschlag(entry) {
+  return duellZuschlag(entryElo(entry));
+}
+
+/* Der Zuschlag, wie er dasteht: zwei Nachkommastellen und immer mit
+   Vorzeichen. Ohne das "+" waere ein Zuschlag von 0,12 nicht als
+   Aufschlag zu erkennen. */
+function zuschlagText(wert) {
+  const gerundet = Math.round(wert * 100) / 100;
+  // Math.abs haelt "-0.00" heraus: das Minus stuende sonst bei einem
+  // Wert, der auf zwei Stellen genau null ist.
+  return (gerundet >= 0 ? "+" : "−") + Math.abs(gerundet).toFixed(2);
+}
+
+/* Wie weit die Endnote des Gegners hoechstens abweichen darf.
+   Frueher stand hier ein Fenster von fuenf Raengen. Das Mass ist
+   jetzt die Endnote selbst, und zwar aus einem handfesten Grund: Der
+   Duell-Zuschlag liegt zwischen -0,5 und +0,5, zwei Titel koennen
+   sich also hoechstens um einen Notenpunkt aneinander vorbeischieben.
+   Bei mehr als 1,0 Abstand waere eine Paarung folgenlos — der
+   Ausgang stuende ohnehin fest.
+
+   Findet sich im engsten Fenster nicht genug, wird schrittweise
+   geoeffnet; die letzte Stufe laesst alles zu, damit in einer
+   duennen Kategorie ueberhaupt gespielt werden kann. */
+const DUELL_FENSTER_STUFEN = [0.6, 1.0, 1.5, Infinity];
+
+/* So viele Gegner muss ein Fenster mindestens hergeben, sonst wird
+   die naechste Stufe genommen. Bei nur einem Kandidaten gaebe es
+   nichts zu waehlen — dieselbe Begegnung kaeme immer wieder. */
+const DUELL_MIN_KANDIDATEN = 2;
 
 /* Ab zwei bewerteten Titeln laesst sich in einer Kategorie spielen. */
 const MIN_DUELL_TEILNEHMER = 2;
@@ -535,14 +581,95 @@ function paarungsSchluessel(a, b) {
   return String(a) < String(b) ? a + "|" + b : b + "|" + a;
 }
 
+/* Endnote eines Teilnehmers fuer das Fenster. Die Liste kommt aus der
+   Rangliste, dort steht sie in `score`. */
+function duellNote(eintrag) {
+  const wert = eintrag ? eintrag.score : undefined;
+  return typeof wert === "number" && Number.isFinite(wert) ? wert : null;
+}
+
+/**
+ * Die moeglichen Gegner eines Titels, samt der Stufe, die dafuer
+ * noetig war.
+ *
+ * Genommen wird die engste Stufe, die mindestens
+ * DUELL_MIN_KANDIDATEN hergibt. Reicht keine, bleibt es bei der
+ * letzten (ohne Begrenzung) — dort steht dann alles drin, was
+ * ueberhaupt antreten kann.
+ *
+ * Aussortiert wird, wer denselben Eintrag meint: gleicher Platz oder
+ * gleiche ID. Zwei Plaetze der Liste koennen denselben Eintrag
+ * fuehren, und ein Selbstduell darf daraus nie entstehen.
+ */
+function duellKandidaten(liste, ankerIndex) {
+  const anker = liste[ankerIndex];
+  if (!anker) return [];
+  const note = duellNote(anker);
+
+  const moeglich = [];
+  for (let i = 0; i < liste.length; i++) {
+    if (i === ankerIndex) continue;
+    const gegner = liste[i];
+    if (!gegner) continue;
+    if (gegner.id && anker.id && gegner.id === anker.id) continue;
+    moeglich.push(i);
+  }
+  if (!moeglich.length) return [];
+
+  /* Ohne Note gibt es nichts zu messen — dann zaehlt das ganze Feld.
+     In der Rangliste kommt das nicht vor, die Sperre steht nur, damit
+     die Ziehung auch mit unvollstaendigen Daten etwas liefert. */
+  if (note === null) return moeglich;
+
+  let letzte = moeglich;
+  for (const fenster of DUELL_FENSTER_STUFEN) {
+    const imFenster =
+      fenster === Infinity
+        ? moeglich
+        : moeglich.filter((i) => {
+            const gegnerNote = duellNote(liste[i]);
+            return gegnerNote !== null && Math.abs(gegnerNote - note) <= fenster;
+          });
+    letzte = imFenster;
+    if (imFenster.length >= DUELL_MIN_KANDIDATEN) return imFenster;
+  }
+  /* Auch ohne Begrenzung zu wenige: dann eben das, was da ist. */
+  return letzte.length ? letzte : moeglich;
+}
+
+/* Aus einer Auswahl den Kandidaten mit den wenigsten bisherigen
+   Duellen ziehen. Bei Gleichstand entscheidet das Los — sonst kaeme
+   in einer frischen Kategorie, in der alle bei 0 stehen, immer
+   derselbe. So verteilen sich die Duelle ueber die Sammlung. */
+function wenigsteDuelle(liste, auswahl, zufall) {
+  let wenigste = Infinity;
+  let beste = [];
+  for (const i of auswahl) {
+    const zahl = entryDuels(liste[i]);
+    if (zahl < wenigste) {
+      wenigste = zahl;
+      beste = [i];
+    } else if (zahl === wenigste) {
+      beste.push(i);
+    }
+  }
+  if (!beste.length) return null;
+  return beste[Math.floor(zufall() * beste.length)];
+}
+
 /**
  * Zwei Titel fuer ein Duell ziehen: ein zufaelliger Anker aus der nach
- * Endnote sortierten Liste, der Gegner aus dem Fenster um ihn herum.
- * Welcher der beiden links steht, wird gelost — sonst saesse der Anker
- * immer auf derselben Seite.
+ * Endnote sortierten Liste, der Gegner aus dem Notenfenster um ihn
+ * herum. Welcher der beiden links steht, wird gelost — sonst saesse
+ * der Anker immer auf derselben Seite.
  *
  * `verlauf` sind die zuletzt gezogenen Paarungen als Paare von IDs,
  * die juengste zuletzt. Keine davon soll gleich wieder drankommen.
+ *
+ * Innerhalb des Fensters kommt bevorzugt, wer die wenigsten Duelle
+ * hinter sich hat — gesucht wird also zuerst unter den freien
+ * Kandidaten, und erst wenn dort keiner uebrig ist, unter den
+ * gesperrten.
  *
  * Zwei Sperren, die nicht verhandelbar sind:
  *  - Ein Titel tritt nie gegen sich selbst an. Die Indizes sind zwar
@@ -561,26 +688,32 @@ function ziehePaarung(liste, verlauf, zufall = Math.random) {
     .map((eintrag) => paarungsSchluessel(eintrag[0], eintrag[1]));
   const vorige = gesperrt.length ? gesperrt[gesperrt.length - 1] : null;
 
+  const seitenLos = (a, b) => (zufall() < 0.5 ? [a, b] : [b, a]);
+
   let ersatz = null;
   let zuletztGezogen = null;
   for (let versuch = 0; versuch < DUELL_VERSUCHE; versuch++) {
     const ankerIndex = Math.floor(zufall() * liste.length);
-    const von = Math.max(0, ankerIndex - DUELL_FENSTER);
-    const bis = Math.min(liste.length - 1, ankerIndex + DUELL_FENSTER);
+    const anker = liste[ankerIndex];
+    if (!anker) continue;
 
-    const kandidaten = [];
-    for (let i = von; i <= bis; i++) if (i !== ankerIndex) kandidaten.push(i);
+    const kandidaten = duellKandidaten(liste, ankerIndex);
     if (!kandidaten.length) continue;
 
-    const gegnerIndex = kandidaten[Math.floor(zufall() * kandidaten.length)];
-    const gezogen = [liste[ankerIndex], liste[gegnerIndex]];
-    if (!gezogen[0] || !gezogen[1] || gezogen[0].id === gezogen[1].id) continue;
+    const frei = kandidaten.filter(
+      (i) => !gesperrt.includes(paarungsSchluessel(anker.id, liste[i].id))
+    );
 
-    const paar = zufall() < 0.5 ? gezogen : [gezogen[1], gezogen[0]];
+    /* Erst unter den freien suchen. Nur wenn dort keiner steht, wird
+       der Ausweg vorgemerkt und mit einem neuen Anker weitergesucht. */
+    const gegnerIndex = wenigsteDuelle(liste, frei.length ? frei : kandidaten, zufall);
+    if (gegnerIndex === null) continue;
+
+    const paar = seitenLos(anker, liste[gegnerIndex]);
     const schluessel = paarungsSchluessel(paar[0].id, paar[1].id);
     zuletztGezogen = paar;
 
-    if (!gesperrt.includes(schluessel)) return paar;
+    if (frei.length) return paar;
     if (!ersatz && schluessel !== vorige) ersatz = paar;
   }
   return ersatz || zuletztGezogen;
@@ -1590,11 +1723,14 @@ function ScoreBadge({ score, size = "md" }) {
   const big = size === "lg";
   // null = unbewertet (bei Staffeln: Summe der Gewichte ist 0)
   const unbewertet = typeof score !== "number";
+  /* Angezeigt wird die begrenzte Endnote. Sortiert wird anderswo mit
+     der unbegrenzten — siehe entryScore. */
+  const gezeigt = anzeigeNote(score);
   return (
     <span
       title={unbewertet ? "Unbewertet — die Summe der Staffelgewichte ist 0" : undefined}
       style={{
-        background: unbewertet ? "#2A2A2E" : scoreToColor(score),
+        background: unbewertet ? "#2A2A2E" : scoreToColor(gezeigt),
         color: "#faf7f0",
         borderRadius: 4,
         padding: big ? "6px 14px" : "3px 9px",
@@ -1607,7 +1743,7 @@ function ScoreBadge({ score, size = "md" }) {
         flexShrink: 0,
       }}
     >
-      {unbewertet ? "–" : score.toFixed(2)}
+      {unbewertet ? "–" : gezeigt.toFixed(2)}
     </span>
   );
 }
@@ -1759,13 +1895,25 @@ const api = {
     const data = await res.json();
     return data && data.counts ? data.counts : {};
   },
-  async countDuel(category) {
+  /* Ein entschiedenes Duell melden. Der Server verschiebt die
+     Elo-Zahlen der beiden Beteiligten, zaehlt je Eintrag und je
+     Kategorie hoch und gibt beides zurueck. Bauchgefuehl und
+     Kriterienwerte fasst dieser Weg nicht an. */
+  async duell(category, winnerId, loserId) {
     const res = await fetch("/api/duels", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ category }),
+      body: JSON.stringify({ category, winnerId, loserId }),
     });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Zählen fehlgeschlagen");
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Duell fehlgeschlagen");
+    return res.json();
+  },
+  /* Die Duell-Wertung eines Eintrags auf den Startwert zuruecksetzen.
+     Der Zuschlag ist danach wieder 0; die gespielten Duelle bleiben
+     gezaehlt. */
+  async eloZuruecksetzen(id) {
+    const res = await fetch("/api/duels?id=" + encodeURIComponent(id), { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Zurücksetzen fehlgeschlagen");
     return res.json();
   },
   /* Bestwerte eines Minispiels, je Spielart. */
@@ -4569,7 +4717,7 @@ function ZaehlerFeld({ label, wert, busy, onChange }) {
   );
 }
 
-function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount }) {
+function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount, onEloZuruecksetzen }) {
   const criteria = criteriaFor(category);
   const criteriaScore = entryCriteriaScore(entry, category);
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
@@ -4788,6 +4936,42 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
               </span>
             </div>
           </div>
+
+          {/* Der Zuschlag aus den Duellen. Er steht nur da, wo es
+              ueberhaupt ein Duell gab — sonst waere es eine Zeile mit
+              einer Null, die nichts erzaehlt. */}
+          {entryDuels(entry) > 0 && (
+            <div
+              style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "12px 0", borderTop: "1px solid #232326",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 14.5, fontWeight: 600 }}>Duell-Zuschlag</div>
+                <div style={{ fontSize: 11.5, color: "#77746c", marginTop: 2 }}>
+                  {entryDuels(entry)} {entryDuels(entry) === 1 ? "Duell" : "Duelle"} gespielt
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }}>
+                  {zuschlagText(entryZuschlag(entry))}
+                </span>
+                <button
+                  onClick={onEloZuruecksetzen}
+                  disabled={busy}
+                  title="Duell-Zuschlag dieses Eintrags auf 0 zurücksetzen. Die gespielten Duelle bleiben gezählt."
+                  style={{
+                    background: "transparent", border: "1px solid #33333a", borderRadius: 8,
+                    color: "#9A968C", fontSize: 11.5, cursor: busy ? "default" : "pointer",
+                    padding: "5px 10px", fontFamily: "inherit", opacity: busy ? 0.5 : 1,
+                  }}
+                >
+                  Zurücksetzen
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
@@ -5262,12 +5446,12 @@ function Jahresrueckblick({ ranked }) {
               wert={rueckblick.bester ? rueckblick.bester.title : "—"}
               zusatz={
                 rueckblick.bester && typeof rueckblick.bester.score === "number"
-                  ? rueckblick.bester.score.toFixed(2)
+                  ? anzeigeNote(rueckblick.bester.score).toFixed(2)
                   : null
               }
               zusatzFarbe={
                 rueckblick.bester && typeof rueckblick.bester.score === "number"
-                  ? scoreToColor(rueckblick.bester.score)
+                  ? scoreToColor(anzeigeNote(rueckblick.bester.score))
                   : null
               }
             />
@@ -5389,7 +5573,12 @@ function StatsPage({ ranked, watchlist }) {
 
   const bands = DISTRIBUTION_BANDS.map((b) => ({
     ...b,
-    count: scopedList.filter((f) => typeof f.score === "number" && f.score >= b.min && f.score < b.max).length,
+    count: scopedList.filter(
+      (f) =>
+        typeof f.score === "number" &&
+        anzeigeNote(f.score) >= b.min &&
+        anzeigeNote(f.score) < b.max
+    ).length,
   }));
   const maxBandCount = Math.max(1, ...bands.map((b) => b.count));
 
@@ -5531,7 +5720,7 @@ const MINISPIELE = [
     name: "Head-to-Head",
     beschreibung:
       "Zwei Titel derselben Kategorie treten gegeneinander an. Deine Wahl verschiebt " +
-      "das Bauchgefühl beider Titel — und damit ein Stück weit ihre Endnote.",
+      "die Duell-Wertung beider Titel — und damit ihren Zuschlag auf die Endnote.",
   },
   {
     key: "turnier",
@@ -5696,9 +5885,12 @@ function DuellKarte({ eintrag, zustand, onClick }) {
  * Antreten kann nur, wer eine Endnote und ein Bauchgefuehl hat.
  * Vorgemerkte Eintraege sind hier ohnehin nicht dabei (sie stehen in
  * keiner Rangliste); Eintraege ohne Note — Staffelgewichte in Summe 0 —
- * fallen heraus, und ohne Bauchgefuehl gaebe es nichts zu verschieben.
- * Die Reihenfolge bleibt die der Rangliste, daran haengt das Fenster
- * der Head-to-Head-Paarung.
+ * fallen heraus. Das Bauchgefuehl bleibt Bedingung, obwohl ein Duell
+ * es nicht mehr anfasst: es ist der Viertelanteil der Endnote, und wer
+ * ihn nicht hat, ist nicht fertig bewertet. Das Teilnehmerfeld
+ * aendert sich dadurch nicht.
+ * Die Reihenfolge bleibt die der Rangliste; das Fenster der
+ * Head-to-Head-Paarung misst allerdings die Endnote, nicht den Rang.
  */
 function duellTeilnehmer(ranked) {
   const result = {};
@@ -5723,13 +5915,49 @@ function duellTeilnehmer(ranked) {
   return result;
 }
 
+/* Platz eines Titels in der Rangliste seiner Kategorie — 1-basiert,
+   wie er in der Liste steht. null, wenn er nicht vorkommt. */
+function platzVon(liste, id) {
+  if (!Array.isArray(liste)) return null;
+  const i = liste.findIndex((f) => f && f.id === id);
+  return i < 0 ? null : i + 1;
+}
+
+/**
+ * Was nach einer Wahl im Rueckmeldungsbereich steht.
+ *
+ * Bewegt hat sich der Titel oder eben nicht — beides wird gesagt, wie
+ * es ist. Eine Aenderung vorzutaeuschen, wo keine stattgefunden hat,
+ * waere das Gegenteil dessen, wofuer das Duell da ist.
+ */
+function rueckmeldungsText(rueckmeldung, rangliste) {
+  if (!rueckmeldung) return "Wird gespeichert …";
+
+  const platzJetzt = platzVon(rangliste, rueckmeldung.id);
+  const titel = rueckmeldung.titel || "Der Titel";
+  if (platzJetzt === null) return "Gespeichert.";
+  if (rueckmeldung.platzVorher === platzJetzt) {
+    return titel + " bleibt auf Platz " + platzJetzt + ".";
+  }
+  return titel + " steht jetzt auf Platz " + platzJetzt + ".";
+}
+
 function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
   const [kategorie, setKategorie] = useState(null);
   const [paar, setPaar] = useState(null);
   // ID des gewaehlten Titels — solange sie steht, laeuft die Rueckmeldung.
   const [gewaehlt, setGewaehlt] = useState(null);
+  /* Was nach der Wahl im Rueckmeldungsbereich steht. Gesetzt wird es
+     erst, wenn die Auswertung durch ist — vorher waere jede Aussage
+     ueber die Platzierung geraten. */
+  const [rueckmeldung, setRueckmeldung] = useState(null);
 
   const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
+
+  /* Die Rangliste der laufenden Kategorie, immer aktuell. Aus ihr
+     kommt der Platz vor und nach dem Duell. */
+  const ranglisteRef = useRef([]);
+  ranglisteRef.current = (kategorie && ranked[kategorie]) || [];
 
   /* Gezogen wird immer aus dem aktuellen Stand: nach einem Duell haben
      sich zwei Endnoten verschoben und die Rangliste sieht anders aus.
@@ -5762,6 +5990,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       wechseltRef.current = false;
       if (!lebtRef.current) return;
       setGewaehlt(null);
+      setRueckmeldung(null);
       const naechste = ziehePaarung(listeRef.current, verlaufRef.current);
       merkePaarung(naechste);
       setPaar(naechste);
@@ -5775,8 +6004,21 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
 
   function waehle(gewinner, verlierer) {
     if (gewaehlt || wechseltRef.current) return;
+    const platzVorher = platzVon(ranglisteRef.current, gewinner.id);
     setGewaehlt(gewinner.id);
-    speicherungRef.current = Promise.resolve(onDuell(kategorie, gewinner.id, verlierer.id));
+    setRueckmeldung(null);
+
+    const laeuft = Promise.resolve(onDuell(kategorie, gewinner.id, verlierer.id));
+    speicherungRef.current = laeuft;
+    /* Erst nach der Auswertung steht fest, wo der Titel gelandet ist.
+       Der Platz danach wird beim Zeichnen aus der dann aktuellen
+       Rangliste gelesen — beide Zustandsaenderungen kommen im selben
+       Durchlauf an. */
+    const fertig = () => {
+      if (!lebtRef.current) return;
+      setRueckmeldung({ id: gewinner.id, titel: gewinner.title, platzVorher });
+    };
+    laeuft.then(fertig, fertig);
   }
 
   /* Erstes Duell einer Kategorie. Nur die Wahl der Kategorie loest es
@@ -5784,6 +6026,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      Paar ziehen und die Rueckmeldung waere nie zu sehen. */
   useEffect(() => {
     setGewaehlt(null);
+    setRueckmeldung(null);
     /* Neue Kategorie, neuer Verlauf — die gesperrten Paarungen der
        vorigen Kategorie kommen hier ohnehin nicht vor. */
     verlaufRef.current = [];
@@ -5792,12 +6035,16 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
     setPaar(erste);
   }, [kategorie]);
 
-  /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt. */
+  /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt.
+
+     Die Pause laeuft erst an, wenn die Auswertung durch ist: sonst
+     stuende die Rueckmeldung bei einer langsamen Verbindung nur einen
+     Wimpernschlag da, bevor das naechste Paar kommt. */
   useEffect(() => {
-    if (!gewaehlt) return undefined;
+    if (!gewaehlt || !rueckmeldung) return undefined;
     const zeit = setTimeout(weiter, DUELL_PAUSE_MS);
     return () => clearTimeout(zeit);
-  }, [gewaehlt]);
+  }, [gewaehlt, rueckmeldung]);
 
   // ---- Kategorie waehlen ----
   if (!kategorie) {
@@ -5930,9 +6177,24 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
           </div>
 
           <div style={{ fontSize: 12, color: "#77746c", textAlign: "center", margin: "14px 0 16px", lineHeight: 1.5 }}>
-            {gewaehlt
-              ? "Tippen für das nächste Duell."
-              : "Welcher Titel gefällt dir besser?"}
+            {!gewaehlt ? (
+              "Welcher Titel gefällt dir besser?"
+            ) : (
+              <>
+                {/* Was das Duell bewirkt hat. Solange die Auswertung
+                    laeuft, steht hier nichts — eine Platzierung, die
+                    noch gar nicht feststeht, waere geraten. */}
+                <span style={{ color: "#9A968C" }}>
+                  {rueckmeldungsText(rueckmeldung, ranglisteRef.current)}
+                </span>
+                {rueckmeldung && (
+                  <>
+                    <br />
+                    Tippen für das nächste Duell.
+                  </>
+                )}
+              </>
+            )}
           </div>
 
           <button
@@ -7872,6 +8134,11 @@ export default function App() {
         : [],
       values: e.values,
       personal: e.personal,
+      /* Duell-Wertung und gespielte Duelle. Fehlen sie — aeltere
+         Server-Antwort, Backup von vor der Duell-Wertung —, gilt der
+         Startwert und damit ein Zuschlag von exakt 0. */
+      elo: typeof e.elo === "number" && Number.isFinite(e.elo) ? e.elo : ELO_START,
+      duels: typeof e.duels === "number" && Number.isFinite(e.duels) && e.duels > 0 ? Math.round(e.duels) : 0,
       createdAt: e.createdAt || 0,
       updatedAt: e.updatedAt || 0,
       /* Wann aus dem Eintrag ein bewerteter wurde. Der Server setzt das
@@ -8457,9 +8724,12 @@ export default function App() {
     // unauffindbar, obwohl gerade sie Aufmerksamkeit brauchen.
     const bereichOffen =
       filterState.min === DEFAULT_FILTER.min && filterState.max === DEFAULT_FILTER.max;
+    /* Verglichen wird mit der angezeigten, auf 0–10 begrenzten Note.
+       Sonst fiele ein Eintrag, den ein Duell-Zuschlag ueber die 10
+       schiebt, schon beim voreingestellten Bereich aus der Liste. */
     list = list.filter((f) =>
       typeof f.score === "number"
-        ? f.score >= filterState.min && f.score <= filterState.max
+        ? anzeigeNote(f.score) >= filterState.min && anzeigeNote(f.score) <= filterState.max
         : bereichOffen
     );
 
@@ -8826,9 +9096,15 @@ export default function App() {
   }
 
   /* ---- Minispiel "Head-to-Head" ----
-     Ein Duell verschiebt ausschliesslich das Bauchgefuehl der beiden
-     beteiligten Eintraege; die Endnote entsteht danach wie immer ueber
-     die bestehende Formel. Uebersprungene Duelle kommen hier nie an. */
+     Ein Duell verschiebt ausschliesslich die Elo-Zahl der beiden
+     beteiligten Eintraege. Bauchgefuehl und Kriterienwerte bleiben
+     unangetastet — die aendert allein das Bewertungsformular. Die
+     Endnote wandert trotzdem, weil aus der Elo ein gedeckelter
+     Zuschlag entsteht (siehe entryScore); damit gilt das Ergebnis
+     ueberall, wo die Endnote zaehlt.
+
+     Gerechnet und geschrieben wird auf dem Server in einer
+     Transaktion. Uebersprungene Duelle kommen hier nie an. */
   async function duellAuswerten(catKey, gewinnerId, verliererId) {
     if (gewinnerId === verliererId) return;
     const liste = items[catKey] || [];
@@ -8836,61 +9112,68 @@ export default function App() {
     const verlierer = liste.find((f) => f.id === verliererId);
     if (!gewinner || !verlierer) return;
 
-    const noteGewinner = entryScore(gewinner, catKey);
-    const noteVerlierer = entryScore(verlierer, catKey);
-    if (typeof noteGewinner !== "number" || typeof noteVerlierer !== "number") return;
-
-    const delta = eloDelta(noteGewinner, noteVerlierer);
-    const neuGewinner = mitVerschobenemBauchgefuehl(gewinner, delta);
-    const neuVerlierer = mitVerschobenemBauchgefuehl(verlierer, -delta);
-    if (!neuGewinner || !neuVerlierer) return;
-
     try {
-      /* Alles Uebrige des Eintrags geht unveraendert mit — wie beim
-         Speichern der Angaben fasst dieser Aufruf nur das Bauchgefuehl
-         an (bei Staffeln deren Bauchgefuehl, siehe
-         mitVerschobenemBauchgefuehl). */
-      const [gespeicherterGewinner, gespeicherterVerlierer] = await Promise.all([
-        api.update(gewinner.id, {
-          ...gewinner,
-          category: catKey,
-          personal: neuGewinner.personal,
-          seasons: neuGewinner.seasons,
-        }),
-        api.update(verlierer.id, {
-          ...verlierer,
-          category: catKey,
-          personal: neuVerlierer.personal,
-          seasons: neuVerlierer.seasons,
-        }),
-      ]);
-      setItems((prev) => ({
-        ...prev,
-        [catKey]: prev[catKey].map((f) =>
-          f.id === gewinner.id
-            ? normalizeEntry(gespeicherterGewinner)
-            : f.id === verlierer.id
-              ? normalizeEntry(gespeicherterVerlierer)
-              : f
-        ),
-      }));
+      const ergebnis = await api.duell(catKey, gewinnerId, verliererId);
+      /* Zurueck kommen nur `elo` und `duels` je Eintrag. Genau diese
+         beiden Felder werden uebernommen — alles Uebrige bleibt so
+         stehen, wie es ist. */
+      const neueWerte = new Map(
+        (ergebnis && Array.isArray(ergebnis.entries) ? ergebnis.entries : []).map((e) => [e.id, e])
+      );
+      if (neueWerte.size) {
+        setItems((prev) => ({
+          ...prev,
+          [catKey]: prev[catKey].map((f) => {
+            const neu = neueWerte.get(f.id);
+            if (!neu) return f;
+            return {
+              ...f,
+              elo: typeof neu.elo === "number" ? neu.elo : f.elo,
+              duels: typeof neu.duels === "number" ? neu.duels : f.duels,
+            };
+          }),
+        }));
+      }
+      if (typeof ergebnis?.count === "number") {
+        setDuellZahlen((prev) => ({ ...prev, [catKey]: ergebnis.count }));
+      } else {
+        setDuellZahlen((prev) => ({ ...prev, [catKey]: (prev[catKey] || 0) + 1 }));
+      }
       setDuellFehler("");
     } catch (e) {
       setDuellFehler("Duell nicht gespeichert: " + e.message);
       return;
     }
 
-    /* Der Zaehler ist Beiwerk: geht er schief, bleibt die Verschiebung
-       trotzdem stehen — nur die Zahl hinkt dann hinterher. */
-    try {
-      const stand = await api.countDuel(catKey);
-      setDuellZahlen((prev) => ({ ...prev, [catKey]: stand.count }));
-    } catch (e) {
-      setDuellZahlen((prev) => ({ ...prev, [catKey]: (prev[catKey] || 0) + 1 }));
-    }
-
     // Punkte fuer das gespielte Duell.
     await xpGeben("duell");
+  }
+
+  /* Die Duell-Wertung eines Eintrags auf den Startwert zuruecksetzen.
+     Der Zuschlag ist danach wieder exakt 0. Gezaehlte Duelle bleiben
+     stehen — die Historie wird nicht geloescht. */
+  async function eloZuruecksetzen(catKey, id) {
+    setBusy(true);
+    try {
+      const stand = await api.eloZuruecksetzen(id);
+      setItems((prev) => ({
+        ...prev,
+        [catKey]: prev[catKey].map((f) =>
+          f.id === id
+            ? {
+                ...f,
+                elo: typeof stand.elo === "number" ? stand.elo : ELO_START,
+                duels: typeof stand.duels === "number" ? stand.duels : f.duels,
+              }
+            : f
+        ),
+      }));
+      setSaveError("");
+    } catch (e) {
+      setSaveError("Nicht zurückgesetzt: " + e.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   /* ---- Minispiel "Was schau ich?" ----
@@ -9092,6 +9375,16 @@ export default function App() {
                 studio: typeof entry.studio === "string" ? entry.studio : null,
                 values: vorgemerkt ? emptyValues(catKey) : entry.values,
                 personal: vorgemerkt ? null : entry.personal,
+                /* Duell-Wertung und Duellzahl aus der Sicherung. Eine
+                   Sicherung von vor der Duell-Wertung hat beides
+                   nicht — dann gilt der Startwert und ein Zuschlag
+                   von exakt 0. Ein aelteres Backup bleibt damit
+                   unveraendert einspielbar. */
+                elo: typeof entry.elo === "number" && Number.isFinite(entry.elo) ? entry.elo : ELO_START,
+                duels:
+                  typeof entry.duels === "number" && Number.isFinite(entry.duels) && entry.duels > 0
+                    ? Math.round(entry.duels)
+                    : 0,
                 createdAt: entry.createdAt || Date.now(),
                 updatedAt: entry.updatedAt || Date.now(),
                 /* Das Bewertungsdatum aus der Sicherung. Ohne diese
@@ -10437,6 +10730,7 @@ export default function App() {
           onDelete={() => setConfirmDelete(selectedEntry.id)}
           onSaveAngaben={(werte) => angabenSpeichern(selectedEntry.id, werte)}
           onSaveWatchCount={(n) => zaehlerSpeichern(selectedEntry.id, n)}
+          onEloZuruecksetzen={() => eloZuruecksetzen(category, selectedEntry.id)}
         />
       )}
 
