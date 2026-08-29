@@ -503,9 +503,11 @@ alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
 
 ## Watchlist
 
-Jede Kategorie hat zwei Unter-Reiter: **Bewertet** (die gewohnte
-Rangliste) und **Watchlist** mit der Zahl der Vormerkungen. Ein Eintrag
-ist immer nur eines von beidem — vorgemerkt **oder** bewertet.
+Jede Kategorie hat drei Unter-Reiter: **Bewertet** (die gewohnte
+Rangliste), **Am Schauen** (siehe unten) und **Watchlist** mit der Zahl
+der Vormerkungen. Vorgemerkt und bewertet bleibt dabei ein
+Entweder-oder — ein Eintrag ist immer nur eines von beidem; das
+Kennzeichen „Am Schauen" steht unabhängig daneben.
 
 Vorgemerkte Einträge stehen in derselben Tabelle, tragen aber
 `watchlist = true` und haben weder Kriterien-Werte noch Bauchgefühl.
@@ -526,6 +528,41 @@ verliert die Vormerkung und steht in der Rangliste.
 
 **Entfernen:** das kleine × neben dem Eintrag löscht die Vormerkung
 sofort — es gibt dort nichts zu verlieren außer dem Titel selbst.
+
+---
+
+## Am Schauen
+
+Der dritte Unter-Reiter jeder Kategorie: **Am Schauen** — bei Spielen
+**Am Spielen** —, mit der Zahl der angefangenen Einträge daneben. Hier
+steht, was begonnen, aber noch nicht zu Ende geschaut ist.
+
+Das Kennzeichen ist **unabhängig** von „bewertet" und „vorgemerkt": Es
+ersetzt keines von beiden, sondern steht daneben. Genau darum geht es —
+ein bereits bewerteter Titel kann beim Rewatch gleichzeitig am Schauen
+sein, ohne aus der Rangliste zu verschwinden, und bei einer Serie kann
+Staffel 1 bewertet sein, während Staffel 2 noch läuft. Ein vorgemerkter
+Eintrag, der am Schauen ist, steht in diesem Reiter statt in der
+Watchlist; seine Vormerkung bleibt aber stehen, und er taucht dort
+wieder auf, sobald das Kennzeichen ausgeht. Kein Eintrag kann dadurch
+aus allen Reitern fallen.
+
+Gesetzt und gelöscht wird es **ausschließlich von Hand**: über den
+Schalter in der Detailansicht oder über das Play-Symbol an einer
+Watchlist-Zeile. Keine Bewertung, kein Nachladen und kein anderer
+Speichervorgang fasst es an — auch die letzte Folge der letzten Staffel
+schaltet es nicht von selbst aus.
+
+**Fortschritt.** Wo die Episodenzahlen je Staffel vorliegen, zeigt die
+Zeile den Stand als schmalen Balken mit „S2 · 4/10" daneben. „+1" zählt
+eine Folge weiter; nach der letzten Folge einer Staffel springt der
+nächste Druck auf die nächste Staffel, Folge 1. Ein Druck auf den Stand
+öffnet die Eingabe von Hand — nötig, wenn ein Titel mitten in einer
+Staffel aufgenommen wird. Beim Einschalten beginnt ein Eintrag ohne
+Stand bei Staffel 1, Folge 0; ein vorhandener Stand bleibt auch beim
+Ausschalten erhalten, damit ein späteres Wiederaufnehmen ihn kennt. Bei
+Filmen, bei Spielen und überall dort, wo die Episodenzahlen fehlen,
+steht der Titel einfach ohne Zusatz im Reiter.
 
 ---
 
@@ -648,59 +685,157 @@ daneben. Ein Tippen wählt den Favoriten, „Überspringen" springt ohne
 jede Auswertung zum nächsten Duell. Ein Zähler zeigt, wie oft in dieser
 Kategorie schon gespielt wurde; gezählt werden nur ausgewertete Duelle.
 
-**Paarung.** Die beiden Titel werden nicht frei aus der ganzen
-Bandbreite gezogen: Ein zufälliger Anker aus der nach Endnote sortierten
-Kategorie-Liste bestimmt ein Fenster von ±5 Rangplätzen, aus dem der
-Gegner kommt. Ein Duell zwischen 9.8 und 4.2 wäre ohnehin entschieden
-und brächte kaum Erkenntnis; benachbarte Ränge liegen dicht beieinander,
-dort trägt die Wahl echte Auskunft. Welcher der beiden links steht, wird
-gelost, und dieselbe Paarung wiederholt sich nicht unmittelbar.
+**Paarung.** Ein zufälliger Anker aus der nach Endnote sortierten
+Kategorie-Liste, der Gegner aus einem **Notenfenster von 0,6** um ihn
+herum. Gemessen wird also der Abstand der Endnoten selbst — nicht mehr
+ein Fenster von Rangplätzen. Der Grund steht in der Wirkung weiter
+unten: Der Duell-Zuschlag liegt zwischen −0,5 und +0,5, zwei Titel
+können sich also höchstens um einen Notenpunkt aneinander
+vorbeischieben. Bei mehr als 1,0 Abstand wäre eine Paarung folgenlos,
+der Ausgang stünde ohnehin fest.
+
+Gibt das engste Fenster nicht genug her — verlangt sind mindestens zwei
+mögliche Gegner —, wird schrittweise geöffnet:
+
+| Stufe | Notenfenster |
+|-------|--------------|
+| 1 | 0,6 |
+| 2 | 1,0 |
+| 3 | 1,5 |
+| 4 | ohne Grenze |
+
+Die letzte Stufe lässt alles zu, damit auch in einer dünn besetzten
+Kategorie überhaupt gespielt werden kann. Innerhalb des Fensters kommt
+bevorzugt, wer die wenigsten Duelle hinter sich hat; bei Gleichstand
+entscheidet das Los — sonst käme in einer frischen Kategorie, in der
+alle bei 0 stehen, immer derselbe. Welcher der beiden links steht, wird
+ebenfalls gelost.
+
+**Sperrfrist.** Jedes ausgewertete Duell hält fest, wer gegen wen
+angetreten ist (Tabelle `duell_paare`, je Paarung eine Zeile mit dem
+Zeitpunkt des letzten Duells). Eine schon gespielte Paarung kommt
+deshalb erst dann wieder, wenn im Fenster **keine ungespielte mehr
+übrig ist** — und dann die am längsten zurückliegende zuerst. Ein
+dauerhaftes Verbot ist das ausdrücklich nicht: Ein Zustand, in dem gar
+kein Duell mehr angeboten wird, kann dadurch nicht entstehen.
+Zusätzlich bleiben die **drei zuletzt gezogenen** Paarungen für ein
+paar Züge draußen.
+
+**Turnier-Matches werden mitprotokolliert** — sie laufen durch denselben
+Endpunkt und zählen für die Sperrfrist genauso. Übersprungene Duelle
+melden nichts und stehen deshalb auch nicht in der Liste.
 
 **Wirkung.** Nach der Wahl steht der gewählte Titel kurz mit Rahmen in
 der Kategoriefarbe und „GEWÄHLT"-Abzeichen da, der andere abgedunkelt;
-nach etwa 1,3 Sekunden — oder sofort per Tipp — kommt das nächste Duell.
-Angepasst wird dabei **allein das Bauchgefühl** der beiden Titel:
+darunter steht, auf welchem Platz der Gewinner jetzt liegt. Nach etwa
+1,3 Sekunden — oder sofort per Tipp — kommt das nächste Duell.
+
+Ein Duell ändert **weder das Bauchgefühl noch einen Kriterienwert**.
+Jeder Eintrag hat stattdessen einen eigenen **Elo-Wert** (Spalte `elo`,
+Startwert 1000), und nur der verschiebt sich:
 
 ```
-expected = 1 / (1 + 10^((Endnote_Verlierer − Endnote_Gewinner) / S))     S = 2
-delta    = K × (1 − expected)                                           K = 0.3
+expected = 1 / (1 + 10^((Elo_Verlierer − Elo_Gewinner) / 400))
+delta    = K × (1 − expected)                              K = 32
 
-Bauchgefühl_Gewinner  += delta
-Bauchgefühl_Verlierer −= delta      danach beide auf 0–10 begrenzt
+Elo_Gewinner  += delta
+Elo_Verlierer −= delta
 ```
 
-Wer den ohnehin höher bewerteten Titel wählt, verschiebt wenig; wer den
-niedriger bewerteten wählt, kommt nahe an das Maximum von 0.3. Zwei
-Titel mit 7.70 und 7.30 ergeben zum Beispiel:
+Das ist klassisches Elo mit den üblichen Konstanten. Gerechnet wird auf
+dem Server (`api/duels.js`), damit Lesen und Schreiben in einer
+Transaktion liegen und zwei kurz aufeinanderfolgende Duelle desselben
+Titels sich nicht gegenseitig überschreiben können.
 
-| Ausgang | expected | delta | Bauchgefühl | Endnote |
-|---------|----------|-------|-------------|---------|
-| 7.70 gewinnt (erwartet) | 0.6131 | 0.1161 | 8.00 → 8.12 / 7.60 → 7.48 | 7.70 → 7.73 / 7.30 → 7.27 |
-| 7.30 gewinnt (Überraschung) | 0.3869 | 0.1839 | 7.60 → 7.78 / 8.00 → 7.82 | 7.30 → 7.35 / 7.70 → 7.65 |
+Aus dem Elo-Wert entsteht ein **gedeckelter Zuschlag** auf die Endnote:
 
-Die Endnote entsteht danach über die **unveränderte** Formel unten
-(75 % Kriteriennote, 25 % Bauchgefühl) — das Minispiel führt keine
-eigene Berechnung ein, es ändert nur einen Eingabewert. Weil ein Duell
-nur ein Viertel der Endnote anfasst, wandert die Endnote um `0.25 × delta`,
-also höchstens 0.075 Punkte.
+```
+Zuschlag = 0.5 × tanh((Elo − 1000) / 200)
 
-Bei Einträgen **mit Staffeln** steht das Bauchgefühl je Staffel und die
-Endnote ist deren gewichtetes Mittel. Dort wandert deshalb jede Staffel
-um denselben Betrag, und der Wert am Eintrag zieht auf das neue Mittel
-nach — genau das, was auch das Bewertungsformular beim Speichern tut.
-Die Endnote verschiebt sich dadurch um exakt denselben Betrag wie bei
-einem Eintrag ohne Staffeln.
+Endnote  = (75 % Kriterien + 25 % Bauchgefühl) + Zuschlag
+```
 
-Beim Überspringen passiert nichts: kein Bauchgefühl ändert sich, und der
-Zähler bleibt stehen.
+Der Tangens hyperbolicus läuft von −1 bis 1 und erreicht die Grenzen
+nie: Der Zuschlag liegt damit mathematisch **immer echt zwischen −0,5
+und +0,5**, egal wie lang eine Siegesserie wird. Ein Hochschaukeln auf
+einen unrealistischen Wert ist strukturell ausgeschlossen, nicht nur
+unwahrscheinlich. Bei Elo 1000 ist der Zuschlag exakt 0 — ohne
+gespieltes Duell steht Ziffer für Ziffer dieselbe Endnote da wie vor
+der Duell-Wertung.
+
+| Elo | Zuschlag |
+|-----|----------|
+| 800 | −0,38 |
+| 900 | −0,23 |
+| 950 | −0,12 |
+| 1000 (Start) | ±0,00 |
+| 1050 | +0,12 |
+| 1100 | +0,23 |
+| 1200 | +0,38 |
+| 1400 | +0,48 |
+
+Gespeichert wird der Zuschlag nirgends — er entsteht immer wieder neu
+aus `elo`. Es gibt damit genau eine Quelle der Wahrheit, und ein
+zurückgesetzter Eintrag steht sofort wieder bei 0.
+
+| Ausgang | expected | delta | Elo | Zuschlag |
+|---------|----------|-------|-----|----------|
+| Beide bei 1000 | 0.5000 | 16.0 | 1016.0 / 984.0 | +0,04 / −0,04 |
+| 1200 schlägt 1000 (erwartet) | 0.7597 | 7.7 | 1207.7 / 992.3 | +0,39 / −0,02 |
+| 1000 schlägt 1200 (Überraschung) | 0.2403 | 24.3 | 1024.3 / 1175.7 | +0,06 / +0,35 |
+
+Wer den ohnehin stärkeren Titel wählt, verschiebt wenig; eine
+Überraschung bewegt deutlich mehr.
+
+**Anzeige und Sortierung.** Die Endnote wird für die **Anzeige** auf 0
+bis 10 begrenzt — die Grenze greift erst, wenn ein Zuschlag über die 10
+hinausschiebt. **Sortiert** wird dagegen mit dem unbegrenzten Wert,
+damit zwei Einträge, die beide bei 10,00 anstoßen, unterscheidbar
+bleiben. Die Endnote entsteht an genau einer Stelle im Code
+(`entryScore`); Rangliste, Top 10, Medaillen, Statistik und Export
+hören alle dort, Duell-Ergebnisse gelten dadurch überall ohne
+Sonderbehandlung.
+
+Weil der Klammerteil unangetastet bleibt, rührt ein Duell auch bei
+Einträgen **mit Staffeln** keine einzelne Staffelnote an: Der Zuschlag
+sitzt am Eintrag, nicht an der Staffel.
+
+Beim Überspringen passiert nichts: kein Elo-Wert ändert sich, die
+Paarung gilt weiter als ungespielt, und der Zähler bleibt stehen.
+
+**Auffällige Bewertungen.** Schneidet ein Titel im Duell dauerhaft
+anders ab, als seine Kriterien hergeben, passt womöglich die Bewertung
+selbst nicht mehr — genau das sagt ein großer Zuschlag. Aus einem
+einzigen Duell wäre er allerdings Zufall und kein Hinweis;
+gekennzeichnet wird deshalb erst ab einem Zuschlag von **±0,20**
+(gerundet, so wie er auch dasteht) und **mindestens 3 gespielten
+Duellen**:
+
+- in der Rangliste durch ein kleines **Warndreieck** vor der Note,
+- in der Detailansicht durch einen Satz unter der Zuschlag-Zeile,
+- in der Statistik durch den Abschnitt **„Bewertung prüfen"** — eine
+  Sammelliste aller auffälligen Titel über alle Kategorien hinweg, nach
+  dem Betrag des Zuschlags sortiert, der größte zuerst. Erreicht kein
+  Titel die Schwelle, gibt es den Abschnitt gar nicht.
+
+Das ist eine Kennzeichnung, keine Rechnung — an der Endnote ändert sie
+nichts.
+
+**Zurücksetzen.** Der Zuschlag lässt sich **je Eintrag einzeln**
+zurücksetzen: In der Detailansicht steht neben der Zuschlag-Zeile ein
+„Zurücksetzen" (`DELETE /api/duels?id=…`). Der Elo-Wert geht damit auf
+1000 und der Zuschlag ist wieder exakt 0; die gespielten Duelle bleiben
+gezählt. Wird die Bewertung eines auffälligen Titels geändert, fragt
+die App von sich aus nach, ob der Zuschlag aus den alten Duellen stehen
+bleiben soll — von selbst zurückgesetzt wird nichts.
 
 ### Turnier
 
 Kein zweites Duellspiel, sondern die Runden drumherum: Statt einzelner
 Duelle wird ein **K.o.-Turnier** über mehrere Runden bis zu einem Sieger
-gespielt. Der Duell-Bildschirm, die Elo-Anpassung des Bauchgefühls und
-der Duell-Zähler sind **exakt dieselben** wie beim Head-to-Head — das
-Turnier ergänzt nur Auslosung, Rundensteuerung und Bracket.
+gespielt. Der Duell-Bildschirm, die Elo-Wertung und der Duell-Zähler sind
+**exakt dieselben** wie beim Head-to-Head — das Turnier ergänzt nur
+Auslosung, Rundensteuerung und Bracket.
 
 **Auslosung.** Zuerst die Kategorie — Kategorien mit weniger als vier
 bewerteten Einträgen stehen nicht zur Wahl. Dann die Turniergröße: **4,
@@ -720,9 +855,11 @@ Head-to-Head: Poster, Titel und Jahr nebeneinander, dazwischen „VS",
 **ohne Note**. Anders als dort gibt es **kein Überspringen** — in jeder
 Paarung muss eine Wahl getroffen werden, sonst käme niemand weiter.
 
-Jede Wahl löst **dieselbe Auswertung** aus wie ein freies Duell: das
-Bauchgefühl beider Titel verschiebt sich über die Elo-Formel oben, der
-Duell-Zähler der Kategorie wächst, und es gibt die 2 XP fürs Duell. Die
+Jede Wahl löst **dieselbe Auswertung** aus wie ein freies Duell: Der
+Elo-Wert beider Titel verschiebt sich über die Formel oben und mit ihm
+ihr Zuschlag auf die Endnote, die Paarung wird für die Sperrfrist
+mitprotokolliert, der Duell-Zähler der Kategorie wächst, und es gibt
+die 2 XP fürs Duell. Die
 Auswertungen laufen nacheinander, damit zwei schnell hintereinander
 gewählte Paarungen sich nicht gegenseitig überschreiben.
 
