@@ -2,6 +2,7 @@ import {
   sql, ensureReady, rowToItem, rowToSeason, validateItem,
   criteriaKeysFor, CATEGORIES, supportsSeasons, normalizeWeight,
   normalizeWatchCount, WATCH_COUNT_DEFAULT, genresZuText,
+  normalizeElo, normalizeDuels, ELO_START,
   episodenZuText, positiveZahl, logFehler, fehlerBeschreibung,
 } from "./_db.js";
 
@@ -300,7 +301,7 @@ async function create(req, res) {
          emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
          personal, release_year, director, imdb_rating, genres, collection, studio,
          runtime_minutes, episode_runtime, episode_count, episodes_per_season,
-         watchlist, watch_count,
+         watchlist, watch_count, elo, duels,
          created_at, updated_at, rated_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
@@ -317,6 +318,12 @@ async function create(req, res) {
          ${l.mitgeschickt ? l.episodesPerSeason : null},
          ${merkliste},
          ${normalizeWatchCount(body.watchCount) ?? WATCH_COUNT_DEFAULT},
+         -- Duell-Staerke und Duellzahl. Ein Backup ohne diese Felder
+         -- (jede Sicherung von vor dieser Aenderung) bringt beides
+         -- nicht mit — dann gilt der Startwert, und der Zuschlag auf
+         -- die Endnote ist exakt 0.
+         ${normalizeElo(body.elo) ?? ELO_START},
+         ${normalizeDuels(body.duels) ?? 0},
          ${body.createdAt || now}, ${now},
          -- Wann bewertet wurde. Vorgemerktes hat noch kein Datum; es
          -- kommt erst, wenn daraus ein bewerteter Eintrag wird (siehe
@@ -398,6 +405,13 @@ async function update(req, res) {
         -- automatische Nachladen von Postern und Angaben etwa) — ohne
         -- COALESCE wuerde jeder dieser Aufrufe ihn auf 1 zuruecksetzen.
         watch_count     = COALESCE(${normalizeWatchCount(body.watchCount)}::integer, watch_count),
+        -- Wie beim Zaehler: fehlen die Duell-Felder in der Anfrage,
+        -- bleibt der gespeicherte Wert stehen. Das automatische
+        -- Nachladen von Postern und Angaben schickt sie nicht mit —
+        -- ohne COALESCE wuerde jeder dieser Aufrufe die erspielte
+        -- Duell-Staerke auf den Startwert zuruecksetzen.
+        elo             = COALESCE(${normalizeElo(body.elo)}::real, elo),
+        duels           = COALESCE(${normalizeDuels(body.duels)}::integer, duels),
         -- Das Bewertungsdatum wird genau einmal gesetzt und danach nie
         -- wieder angefasst: COALESCE nimmt zuerst den gespeicherten
         -- Wert. Erst wenn dort nichts steht — der Eintrag also gerade

@@ -255,6 +255,7 @@ async function init() {
   await ensureBewertetAm();
   await ensureNeueKategorien();
   await ensureDuelle();
+  await ensureEloWerte();
   await ensureHighscores();
   await ensureXp();
 
@@ -587,6 +588,88 @@ async function ensureDuelle() {
 /** Datenbankzeile -> Duellzahl fuer das Frontend. */
 export function rowToDuelCount(r) {
   return { category: r.category, count: Number(r.duels) };
+}
+
+/* ----------------------------------------------------------------
+   Duell-Staerke je Eintrag (Elo)
+
+   Der Zaehler oben sagt, wie oft in einer Kategorie gespielt wurde.
+   Wer dabei gewonnen hat, steht hier: jeder Eintrag fuehrt eine
+   eigene Elo-Zahl und einen eigenen Duellzaehler.
+
+   Beides sind neue Spalten mit einem DEFAULT — bestehende Zeilen
+   bekommen den Startwert und aendern sich dadurch nicht. Bei
+   ELO_START (1000) ist der Zuschlag auf die Endnote exakt 0; ohne
+   gespieltes Duell sieht die App also aus wie zuvor.
+
+   Die Zahlen stehen als Literale im Befehl und nicht als eingesetzte
+   Werte: Postgres erlaubt in DDL keine Parameter. Sie muessen deshalb
+   zu ELO_START bzw. 0 passen.
+   ---------------------------------------------------------------- */
+
+/** Startwert jedes Eintrags. Genau hier ist der Zuschlag 0. */
+export const ELO_START = 1000;
+
+/* Groesste Verschiebung eines einzelnen Duells (klassischer Elo-Wert)
+   und die Skala der Erwartung. Beides sind die Konstanten des
+   Standard-Elo, nicht mehr die der frueheren Bauchgefuehl-Rechnung. */
+export const ELO_K = 32;
+export const ELO_SKALA = 400;
+
+async function ensureEloWerte() {
+  await sql`
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS elo REAL NOT NULL DEFAULT 1000
+  `;
+  await sql`
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS duels INTEGER NOT NULL DEFAULT 0
+  `;
+}
+
+/** Erwartung, dass A gegen B gewinnt — zwischen 0 und 1. */
+export function eloErwartung(eloA, eloB) {
+  return 1 / (1 + Math.pow(10, (eloB - eloA) / ELO_SKALA));
+}
+
+/**
+ * Neue Elo-Zahlen nach einem entschiedenen Duell.
+ *
+ * Der Gewinner steht mit S = 1 an, der Verlierer mit S = 0. Was der
+ * eine gewinnt, verliert der andere: beide Erwartungen ergaenzen sich
+ * zu 1, also sind die beiden Verschiebungen betragsgleich.
+ *
+ * Gedeckelt wird hier nichts — die Zahl darf frei laufen. Begrenzt
+ * ist erst der Zuschlag, den das Frontend daraus rechnet.
+ */
+export function eloNeu(eloGewinner, eloVerlierer) {
+  const erwartungGewinner = eloErwartung(eloGewinner, eloVerlierer);
+  const verschiebung = ELO_K * (1 - erwartungGewinner);
+  return {
+    gewinner: eloGewinner + verschiebung,
+    verlierer: eloVerlierer - verschiebung,
+  };
+}
+
+/**
+ * Elo-Zahl aus einer Anfrage.
+ *
+ * Wie beim Zaehler heisst "fehlt" hier `null`: der gespeicherte Wert
+ * bleibt dann stehen. Ohne diese Unterscheidung wuerde jedes
+ * automatische Nachladen von Postern oder Genres die Duell-Staerke
+ * eines Eintrags auf den Startwert zuruecksetzen.
+ */
+export function normalizeElo(wert) {
+  if (wert == null) return null;
+  if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
+  return wert;
+}
+
+/** Duellzaehler eines Eintrags aus einer Anfrage — analog. */
+export function normalizeDuels(wert) {
+  if (wert == null) return null;
+  if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
+  return Math.max(0, Math.round(wert));
 }
 
 /* ----------------------------------------------------------------
@@ -970,6 +1053,12 @@ export function rowToItem(r) {
     // Ohne Bauchgefuehl bleibt es null — Number(null) waere 0 und saehe
     // aus wie eine echte, sehr schlechte Bewertung.
     personal: r.personal === null || r.personal === undefined ? null : Number(r.personal),
+    /* Duell-Staerke und Zahl der gespielten Duelle. Aeltere Zeilen
+       ohne diese Spalten gelten als unangetastet: Startwert und 0 —
+       dasselbe, was der Spalten-DEFAULT vorgibt. Bei ELO_START ist
+       der Zuschlag auf die Endnote exakt 0. */
+    elo: r.elo === null || r.elo === undefined ? ELO_START : Number(r.elo),
+    duels: r.duels === null || r.duels === undefined ? 0 : Number(r.duels),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
     // Wann aus dem Eintrag ein bewerteter wurde. null heisst "nicht
@@ -999,7 +1088,10 @@ export function validateItem(body) {
     if (body.seasons != null && Array.isArray(body.seasons) && body.seasons.length) {
       errors.push("Vorgemerkte Einträge haben keine Staffeln.");
     }
-    return errors.concat(angabenFehler(body)).concat(zaehlerFehler(body));
+    return errors
+      .concat(angabenFehler(body))
+      .concat(zaehlerFehler(body))
+      .concat(duellFelderFehler(body));
   }
 
   const values = body.values || {};
@@ -1014,6 +1106,7 @@ export function validateItem(body) {
   }
   errors.push(...angabenFehler(body));
   errors.push(...zaehlerFehler(body));
+  errors.push(...duellFelderFehler(body));
   errors.push(...validateSeasons(body.seasons, body.category));
 
   return errors;
@@ -1024,6 +1117,20 @@ export function validateItem(body) {
  * stehen. Kommt er mit, muss es eine ganze Zahl ab 1 sein — 0 oder
  * negative Werte waeren keine Ansicht, die je stattgefunden hat.
  */
+function duellFelderFehler(body) {
+  const errors = [];
+  if (body.elo != null && (typeof body.elo !== "number" || !Number.isFinite(body.elo))) {
+    errors.push("Ungültige Duell-Wertung.");
+  }
+  if (
+    body.duels != null &&
+    (typeof body.duels !== "number" || !Number.isFinite(body.duels) || body.duels < 0)
+  ) {
+    errors.push("Ungültige Duellzahl.");
+  }
+  return errors;
+}
+
 function zaehlerFehler(body) {
   if (body.watchCount == null) return [];
   if (
