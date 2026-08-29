@@ -258,6 +258,7 @@ async function init() {
   await ensureEloWerte();
   await ensureHighscores();
   await ensureXp();
+  await ensureAmSchauen();
 
   /* Hier endet der Start. Eine frische Datenbank bleibt in allen
      Kategorien leer.
@@ -865,6 +866,34 @@ async function ensureBewertetAm() {
   `;
 }
 
+/* ----------------------------------------------------------------
+   Am Schauen
+
+   Ein eigenes, unabhaengiges Kennzeichen — kein Zustand, der
+   "bewertet" oder "vorgemerkt" ersetzt. Genau darum eine eigene
+   Spalte statt eines dritten Wertes in `watchlist`: Ein bereits
+   bewerteter Titel muss beim Rewatch gleichzeitig am Schauen sein
+   koennen, ohne aus der Rangliste zu verschwinden.
+
+   Dazu der Stand: laufende Staffel und zuletzt gesehene Folge. Beide
+   bleiben NULL, bis das Kennzeichen zum ersten Mal gesetzt wird —
+   NULL heisst hier ausdruecklich "nie gesetzt" und ist etwas anderes
+   als 0 ("Staffel begonnen, noch keine Folge gesehen"). Beim
+   Ausschalten bleiben sie stehen, damit ein spaeteres Wiederaufnehmen
+   den Stand kennt.
+
+   Wie alle Migrationen hier rein strukturell: es werden nur Spalten
+   ergaenzt, keine bestehende Zeile angefasst.
+   ---------------------------------------------------------------- */
+async function ensureAmSchauen() {
+  await sql`
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS am_schauen BOOLEAN NOT NULL DEFAULT FALSE
+  `;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS staffel_nr INTEGER`;
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS folge_nr INTEGER`;
+}
+
 /* Die Episodenanzahl je Staffel steht — wie die Genres — als eine
    Zeichenkette in der Spalte: "12|12|24" heisst drei Staffeln mit 12,
    12 und 24 Folgen. Eine eigene Tabelle waere sauberer, brachte hier
@@ -915,6 +944,29 @@ export function positiveZahl(wert) {
   if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
   const ganz = Math.round(wert);
   return ganz > 0 ? ganz : null;
+}
+
+/**
+ * Die laufende Staffel aus einer Anfrage: eine ganze Zahl ab 1 — oder
+ * null fuer "nicht gesetzt". Anders als bei der Folge ist 0 hier kein
+ * gueltiger Wert: eine Staffel 0 gibt es nicht.
+ */
+export function normalizeStaffelNr(wert) {
+  if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
+  const ganz = Math.round(wert);
+  return ganz >= 1 ? Math.min(MAX_STAFFELN, ganz) : null;
+}
+
+/**
+ * Die zuletzt gesehene Folge: eine ganze Zahl ab 0 — oder null fuer
+ * "nicht gesetzt". Die 0 ist hier ein echter Wert und heisst "Staffel
+ * begonnen, noch keine Folge gesehen"; genau so wird beim Einschalten
+ * des Kennzeichens gestartet.
+ */
+export function normalizeFolgeNr(wert) {
+  if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
+  const ganz = Math.round(wert);
+  return ganz >= 0 ? Math.min(MAX_FOLGEN_JE_STAFFEL, ganz) : null;
 }
 
 /* Gewichtung einer Staffel. Eingegeben wird sie in der App als Prozent
@@ -1043,6 +1095,17 @@ export function rowToItem(r) {
     episodesPerSeason: episodenAus(r.episodes_per_season),
     // Vorgemerkt statt bewertet: dann gibt es keine Werte und keine Note.
     watchlist: r.watchlist === true,
+    /* Am Schauen — ein eigenes Kennzeichen neben `watchlist`, kein
+       dritter Wert davon: Ein bewerteter Eintrag kann beim Rewatch
+       gleichzeitig am Schauen sein. Aeltere Zeilen ohne die Spalte
+       gelten als nicht am Schauen — dasselbe, was der Spalten-DEFAULT
+       vorgibt. */
+    amSchauen: r.am_schauen === true,
+    /* Der Stand: laufende Staffel und zuletzt gesehene Folge. null
+       heisst "nie gesetzt" und ist etwas anderes als 0 — eine 0 bei
+       der Folge heisst "Staffel begonnen, noch keine Folge gesehen". */
+    staffelNr: r.staffel_nr === null || r.staffel_nr === undefined ? null : Number(r.staffel_nr),
+    folgeNr: r.folge_nr === null || r.folge_nr === undefined ? null : Number(r.folge_nr),
     // Wie oft geschaut/gespielt. Aeltere Zeilen ohne Spalte gelten als
     // einmal gesehen — dasselbe, was der Spalten-DEFAULT vorgibt.
     watchCount:
@@ -1091,7 +1154,8 @@ export function validateItem(body) {
     return errors
       .concat(angabenFehler(body))
       .concat(zaehlerFehler(body))
-      .concat(duellFelderFehler(body));
+      .concat(duellFelderFehler(body))
+      .concat(amSchauenFehler(body));
   }
 
   const values = body.values || {};
@@ -1107,6 +1171,7 @@ export function validateItem(body) {
   errors.push(...angabenFehler(body));
   errors.push(...zaehlerFehler(body));
   errors.push(...duellFelderFehler(body));
+  errors.push(...amSchauenFehler(body));
   errors.push(...validateSeasons(body.seasons, body.category));
 
   return errors;
@@ -1200,6 +1265,29 @@ function angabenFehler(body) {
 
   errors.push(...laufzeitFehler(body));
 
+  return errors;
+}
+
+/**
+ * Das Kennzeichen "am Schauen" und der Fortschritt darin.
+ *
+ * Alle drei sind durchweg optional: aeltere Sicherungen kennen sie
+ * nicht, und nicht jeder Speichervorgang schickt sie mit. Geprueft
+ * wird deshalb nur, was da ist — und zwar bei vorgemerkten Eintraegen
+ * genauso wie bei bewerteten: das Kennzeichen gilt fuer beide.
+ */
+function amSchauenFehler(body) {
+  const errors = [];
+  if (body.amSchauen != null && typeof body.amSchauen !== "boolean") {
+    errors.push("Ungültiges Kennzeichen „Am Schauen“.");
+  }
+  for (const [feld, name] of [["staffelNr", "Staffel"], ["folgeNr", "Folge"]]) {
+    const wert = body[feld];
+    if (wert == null) continue;
+    if (typeof wert !== "number" || !Number.isFinite(wert) || wert < 0) {
+      errors.push("Ungültige " + name + "-Nummer.");
+    }
+  }
   return errors;
 }
 
