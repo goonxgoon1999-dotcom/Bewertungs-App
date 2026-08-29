@@ -43,6 +43,8 @@ const GEPRUEFT = [
   "zuschlagText",
   "sortWert",
   "statsFor",
+  "imNotenbereich",
+  "DEFAULT_FILTER",
   "ELO_START",
   "ZUSCHLAG_MAX",
   "criteriaFor",
@@ -420,6 +422,114 @@ test("Sortiert wird trotzdem weiter mit dem unbegrenzten Wert", () => {
     .sort((a, b) => app.sortWert(b.score) - app.sortWert(a.score))
     .map((f) => f.id);
   assert.deepEqual(sortiert, ["stark", "schwaecher"]);
+});
+
+/* ---------------------------------------------------------------- *
+ * 4c. Notenfilter: Vorschau und Ergebnisliste nennen dieselbe Zahl
+ * ---------------------------------------------------------------- */
+
+test("Ein Eintrag ueber 10,00 faellt beim voreingestellten Bereich nicht heraus", () => {
+  /* Der Notenfilter geht bis 10. Ohne Begrenzung waere ein Eintrag,
+     den ein Duell-Zuschlag darueber schiebt, schon bei der
+     Voreinstellung unsichtbar. */
+  const hoch = eintrag(10, 10, { elo: 1300 });
+  const score = app.entryScore(hoch, "movie");
+  assert.ok(score > 10, "die Endnote muss unbegrenzt ueber 10 liegen, ist " + score);
+
+  assert.equal(app.imNotenbereich(score, app.DEFAULT_FILTER.min, app.DEFAULT_FILTER.max), true);
+});
+
+test("Vorschau und angewendeter Filter zaehlen denselben Eintrag", () => {
+  /* Die Vorschau im Filterblatt ("N Einträge") und die Liste danach
+     stellen dieselbe Frage — beide ueber imNotenbereich. Genau das
+     hielt frueher nicht: die Vorschau verglich unbegrenzt, die Liste
+     begrenzt, und bei einem Eintrag ueber 10,00 wichen die Zahlen
+     auseinander. */
+  const ueberZehn = app.entryScore(eintrag(10, 10, { elo: 1300 }), "movie");
+  const unterNull = app.entryScore(eintrag(0, 0, { elo: 700 }), "movie");
+  assert.ok(ueberZehn > 10 && unterNull < 0);
+
+  const liste = [
+    { id: "drueber", score: ueberZehn },
+    { id: "drunter", score: unterNull },
+    { id: "mittig", score: 7.42 },
+    { id: "ohne", score: null },
+  ];
+
+  /* Nachgestellt wird beides so, wie es in src/App.jsx steht: die
+     Vorschau ohne die unbewerteten Eintraege, die Liste mit dem
+     Rueckfall fuer sie. Beim voreingestellten Bereich ist er offen,
+     die beiden Zahlen muessen also gleich sein. */
+  const vorschau = (min, max) =>
+    liste.filter((f) => app.imNotenbereich(f.score, Math.min(min, max), Math.max(min, max))).length;
+  const angewendet = (min, max) => {
+    const bereichOffen = min === app.DEFAULT_FILTER.min && max === app.DEFAULT_FILTER.max;
+    return liste.filter((f) =>
+      typeof f.score === "number" ? app.imNotenbereich(f.score, min, max) : bereichOffen
+    ).length;
+  };
+
+  // Voreingestellt: alle drei bewerteten Eintraege, der ueber 10 dabei.
+  const { min, max } = app.DEFAULT_FILTER;
+  assert.equal(vorschau(min, max), 3);
+  assert.equal(angewendet(min, max), 3 + 1, "der unbewertete Eintrag bleibt bei offenem Bereich sichtbar");
+
+  /* Und so haette die Vorschau frueher gezaehlt: unbegrenzt. Der
+     Unterschied ist genau der Fehler, um den es geht — stuende er
+     nicht hier, koennte der Test nicht belegen, dass die Aenderung
+     ueberhaupt etwas bewirkt. */
+  const vorschauAlt = (min, max) =>
+    liste.filter(
+      (f) => typeof f.score === "number" && f.score >= Math.min(min, max) && f.score <= Math.max(min, max)
+    ).length;
+  assert.equal(vorschauAlt(min, max), 1, "unbegrenzt fielen zwei der drei heraus");
+  assert.notEqual(vorschauAlt(min, max), vorschau(min, max));
+
+  // Der Eintrag ueber 10,00 zaehlt genau dort, wo seine Anzeige steht.
+  assert.equal(app.imNotenbereich(ueberZehn, 10, 10), true, "10,00 ist seine angezeigte Note");
+  assert.equal(app.imNotenbereich(ueberZehn, 0, 9.9), false);
+  // Und der unter 0,00 genauso.
+  assert.equal(app.imNotenbereich(unterNull, 0, 0), true);
+  assert.equal(app.imNotenbereich(unterNull, 0.1, 10), false);
+});
+
+test("Beide Stellen im Quelltext stellen die Frage ueber imNotenbereich", async () => {
+  /* Der eigentliche Schutz gegen einen Rueckfall: Vorschau und
+     angewendeter Filter duerfen den Bereich nicht mehr selbst
+     vergleichen. Taeten sie es wieder getrennt, koennten sie erneut
+     auseinanderlaufen — und das faellt in einem Test ueber Funktionen
+     allein nicht auf, weil beide Stellen in Komponenten stecken. */
+  const quelle = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+
+  const aufrufe = quelle.match(/imNotenbereich\(/g) || [];
+  assert.ok(aufrufe.length >= 3, "imNotenbereich wird nicht an beiden Stellen benutzt");
+
+  // Kein roher Vergleich einer Endnote gegen eine Filtergrenze mehr.
+  const roh = quelle.match(/\bf\.score\s*[<>]=?\s*(lo|hi|filterState\.(min|max))/g) || [];
+  assert.deepEqual(roh, [], "es wird wieder unbegrenzt verglichen: " + roh.join(", "));
+});
+
+test("Ohne Note gibt es keinen Bereichstreffer", () => {
+  /* Unbewertete Eintraege beantwortet die Frage mit nein. Dass sie
+     bei offenem Bereich trotzdem sichtbar bleiben, entscheidet die
+     Liste daneben — nicht dieser Vergleich. */
+  assert.equal(app.imNotenbereich(null, 0, 10), false);
+  assert.equal(app.imNotenbereich(undefined, 0, 10), false);
+  assert.equal(app.imNotenbereich("8", 0, 10), false);
+});
+
+test("Innerhalb von 0 bis 10 vergleicht der Filter wie vorher", () => {
+  /* Ohne gespieltes Duell liegt jede Endnote im Bereich — dort darf
+     die Begrenzung nichts veraendern. */
+  for (const score of [0, 0.01, 2.5, 5, 7.42, 9.99, 10]) {
+    for (const [von, bis] of [[0, 10], [5, 10], [0, 5], [7, 8]]) {
+      assert.equal(
+        app.imNotenbereich(score, von, bis),
+        score >= von && score <= bis,
+        "Note " + score + " im Bereich " + von + "–" + bis
+      );
+    }
+  }
 });
 
 /* ---------------------------------------------------------------- *
