@@ -256,6 +256,7 @@ async function init() {
   await ensureNeueKategorien();
   await ensureDuelle();
   await ensureEloWerte();
+  await ensureDuellPaare();
   await ensureHighscores();
   await ensureXp();
   await ensureAmSchauen();
@@ -626,6 +627,67 @@ async function ensureEloWerte() {
     ALTER TABLE media_items
       ADD COLUMN IF NOT EXISTS duels INTEGER NOT NULL DEFAULT 0
   `;
+}
+
+/* ----------------------------------------------------------------
+   Minispiele: welche zwei Titel schon gegeneinander angetreten sind
+
+   Die Zaehler oben sagen, wie oft gespielt wurde — nicht, wer gegen
+   wen. Genau das steht hier: eine Zeile je Paarung mit dem Zeitpunkt
+   des letzten Duells. Daraus entsteht die Sperrfrist des
+   Head-to-Head: eine schon gespielte Paarung kommt erst wieder, wenn
+   im Notenfenster keine ungespielte mehr uebrig ist.
+
+   Zwei Dinge sind daran wichtig:
+
+     - `item_a` und `item_b` liegen sortiert (die kleinere ID zuerst,
+       siehe paarSortiert). A-gegen-B und B-gegen-A sind dieselbe
+       Paarung; ohne das Sortieren griffe die Sperre nur in eine
+       Richtung.
+     - Beide IDs haengen per Fremdschluessel an media_items und
+       verschwinden mit dem Eintrag (ON DELETE CASCADE) — genau wie
+       die Staffeln. Verwaiste Zeilen kann es dadurch gar nicht erst
+       geben, und die Paarungssuche muss nichts uebergehen.
+
+   Der Index ist eindeutig: je Paarung genau eine Zeile. Ein erneutes
+   Duell schreibt den Zeitpunkt fort (ON CONFLICT), statt eine zweite
+   Zeile anzulegen — dieselbe Bauart wie beim Kategoriezaehler.
+
+   Die bestehenden Zaehler (`duel_counts` je Kategorie, `duels` je
+   Eintrag) bleiben unveraendert; diese Tabelle ersetzt sie nicht.
+   ---------------------------------------------------------------- */
+async function ensureDuellPaare() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS duell_paare (
+      id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      kategorie   TEXT NOT NULL,
+      item_a      TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      item_b      TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
+      gespielt_am BIGINT NOT NULL
+    )
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS duell_paare_paar_idx
+      ON duell_paare (kategorie, item_a, item_b)
+  `;
+}
+
+/**
+ * Die beiden IDs einer Paarung in fester Reihenfolge — kleinere
+ * zuerst. Damit ist A-gegen-B derselbe Eintrag wie B-gegen-A.
+ *
+ * Verglichen wird als Text, genau wie im Frontend
+ * (paarungsSchluessel in src/App.jsx). Beide muessen dieselbe
+ * Reihenfolge ergeben, sonst findet die Suche die eigene Zeile nicht
+ * wieder.
+ */
+export function paarSortiert(a, b) {
+  return String(a) < String(b) ? [a, b] : [b, a];
+}
+
+/** Datenbankzeile -> gespielte Paarung fuer das Frontend. */
+export function rowToDuellPaar(r) {
+  return { a: r.item_a, b: r.item_b, at: Number(r.gespielt_am) };
 }
 
 /** Erwartung, dass A gegen B gewinnt — zwischen 0 und 1. */

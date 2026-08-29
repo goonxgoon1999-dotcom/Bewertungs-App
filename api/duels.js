@@ -1,5 +1,6 @@
 import {
   sql, ensureReady, rowToDuelCount, rowToItem, eloNeu, ELO_START,
+  paarSortiert, rowToDuellPaar,
   CATEGORIES, logFehler, fehlerBeschreibung,
 } from "./_db.js";
 
@@ -8,8 +9,9 @@ import {
  * Turnier, dessen Paarungen dieselbe Auswertung durchlaufen.
  *
  *   GET    /api/duels                              -> { counts: { movie: 12, ... } }
+ *   GET    /api/duels?category=movie               -> { category, pairs: [{ a, b, at }] }
  *   POST   /api/duels  { category, winnerId, loserId }
- *                                                  -> { category, count, entries: [...] }
+ *                                                  -> { category, count, entries: [...], pair }
  *   POST   /api/duels  { category }                -> { category, count }
  *   DELETE /api/duels?id=...                       -> { id, elo, duels }
  *
@@ -17,7 +19,12 @@ import {
  * beiden Beteiligten und zaehlt hoch — je Eintrag und je Kategorie.
  * Bauchgefuehl und Kriterienwerte werden hier nirgends angefasst; sie
  * aendert allein das Bewertungsformular. Wer ueberspringt, aendert
- * nichts.
+ * nichts — auch nicht die Liste der gespielten Paarungen.
+ *
+ * Zusaetzlich haelt jedes entschiedene Duell fest, WER gegen wen
+ * angetreten ist (duell_paare). Das ist die Grundlage der Sperrfrist
+ * im Head-to-Head und gilt fuer Turnier-Matches genauso — sie laufen
+ * durch denselben Endpunkt.
  *
  * Das Rechnen steht bewusst auf dem Server: Elo lesen, verschieben und
  * schreiben laeuft damit in einer Transaktion, und zwei kurz
@@ -41,8 +48,24 @@ export default async function handler(req, res) {
 }
 
 /* Jede Kategorie kommt vor, auch die noch nie gespielten — dann mit 0.
-   So muss das Frontend nicht zwischen "0" und "fehlt" unterscheiden. */
+   So muss das Frontend nicht zwischen "0" und "fehlt" unterscheiden.
+
+   Mit `category` kommt stattdessen die Liste der schon gespielten
+   Paarungen dieser Kategorie. Aus ihr baut das Head-to-Head seine
+   Sperrfrist (siehe ziehePaarung in src/App.jsx); die Zaehler oben
+   sagen darueber nichts. */
 async function list(req, res) {
+  const category = typeof req.query.category === "string" ? req.query.category : "";
+  if (category) {
+    if (!CATEGORIES.includes(category)) {
+      return res.status(400).json({ error: "Ungültige Kategorie." });
+    }
+    const paare = await sql`
+      SELECT item_a, item_b, gespielt_am FROM duell_paare WHERE kategorie = ${category}
+    `;
+    return res.status(200).json({ category, pairs: paare.map(rowToDuellPaar) });
+  }
+
   const rows = await sql`SELECT * FROM duel_counts`;
   const counts = Object.fromEntries(CATEGORIES.map((c) => [c, 0]));
   for (const r of rows) {
@@ -62,6 +85,20 @@ function zaehlerAbfrage(category, now) {
     ON CONFLICT (category) DO UPDATE
       SET duels = duel_counts.duels + 1, updated_at = ${now}
     RETURNING *
+  `;
+}
+
+/* Die gespielte Paarung festhalten. Sortiert abgelegt, damit
+   A-gegen-B und B-gegen-A dieselbe Zeile treffen; ein erneutes Duell
+   schreibt nur den Zeitpunkt fort. Uebersprungene Duelle kommen hier
+   nie an — sie melden gar nichts. */
+function paarungAbfrage(category, gewinnerId, verliererId, now) {
+  const [a, b] = paarSortiert(gewinnerId, verliererId);
+  return sql`
+    INSERT INTO duell_paare (kategorie, item_a, item_b, gespielt_am)
+    VALUES (${category}, ${a}, ${b}, ${now})
+    ON CONFLICT (kategorie, item_a, item_b) DO UPDATE
+      SET gespielt_am = ${now}
   `;
 }
 
@@ -115,12 +152,17 @@ async function auswerten(req, res) {
       WHERE id = ${verliererId} RETURNING *
     `,
     zaehlerAbfrage(category, now),
+    /* Die Paarung geht mit in dieselbe Transaktion: entweder ist das
+       Duell samt seiner Paarung gespeichert oder gar nichts. */
+    paarungAbfrage(category, gewinnerId, verliererId, now),
   ]);
 
   const stand = rowToDuelCount(ergebnis[2][0]);
+  const [paarA, paarB] = paarSortiert(gewinnerId, verliererId);
   return res.status(200).json({
     category: stand.category,
     count: stand.count,
+    pair: { a: paarA, b: paarB, at: now },
     entries: [ergebnis[0][0], ergebnis[1][0]]
       .filter(Boolean)
       .map((r) => {
