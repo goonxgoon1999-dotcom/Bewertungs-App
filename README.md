@@ -135,8 +135,10 @@ Wer beides trotzdem umbenennen möchte, ändert die zwei Dateien direkt
 
 ## Kategorien und Kriterien
 
-Jede Kategorie hat eigene Kriterien. Die Endnote entsteht überall gleich:
-75 % Kriterien-Note + 25 % Bauchgefühl.
+Jede Kategorie hat eigene Kriterien. Die Endnote entsteht überall
+gleich: 75 % Kriterien-Note + 25 % Bauchgefühl, dazu der Duell-Zuschlag
+aus dem Minispiel „Head-to-Head". Ohne gespieltes Duell ist der Zuschlag
+exakt 0 — Formel und Herleitung stehen dort und unter „Berechnung".
 
 Die Tab-Leiste oben führt alle Kategorien. Sie passen nicht mehr
 nebeneinander auf ein Telefon — die Leiste ist deshalb seitlich
@@ -485,12 +487,15 @@ vercel dev          # startet Frontend + API zusammen
 | GET | `/api/search?title=…&category=…` | Mehrere Titel-Treffer zur Auswahl beim Anlegen |
 | GET | `/api/recommendations?category=…&profil=…` | Vorschläge zum mitgeschickten Geschmacksprofil (Profil als JSON) |
 | POST | `/api/recommendations` | Dasselbe, Profil im Rumpf (`{ category, profil }`) |
+| POST | `/api/fortsetzungen` | Prüft zu bewerteten Serien, ob es inzwischen eine Staffel bzw. Fortsetzung mehr gibt (`{ eintraege: [{ id, category, title, year, staffeln, quelle, quellId }] }`) — meldet nur (`{ treffer, offen }`), trägt nichts ein. Was in die Frist eines Aufrufs nicht passt, steht in `offen` und wird nachgefragt |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |
 | DELETE | `/api/header-images?id=…` | Bild-Adresse entfernen |
-| GET | `/api/duels` | Gespielte Duelle je Kategorie (Head-to-Head und Turnier) |
-| POST | `/api/duels` | Ein ausgewertetes Duell zählen (`{ category }`) |
+| GET | `/api/duels` | Zahl der gespielten Duelle je Kategorie (Head-to-Head und Turnier) |
+| GET | `/api/duels?category=…` | Die schon gespielten Paarungen dieser Kategorie (`{ a, b, at }` je Paarung) — Grundlage der Sperrfrist im Head-to-Head |
+| POST | `/api/duels` | Ein entschiedenes Duell auswerten (`{ category, winnerId, loserId }`): Elo beider Beteiligten verschieben, je Eintrag und je Kategorie hochzählen, die Paarung festhalten. Ohne `winnerId`/`loserId` (`{ category }`) wird nur gezählt |
+| DELETE | `/api/duels?id=…` | Duell-Zuschlag eines Eintrags zurücksetzen — Elo zurück auf 1000; die gespielten Duelle bleiben gezählt |
 | GET | `/api/highscores?game=…` | Bestwerte eines Minispiels, je Spielart |
 | POST | `/api/highscores` | Ergebnis eines Durchgangs melden (`{ game, mode, score }`) — gespeichert wird nur, was den Bestwert übertrifft |
 | GET | `/api/xp` | Aktivitäts-Punkte und schon vergebene Einmal-Boni |
@@ -1063,7 +1068,25 @@ Kriteriennote = Gameplay×0.25 + Story×0.25 + Charaktere×0.15
 Die Endnote entsteht in allen Kategorien gleich:
 
 ```
-Endnote = Kriteriennote × 0.75 + Bauchgefühl × 0.25
+Endnote = (Kriteriennote × 0.75 + Bauchgefühl × 0.25) + Duell-Zuschlag
 ```
 
-Beide Werte auf zwei Nachkommastellen gerundet.
+Der Klammerteil ist das, was das Bewertungsformular ergibt; bei
+Einträgen mit Staffeln steht dort das gewichtete Mittel der
+Staffelnoten. Der Duell-Zuschlag kommt aus dem Elo-Wert des Eintrags
+und ist ohne gespieltes Duell exakt 0:
+
+```
+Duell-Zuschlag = 0.5 × tanh((Elo − 1000) / 200)
+```
+
+Er liegt damit immer echt zwischen −0,5 und +0,5. Woher der Elo-Wert
+kommt und wie er sich verschiebt, steht beim Minispiel
+**Head-to-Head**.
+
+Für die **Anzeige** wird die Endnote auf 0 bis 10 begrenzt — die Grenze
+greift erst, wenn ein Zuschlag über die 10 hinausschiebt. **Sortiert**
+wird dagegen mit dem unbegrenzten Wert, damit zwei Einträge, die beide
+bei 10,00 anstoßen, unterscheidbar bleiben.
+
+Kriteriennote und Endnote auf zwei Nachkommastellen gerundet.
