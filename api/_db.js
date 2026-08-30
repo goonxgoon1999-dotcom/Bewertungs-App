@@ -597,12 +597,23 @@ export function rowToDuelCount(r) {
 
    Der Zaehler oben sagt, wie oft in einer Kategorie gespielt wurde.
    Wer dabei gewonnen hat, steht hier: jeder Eintrag fuehrt eine
-   eigene Elo-Zahl und einen eigenen Duellzaehler.
+   eigene Elo-Zahl, einen eigenen Duellzaehler und einen Zaehler der
+   gewonnenen Duelle.
 
-   Beides sind neue Spalten mit einem DEFAULT — bestehende Zeilen
+   Die Siege sind der spaetere Zusatz: Bis dahin war je Eintrag nur
+   die Gesamtzahl der Duelle festgehalten, nicht wie sie ausgingen.
+   Genau das braucht die Kennzeichnung auffaelliger Bewertungen — sie
+   soll nur bei gemischten Ergebnissen anschlagen. Die Niederlagen
+   ergeben sich daraus als `duels - siege` und bekommen deshalb keine
+   eigene Spalte.
+
+   Alle drei sind Spalten mit einem DEFAULT — bestehende Zeilen
    bekommen den Startwert und aendern sich dadurch nicht. Bei
    ELO_START (1000) ist der Zuschlag auf die Endnote exakt 0; ohne
-   gespieltes Duell sieht die App also aus wie zuvor.
+   gespieltes Duell sieht die App also aus wie zuvor. `siege` startet
+   bei allen vorhandenen Eintraegen auf 0: Die bisherigen Ausgaenge
+   wurden nirgends festgehalten, und aus dem Elo-Wert lassen sie sich
+   nicht zurueckrechnen. Geschaetzt wird hier nichts.
 
    Die Zahlen stehen als Literale im Befehl und nicht als eingesetzte
    Werte: Postgres erlaubt in DDL keine Parameter. Sie muessen deshalb
@@ -626,6 +637,10 @@ async function ensureEloWerte() {
   await sql`
     ALTER TABLE media_items
       ADD COLUMN IF NOT EXISTS duels INTEGER NOT NULL DEFAULT 0
+  `;
+  await sql`
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS siege INTEGER NOT NULL DEFAULT 0
   `;
 }
 
@@ -730,6 +745,13 @@ export function normalizeElo(wert) {
 
 /** Duellzaehler eines Eintrags aus einer Anfrage — analog. */
 export function normalizeDuels(wert) {
+  if (wert == null) return null;
+  if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
+  return Math.max(0, Math.round(wert));
+}
+
+/** Siegzaehler eines Eintrags aus einer Anfrage — genauso. */
+export function normalizeSiege(wert) {
   if (wert == null) return null;
   if (typeof wert !== "number" || !Number.isFinite(wert)) return null;
   return Math.max(0, Math.round(wert));
@@ -1178,12 +1200,14 @@ export function rowToItem(r) {
     // Ohne Bauchgefuehl bleibt es null — Number(null) waere 0 und saehe
     // aus wie eine echte, sehr schlechte Bewertung.
     personal: r.personal === null || r.personal === undefined ? null : Number(r.personal),
-    /* Duell-Staerke und Zahl der gespielten Duelle. Aeltere Zeilen
-       ohne diese Spalten gelten als unangetastet: Startwert und 0 —
-       dasselbe, was der Spalten-DEFAULT vorgibt. Bei ELO_START ist
-       der Zuschlag auf die Endnote exakt 0. */
+    /* Duell-Staerke, Zahl der gespielten Duelle und davon gewonnene.
+       Aeltere Zeilen ohne diese Spalten gelten als unangetastet:
+       Startwert und 0 — dasselbe, was der Spalten-DEFAULT vorgibt.
+       Bei ELO_START ist der Zuschlag auf die Endnote exakt 0. Die
+       Niederlagen stehen nirgends: sie sind `duels - siege`. */
     elo: r.elo === null || r.elo === undefined ? ELO_START : Number(r.elo),
     duels: r.duels === null || r.duels === undefined ? 0 : Number(r.duels),
+    siege: r.siege === null || r.siege === undefined ? 0 : Number(r.siege),
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
     // Wann aus dem Eintrag ein bewerteter wurde. null heisst "nicht
@@ -1254,6 +1278,12 @@ function duellFelderFehler(body) {
     (typeof body.duels !== "number" || !Number.isFinite(body.duels) || body.duels < 0)
   ) {
     errors.push("Ungültige Duellzahl.");
+  }
+  if (
+    body.siege != null &&
+    (typeof body.siege !== "number" || !Number.isFinite(body.siege) || body.siege < 0)
+  ) {
+    errors.push("Ungültige Siegzahl.");
   }
   return errors;
 }

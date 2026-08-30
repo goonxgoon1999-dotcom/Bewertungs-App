@@ -9,10 +9,12 @@
  *
  * Drei Zusagen:
  *
- *   1. Ein Duell schreibt ausschliesslich `elo` und `duels`.
+ *   1. Ein Duell schreibt ausschliesslich `elo` und `duels` — beim
+ *      Gewinner zusaetzlich `siege`, beim Verlierer nicht.
  *      Bauchgefuehl und Kriterienwerte kommen in keiner Anweisung vor.
  *   2. Ein Backup ohne die neuen Felder laesst sich einspielen und
- *      bekommt dabei die Standardwerte (elo = 1000, duels = 0).
+ *      bekommt dabei die Standardwerte (elo = 1000, duels = 0,
+ *      siege = 0).
  *   3. Das Zuruecksetzen setzt `elo` auf den Startwert und laesst die
  *      Duell-Historie stehen.
  *   4. Jedes entschiedene Duell haelt seine Paarung fest — sortiert,
@@ -48,7 +50,7 @@ function zeile(id) {
     story: 8, charaktere: 8, unterhaltung: 8, emotion: 8,
     inszenierung: 8, schauspiel: 8, sound: 8,
     personal: 7, watchlist: false, watch_count: 1,
-    elo: 1000, duels: 0, created_at: 1, updated_at: 1, rated_at: 1,
+    elo: 1000, duels: 0, siege: 0, created_at: 1, updated_at: 1, rated_at: 1,
   };
 }
 
@@ -164,7 +166,27 @@ const AUS_ALTEM_BACKUP = {
  * Ein Duell fasst nur elo und duels an
  * ---------------------------------------------------------------- */
 
-test("Ein Duell schreibt ausschliesslich elo und duels", async () => {
+/* Die Spalten im SET einer Anweisung — in der Reihenfolge egal. */
+function gesetzteSpalten(anweisung) {
+  return anweisung.text
+    .replace(/^[\s\S]*?\bSET\b/i, "")
+    .replace(/\bWHERE\b[\s\S]*$/i, "")
+    .split(",")
+    .map((teil) => teil.split("=")[0].trim())
+    .sort();
+}
+
+/* Die beiden UPDATE-Anweisungen eines Duells, auseinandergehalten
+   ueber die id im letzten Wert. */
+function duellSchreiber(anweisungen) {
+  const aufItems = schreibend(anweisungen).filter((a) => /media_items/i.test(a.text));
+  return {
+    alle: aufItems,
+    fuer: (id) => aufItems.find((a) => a.werte[a.werte.length - 1] === id),
+  };
+}
+
+test("Ein Duell schreibt ausschliesslich elo, duels und beim Gewinner siege", async () => {
   api.stub.zustand.elo.set("sieger", 1000);
   api.stub.zustand.elo.set("verlierer", 1000);
 
@@ -174,19 +196,55 @@ test("Ein Duell schreibt ausschliesslich elo und duels", async () => {
   });
   assert.equal(res.status_, 200);
 
-  const schreiber = schreibend(anweisungen);
-  const aufItems = schreiber.filter((a) => /media_items/i.test(a.text));
-  assert.equal(aufItems.length, 2, "es werden nicht genau zwei Eintraege beschrieben");
+  const schreiber = duellSchreiber(anweisungen);
+  assert.equal(schreiber.alle.length, 2, "es werden nicht genau zwei Eintraege beschrieben");
 
-  for (const a of aufItems) {
-    // Genau zwei Spalten stehen im SET.
-    const gesetzt = a.text
-      .replace(/^[\s\S]*?\bSET\b/i, "")
-      .replace(/\bWHERE\b[\s\S]*$/i, "")
-      .split(",")
-      .map((teil) => teil.split("=")[0].trim());
-    assert.deepEqual(gesetzt.sort(), ["duels", "elo"], "geschrieben wird: " + gesetzt.join(", "));
-  }
+  const gewinner = schreiber.fuer("sieger");
+  const verlierer = schreiber.fuer("verlierer");
+  assert.ok(gewinner && verlierer, "Gewinner und Verlierer sind nicht auseinanderzuhalten");
+
+  assert.deepEqual(gesetzteSpalten(gewinner), ["duels", "elo", "siege"]);
+  assert.deepEqual(gesetzteSpalten(verlierer), ["duels", "elo"]);
+});
+
+test("siege waechst nur beim Gewinner — und nur um eins", async () => {
+  api.stub.zustand.elo.set("sieger", 1000);
+  api.stub.zustand.elo.set("verlierer", 1000);
+
+  const { anweisungen } = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie", winnerId: "sieger", loserId: "verlierer" },
+  });
+
+  const schreiber = duellSchreiber(anweisungen);
+  assert.match(schreiber.fuer("sieger").text, /siege\s*=\s*siege\s*\+\s*1/i);
+  assert.ok(
+    !/\bsiege\b/i.test(schreiber.fuer("verlierer").text),
+    "die Niederlage schreibt siege:\n" + schreiber.fuer("verlierer").text
+  );
+});
+
+test("Ein uebersprungenes Duell fasst siege nicht an", async () => {
+  /* Uebersprungen heisst: es wird gar nichts gemeldet. Selbst der
+     reine Zaehler-Aufruf ohne Beteiligte darf keinen Sieg buchen. */
+  const { anweisungen } = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie" },
+  });
+  assert.equal(
+    anweisungen.filter((a) => /\bsiege\b/i.test(a.text)).length,
+    0,
+    "ein Duell ohne Beteiligte schreibt siege"
+  );
+});
+
+test("Ein Selbstduell bucht keinen Sieg", async () => {
+  const { res, anweisungen } = await ruf(api.duels, {
+    method: "POST",
+    body: { category: "movie", winnerId: "a", loserId: "a" },
+  });
+  assert.equal(res.status_, 400);
+  assert.equal(anweisungen.filter((a) => /\bsiege\b/i.test(a.text)).length, 0);
 });
 
 test("Kein Duell beruehrt Bauchgefuehl oder ein Kriterium", async () => {
@@ -257,6 +315,7 @@ test("Zuruecksetzen setzt elo auf den Startwert und laesst duels stehen", async 
   assert.match(schreiber[0].text, /UPDATE\s+media_items\s+SET\s+elo\s*=/i);
   assert.equal(schreiber[0].werte[0], 1000, "es wird nicht auf den Startwert gesetzt");
   assert.ok(!/\bduels\b\s*=/i.test(schreiber[0].text), "die Duell-Historie wird geloescht");
+  assert.ok(!/\bsiege\b\s*=/i.test(schreiber[0].text), "die Siege werden geloescht");
 });
 
 test("Zuruecksetzen ohne id wird abgewiesen", async () => {
@@ -288,12 +347,48 @@ test("Ein Eintrag aus einem alten Backup laesst sich anlegen", async () => {
     .map((n) => n.trim());
   assert.ok(spalten.includes("elo"), "elo fehlt in der Spaltenliste");
   assert.ok(spalten.includes("duels"), "duels fehlt in der Spaltenliste");
+  assert.ok(spalten.includes("siege"), "siege fehlt in der Spaltenliste");
 
   /* Spalten und Werte stehen in derselben Reihenfolge: jede Spalte
      ist ein eigener Platzhalter. */
   assert.equal(spalten.length, insert.werte.length, "Spalten und Werte gehen nicht auf");
   assert.equal(insert.werte[spalten.indexOf("elo")], 1000);
   assert.equal(insert.werte[spalten.indexOf("duels")], 0);
+  /* Und `siege` faengt bei 0 an. Zurueckgerechnet wird nichts: die
+     bisherigen Duellausgaenge stehen nirgends. */
+  assert.equal(insert.werte[spalten.indexOf("siege")], 0);
+});
+
+test("Ein Backup MIT Duellzahl, aber OHNE siege setzt 0", async () => {
+  /* Genau der Zwischenstand: eine Sicherung aus der Zeit zwischen der
+     Duell-Wertung und dem Siegzaehler. `elo` und `duels` kommen mit,
+     `siege` nicht — und wird nicht aus der Elo geschaetzt. */
+  const { res, anweisungen } = await ruf(api.items, {
+    method: "POST",
+    body: { ...AUS_ALTEM_BACKUP, elo: 1187.5, duels: 23 },
+  });
+  assert.equal(res.status_, 201, "Antwort: " + JSON.stringify(res.body));
+
+  const insert = anweisungen.find((a) => /INSERT\s+INTO\s+media_items/i.test(a.text));
+  const spalten = insert.text
+    .replace(/^[\s\S]*?media_items\s*\(/i, "")
+    .replace(/\)[\s\S]*$/, "")
+    .split(",")
+    .map((n) => n.trim());
+  assert.equal(insert.werte[spalten.indexOf("elo")], 1187.5);
+  assert.equal(insert.werte[spalten.indexOf("duels")], 23);
+  assert.equal(insert.werte[spalten.indexOf("siege")], 0);
+});
+
+test("Ein Backup MIT siege bringt den Wert mit", async () => {
+  const { res, anweisungen } = await ruf(api.items, {
+    method: "POST",
+    body: { ...AUS_ALTEM_BACKUP, elo: 1187.5, duels: 23, siege: 14 },
+  });
+  assert.equal(res.status_, 201, "Antwort: " + JSON.stringify(res.body));
+
+  const insert = anweisungen.find((a) => /INSERT\s+INTO\s+media_items/i.test(a.text));
+  assert.ok(insert.werte.includes(14), "siege aus dem Backup fehlt");
 });
 
 test("Ein Eintrag aus einem neuen Backup bringt seine Werte mit", async () => {
@@ -322,6 +417,7 @@ test("Ein Speichervorgang ohne die Felder laesst den Stand stehen", async () => 
   const update = anweisungen.find((a) => /UPDATE\s+media_items/i.test(a.text));
   assert.match(update.text, /elo\s*=\s*COALESCE\([^)]*,\s*elo\)/i);
   assert.match(update.text, /duels\s*=\s*COALESCE\([^)]*,\s*duels\)/i);
+  assert.match(update.text, /siege\s*=\s*COALESCE\([^)]*,\s*siege\)/i);
   // Eingesetzt wird NULL — COALESCE nimmt dann den gespeicherten Wert.
   const stelle = Number((update.text.match(/elo\s*=\s*COALESCE\(\$(\d+)/i) || [])[1]);
   assert.equal(update.werte[stelle - 1], null);

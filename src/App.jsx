@@ -511,13 +511,23 @@ const ELO_START = 1000;
 
 /* Groesse des Zuschlags und die Skala, ueber die er sich aufbaut.
    Der tanh laeuft von -1 bis 1 und erreicht die Grenzen nie: der
-   Zuschlag liegt damit mathematisch immer echt zwischen -0,5 und
-   +0,5, egal wie lang eine Siegesserie wird. Ein Hochschaukeln auf
+   Zuschlag liegt damit mathematisch immer echt zwischen -0,25 und
+   +0,25, egal wie lang eine Siegesserie wird. Ein Hochschaukeln auf
    einen unrealistischen Wert ist strukturell ausgeschlossen, nicht
-   nur unwahrscheinlich. Bei 200 Punkten Elo-Vorsprung steht der
-   Zuschlag bei rund +0,38, bei 400 bei rund +0,48. */
-const ZUSCHLAG_MAX = 0.5;
-const ZUSCHLAG_SKALA = 200;
+   nur unwahrscheinlich. Bei 100 Punkten Elo-Vorsprung steht der
+   Zuschlag bei rund +0,19, bei 200 bei rund +0,24.
+
+   Beide Zahlen sind gegenueber der ersten Fassung halbiert (vorher
+   0,5 und 200). Das ist Absicht und haelt die Steigung im Nullpunkt
+   unveraendert bei 0,0025 je Elo-Punkt: Der erste Sieg bringt
+   weiterhin rund +0,04, drei Siege rund +0,10. Am fruehen Verhalten
+   aendert sich also praktisch nichts — nur die Saettigung setzt
+   doppelt so frueh ein. An der Spitze der Rangliste liegen die Noten
+   nur wenige Hundertstel auseinander; mit einem Deckel von 0,5 haette
+   dort die Duellbilanz die Reihenfolge bestimmt und nicht mehr die
+   Bewertung. */
+const ZUSCHLAG_MAX = 0.25;
+const ZUSCHLAG_SKALA = 100;
 
 /** Elo-Zahl eines Eintrags. Ohne Angabe gilt der Startwert. */
 function entryElo(entry) {
@@ -529,6 +539,20 @@ function entryElo(entry) {
 function entryDuels(entry) {
   const wert = entry ? entry.duels : undefined;
   return typeof wert === "number" && Number.isFinite(wert) && wert > 0 ? Math.round(wert) : 0;
+}
+
+/**
+ * Gewonnene Duelle eines Eintrags. Ohne Angabe: noch keines.
+ *
+ * Die Niederlagen stehen nirgends — sie sind `duels - siege`. Mehr
+ * Siege als Duelle kann es nicht geben; sollte eine krumme Angabe
+ * doch einmal mehr behaupten, wird sie hier gekappt, damit die
+ * Niederlagen nicht negativ werden.
+ */
+function entrySiege(entry) {
+  const wert = entry ? entry.siege : undefined;
+  const roh = typeof wert === "number" && Number.isFinite(wert) && wert > 0 ? Math.round(wert) : 0;
+  return Math.min(roh, entryDuels(entry));
 }
 
 /**
@@ -566,40 +590,66 @@ function zuschlagText(wert) {
    zwischen dem, was die Kriterien ergeben, und dem, was die Duelle
    zeigen.
 
-   Auffaellig ist ein Titel nur, wenn BEIDES zutrifft — ein grosser
-   Zuschlag aus einem einzigen Duell waere Zufall und kein Hinweis.
+   Auffaellig ist ein Titel nur, wenn ALLE DREI Bedingungen
+   zutreffen — ein grosser Zuschlag aus einem einzigen Duell waere
+   Zufall und kein Hinweis.
 
-   Beide Zahlen stehen hier an einer Stelle und sonst nirgends,
+   Die dritte Bedingung, gemischte Ergebnisse, ist der spaetere
+   Zusatz: Ein Titel an der Spitze gewinnt jedes Duell und sammelt
+   Zuschlag, ohne dass daran etwas widersprueglich waere — er hat
+   schlicht niemanden mehr ueber sich, gegen den er verlieren
+   koennte. Bei ihm sagt die Markierung nichts aus. Aussagekraeftig
+   ist sie erst bei einem Titel, der teils gewinnt und teils verliert
+   und trotzdem stark von seiner Note abweicht.
+
+   Alle drei Zahlen stehen hier an einer Stelle und sonst nirgends,
    damit sich die Schwelle spaeter mit einem Griff verschieben laesst.
    Die Duell-Wertung selbst fassen sie nicht an: es ist eine
    Kennzeichnung, keine Rechnung.
    ---------------------------------------------------------------- */
 
-/* Ab diesem Betrag gilt der Zuschlag als deutlich. */
-const AUFFAELLIG_ZUSCHLAG = 0.2;
+/* Ab diesem Betrag gilt der Zuschlag als deutlich. Die Schwelle
+   orientiert sich am Deckel des Zuschlags: bei ZUSCHLAG_MAX = 0,25
+   waeren die frueheren 0,20 praktisch das Maximum und damit kaum je
+   erreichbar. */
+const AUFFAELLIG_ZUSCHLAG = 0.15;
 
 /* So viele Duelle muessen dahinterstehen. */
 const AUFFAELLIG_DUELLE = 3;
 
+/* So viele Siege UND so viele Niederlagen muessen darunter sein —
+   erst dann ist das Ergebnis gemischt. */
+const AUFFAELLIG_GEMISCHT = 1;
+
 /**
- * Ob Zuschlag und Duellzahl die Schwelle erreichen.
+ * Ob Zuschlag, Duellzahl und Duellbilanz die Schwelle erreichen.
  *
  * Gemessen wird am Betrag: nach oben wie nach unten gleichwertig.
  * Verglichen wird der Zuschlag so, wie er auch dasteht — auf zwei
  * Nachkommastellen gerundet (siehe zuschlagText). Sonst stuende in
- * der Detailansicht "+0,20" ohne Hinweis daneben, weil der ungerundete
+ * der Detailansicht "+0,15" ohne Hinweis daneben, weil der ungerundete
  * Wert knapp darunter liegt.
+ *
+ * Die Niederlagen stehen nirgends gespeichert; sie ergeben sich als
+ * `duelle - siege`.
  */
-function auffaelligeBewertung(zuschlag, duelle) {
+function auffaelligeBewertung(zuschlag, duelle, siege) {
   if (typeof zuschlag !== "number" || !Number.isFinite(zuschlag)) return false;
   if (typeof duelle !== "number" || !Number.isFinite(duelle)) return false;
+  if (typeof siege !== "number" || !Number.isFinite(siege)) return false;
   const betrag = Math.round(Math.abs(zuschlag) * 100) / 100;
-  return duelle >= AUFFAELLIG_DUELLE && betrag >= AUFFAELLIG_ZUSCHLAG;
+  const niederlagen = duelle - siege;
+  return (
+    duelle >= AUFFAELLIG_DUELLE &&
+    betrag >= AUFFAELLIG_ZUSCHLAG &&
+    siege >= AUFFAELLIG_GEMISCHT &&
+    niederlagen >= AUFFAELLIG_GEMISCHT
+  );
 }
 
 /** Dasselbe fuer einen Eintrag. */
 function entryAuffaellig(entry) {
-  return auffaelligeBewertung(entryZuschlag(entry), entryDuels(entry));
+  return auffaelligeBewertung(entryZuschlag(entry), entryDuels(entry), entrySiege(entry));
 }
 
 /* Was in der Detailansicht unter der Zuschlag-Zeile steht — die
@@ -615,10 +665,11 @@ function auffaelligText(zuschlag) {
 /* Wie weit die Endnote des Gegners hoechstens abweichen darf.
    Frueher stand hier ein Fenster von fuenf Raengen. Das Mass ist
    jetzt die Endnote selbst, und zwar aus einem handfesten Grund: Der
-   Duell-Zuschlag liegt zwischen -0,5 und +0,5, zwei Titel koennen
-   sich also hoechstens um einen Notenpunkt aneinander vorbeischieben.
-   Bei mehr als 1,0 Abstand waere eine Paarung folgenlos — der
-   Ausgang stuende ohnehin fest.
+   Duell-Zuschlag ist gedeckelt, zwei Titel koennen sich also nur um
+   einen begrenzten Betrag aneinander vorbeischieben — bei -0,25 bis
+   +0,25 je Titel um hoechstens einen halben Notenpunkt. Bei deutlich
+   mehr Abstand waere eine Paarung folgenlos, der Ausgang stuende
+   ohnehin fest. Die Stufen selbst bleiben unveraendert.
 
    Findet sich im engsten Fenster nicht genug, wird schrittweise
    geoeffnet; die letzte Stufe laesst alles zu, damit in einer
@@ -5910,7 +5961,8 @@ function BewertungPruefen({ ranked, onOeffnen }) {
       <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
         Diese Titel schneiden im Duell dauerhaft anders ab, als ihre Kriterien
         hergeben — ab {AUFFAELLIG_ZUSCHLAG.toFixed(2).replace(".", ",")} Zuschlag
-        und {AUFFAELLIG_DUELLE} Duellen.
+        und {AUFFAELLIG_DUELLE} Duellen, und nur bei gemischten Ergebnissen:
+        mindestens {AUFFAELLIG_GEMISCHT} Sieg und {AUFFAELLIG_GEMISCHT} Niederlage.
       </div>
 
       {liste.map(({ eintrag, kategorie, zuschlag, duelle }) => (
@@ -9292,11 +9344,13 @@ export default function App() {
         : [],
       values: e.values,
       personal: e.personal,
-      /* Duell-Wertung und gespielte Duelle. Fehlen sie — aeltere
-         Server-Antwort, Backup von vor der Duell-Wertung —, gilt der
-         Startwert und damit ein Zuschlag von exakt 0. */
+      /* Duell-Wertung, gespielte und gewonnene Duelle. Fehlen sie —
+         aeltere Server-Antwort, Backup von vor der Duell-Wertung —,
+         gilt der Startwert und damit ein Zuschlag von exakt 0, und es
+         steht kein Sieg zu Buche. */
       elo: typeof e.elo === "number" && Number.isFinite(e.elo) ? e.elo : ELO_START,
       duels: typeof e.duels === "number" && Number.isFinite(e.duels) && e.duels > 0 ? Math.round(e.duels) : 0,
+      siege: typeof e.siege === "number" && Number.isFinite(e.siege) && e.siege > 0 ? Math.round(e.siege) : 0,
       createdAt: e.createdAt || 0,
       updatedAt: e.updatedAt || 0,
       /* Wann aus dem Eintrag ein bewerteter wurde. Der Server setzt das
@@ -10393,9 +10447,10 @@ export default function App() {
     let gespielt = null;
     try {
       const ergebnis = await api.duell(catKey, gewinnerId, verliererId);
-      /* Zurueck kommen nur `elo` und `duels` je Eintrag. Genau diese
-         beiden Felder werden uebernommen — alles Uebrige bleibt so
-         stehen, wie es ist. */
+      /* Zurueck kommen nur `elo`, `duels` und `siege` je Eintrag.
+         Genau diese drei Felder werden uebernommen — alles Uebrige
+         bleibt so stehen, wie es ist. `siege` waechst dabei nur beim
+         Gewinner; der Server entscheidet das, nicht das Frontend. */
       const neueWerte = new Map(
         (ergebnis && Array.isArray(ergebnis.entries) ? ergebnis.entries : []).map((e) => [e.id, e])
       );
@@ -10409,6 +10464,7 @@ export default function App() {
               ...f,
               elo: typeof neu.elo === "number" ? neu.elo : f.elo,
               duels: typeof neu.duels === "number" ? neu.duels : f.duels,
+              siege: typeof neu.siege === "number" ? neu.siege : f.siege,
             };
           }),
         }));
@@ -10448,6 +10504,7 @@ export default function App() {
                 ...f,
                 elo: typeof stand.elo === "number" ? stand.elo : ELO_START,
                 duels: typeof stand.duels === "number" ? stand.duels : f.duels,
+                siege: typeof stand.siege === "number" ? stand.siege : f.siege,
               }
             : f
         ),
@@ -10677,15 +10734,19 @@ export default function App() {
                 studio: typeof entry.studio === "string" ? entry.studio : null,
                 values: vorgemerkt ? emptyValues(catKey) : entry.values,
                 personal: vorgemerkt ? null : entry.personal,
-                /* Duell-Wertung und Duellzahl aus der Sicherung. Eine
-                   Sicherung von vor der Duell-Wertung hat beides
-                   nicht — dann gilt der Startwert und ein Zuschlag
-                   von exakt 0. Ein aelteres Backup bleibt damit
-                   unveraendert einspielbar. */
+                /* Duell-Wertung, Duellzahl und Siege aus der Sicherung.
+                   Eine Sicherung von vor der jeweiligen Aenderung hat
+                   sie nicht — dann gilt der Startwert, ein Zuschlag
+                   von exakt 0 und kein Sieg. Ein aelteres Backup
+                   bleibt damit unveraendert einspielbar. */
                 elo: typeof entry.elo === "number" && Number.isFinite(entry.elo) ? entry.elo : ELO_START,
                 duels:
                   typeof entry.duels === "number" && Number.isFinite(entry.duels) && entry.duels > 0
                     ? Math.round(entry.duels)
+                    : 0,
+                siege:
+                  typeof entry.siege === "number" && Number.isFinite(entry.siege) && entry.siege > 0
+                    ? Math.round(entry.siege)
                     : 0,
                 createdAt: entry.createdAt || Date.now(),
                 updatedAt: entry.updatedAt || Date.now(),

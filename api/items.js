@@ -2,7 +2,7 @@ import {
   sql, ensureReady, rowToItem, rowToSeason, validateItem,
   criteriaKeysFor, CATEGORIES, supportsSeasons, normalizeWeight,
   normalizeWatchCount, WATCH_COUNT_DEFAULT, genresZuText,
-  normalizeElo, normalizeDuels, ELO_START,
+  normalizeElo, normalizeDuels, normalizeSiege, ELO_START,
   episodenZuText, positiveZahl, logFehler, fehlerBeschreibung,
   normalizeStaffelNr, normalizeFolgeNr,
 } from "./_db.js";
@@ -334,7 +334,7 @@ async function create(req, res) {
          emotion, inszenierung, schauspiel, sound, gameplay, welt, grafik, wiederspielwert,
          personal, release_year, director, imdb_rating, genres, collection, studio,
          runtime_minutes, episode_runtime, episode_count, episodes_per_season,
-         watchlist, watch_count, elo, duels,
+         watchlist, watch_count, elo, duels, siege,
          am_schauen, staffel_nr, folge_nr,
          created_at, updated_at, rated_at)
       VALUES
@@ -352,12 +352,14 @@ async function create(req, res) {
          ${l.mitgeschickt ? l.episodesPerSeason : null},
          ${merkliste},
          ${normalizeWatchCount(body.watchCount) ?? WATCH_COUNT_DEFAULT},
-         -- Duell-Staerke und Duellzahl. Ein Backup ohne diese Felder
-         -- (jede Sicherung von vor dieser Aenderung) bringt beides
-         -- nicht mit — dann gilt der Startwert, und der Zuschlag auf
-         -- die Endnote ist exakt 0.
+         -- Duell-Staerke, Duellzahl und gewonnene Duelle. Ein Backup
+         -- ohne diese Felder (jede Sicherung von vor der jeweiligen
+         -- Aenderung) bringt sie nicht mit — dann gilt der Startwert,
+         -- der Zuschlag auf die Endnote ist exakt 0, und es steht kein
+         -- Sieg zu Buche.
          ${normalizeElo(body.elo) ?? ELO_START},
          ${normalizeDuels(body.duels) ?? 0},
+         ${normalizeSiege(body.siege) ?? 0},
          -- Am Schauen und der Stand darin. Ein Backup ohne diese
          -- Felder (jede Sicherung von vor dieser Aenderung) bringt sie
          -- nicht mit — dann gelten die Standardwerte: nicht am
@@ -459,6 +461,7 @@ async function update(req, res) {
         -- Duell-Staerke auf den Startwert zuruecksetzen.
         elo             = COALESCE(${normalizeElo(body.elo)}::real, elo),
         duels           = COALESCE(${normalizeDuels(body.duels)}::integer, duels),
+        siege           = COALESCE(${normalizeSiege(body.siege)}::integer, siege),
         -- Das Bewertungsdatum wird genau einmal gesetzt und danach nie
         -- wieder angefasst: COALESCE nimmt zuerst den gespeicherten
         -- Wert. Erst wenn dort nichts steht — der Eintrag also gerade

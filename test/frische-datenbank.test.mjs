@@ -161,8 +161,9 @@ test("An den Bewertungen selbst wird nichts umgebaut", () => {
 test("Die Duell-Spalten kommen additiv dazu und starten neutral", () => {
   /* Bestandsdaten werden nicht zurueckgerechnet: `elo` bekommt ueber
      den Spalten-DEFAULT den Startwert 1000 (dort ist der Zuschlag
-     exakt 0) und `duels` die 0. Beides ist ADD COLUMN IF NOT EXISTS —
-     keine bestehende Spalte wird umbenannt, geleert oder umgetypt. */
+     exakt 0), `duels` und `siege` bekommen die 0. Alle drei sind
+     ADD COLUMN IF NOT EXISTS — keine bestehende Spalte wird
+     umbenannt, geleert oder umgetypt. */
   const elo = anweisungen.filter((a) => /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+elo\b/i.test(a));
   assert.equal(elo.length, 1, "elo wird nicht genau einmal angelegt");
   assert.match(elo[0], /ALTER\s+TABLE\s+media_items/i);
@@ -172,6 +173,18 @@ test("Die Duell-Spalten kommen additiv dazu und starten neutral", () => {
   assert.equal(duels.length, 1, "duels wird nicht genau einmal angelegt");
   assert.match(duels[0], /ALTER\s+TABLE\s+media_items/i);
   assert.match(duels[0], /DEFAULT\s+0\b/i);
+
+  /* `siege` genauso: neu, additiv und bei 0 startend. Die bisherigen
+     Duellausgaenge wurden nirgends festgehalten — geschaetzt wird
+     nichts, und ein Backfill gibt es nicht. */
+  const siege = anweisungen.filter((a) => /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+siege\b/i.test(a));
+  assert.equal(siege.length, 1, "siege wird nicht genau einmal angelegt");
+  assert.match(siege[0], /ALTER\s+TABLE\s+media_items/i);
+  assert.match(siege[0], /DEFAULT\s+0\b/i);
+  assert.ok(
+    !anweisungen.some((a) => /UPDATE\s+media_items[\s\S]*\bsiege\b/i.test(a)),
+    "siege wird beim Start zurueckgerechnet"
+  );
 
   // Der Startwert der Spalte muss zum Startwert im Code passen.
   assert.equal(db.ELO_START, 1000);
