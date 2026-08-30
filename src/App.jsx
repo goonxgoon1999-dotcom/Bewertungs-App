@@ -743,6 +743,94 @@ function zahlText(n) {
   return Math.round(n).toLocaleString("de-DE");
 }
 
+/* Wie das Teilnehmerfeld eines Head-to-Head eingegrenzt wird.
+   "Alle" ist die Vorgabe und laesst alles, wie es war. */
+const DUELL_AUSWAHL_ALLE = "alle";
+const DUELL_AUSWAHL_PLATZ = "platz";
+const DUELL_AUSWAHL_NOTE = "note";
+
+/* Die Grenzen, wenn ein Feld leer bleibt: von Platz 1 bis ans Ende
+   der Liste, von Note 0 bis 10. Ein leeres Feld heisst damit "ohne
+   Grenze auf dieser Seite" und nicht "nichts". */
+const DUELL_NOTE_MIN = 0;
+const DUELL_NOTE_MAX = 10;
+
+/* Eine eingetippte Grenze als Zahl. Was sich nicht lesen laesst —
+   leer, Buchstaben —, faellt auf den Ersatzwert zurueck. */
+function auswahlGrenze(wert, ersatz) {
+  if (typeof wert === "number" && Number.isFinite(wert)) return wert;
+  /* Ein leeres Feld ist keine 0, sondern gar keine Angabe — Number("")
+     waere hier eine boese Falle. */
+  if (typeof wert !== "string" || !wert.trim()) return ersatz;
+  const zahl = Number(wert.trim().replace(",", "."));
+  return Number.isFinite(zahl) ? zahl : ersatz;
+}
+
+/**
+ * Das Teilnehmerfeld einer Auswahl — wer ueberhaupt antreten darf.
+ *
+ * `liste` ist das Teilnehmerfeld der Kategorie in Ranglisten-
+ * Reihenfolge (beste Note zuerst), `auswahl` die Eingrenzung:
+ *
+ *   { art: "alle" }                    das ganze Feld
+ *   { art: "platz", von: 3, bis: 7 }   Platz 3 bis 7, beide dabei
+ *   { art: "note", von: 7, bis: 8.5 }  Endnote 7,0 bis 8,5
+ *
+ * Verdrehte Grenzen werden gerade gerueckt: "von 7 bis 3" meint
+ * dasselbe wie "von 3 bis 7". Beim Notenbereich entscheidet
+ * dieselbe Frage wie beim Notenfilter der Rangliste
+ * (imNotenbereich) — die angezeigte, auf 0 bis 10 begrenzte Note.
+ *
+ * Diese Funktion wird EINMAL gerufen, wenn die Auswahl beginnt. Was
+ * sie zurueckgibt, steht danach fest; verschieben sich die Noten
+ * durch die eigenen Duelle, bleibt das Feld trotzdem dasselbe.
+ */
+function auswahlFeld(liste, auswahl) {
+  const alle = (Array.isArray(liste) ? liste : []).filter(Boolean);
+  const art = auswahl && auswahl.art;
+
+  if (art === DUELL_AUSWAHL_PLATZ) {
+    const roh = [
+      Math.round(auswahlGrenze(auswahl.von, 1)),
+      Math.round(auswahlGrenze(auswahl.bis, alle.length)),
+    ];
+    const von = Math.max(1, Math.min(roh[0], roh[1]));
+    const bis = Math.max(roh[0], roh[1]);
+    return alle.slice(von - 1, Math.max(0, bis));
+  }
+
+  if (art === DUELL_AUSWAHL_NOTE) {
+    const roh = [
+      auswahlGrenze(auswahl.von, DUELL_NOTE_MIN),
+      auswahlGrenze(auswahl.bis, DUELL_NOTE_MAX),
+    ];
+    const von = Math.min(roh[0], roh[1]);
+    const bis = Math.max(roh[0], roh[1]);
+    return alle.filter((eintrag) => imNotenbereich(duellNote(eintrag), von, bis));
+  }
+
+  return alle;
+}
+
+/**
+ * Das festgehaltene Feld auf den aktuellen Stand gelegt.
+ *
+ * `ids` sind die Teilnehmer, wie sie beim Start der Auswahl
+ * feststanden; `liste` ist das Feld der Kategorie, wie es jetzt
+ * dasteht. Heraus kommt, wer beides ist — in der aktuellen
+ * Reihenfolge und mit den aktuellen Noten und Duellzahlen, aber ohne
+ * dass jemand hinzukommt oder herausfaellt, nur weil ein Duell die
+ * Noten verschoben hat.
+ *
+ * Ohne `ids` (Auswahl "Alle") bleibt die Liste unangetastet — genau
+ * dieselbe, die vor der Auswahl an die Ziehung ging.
+ */
+function feldListe(liste, ids) {
+  const alle = Array.isArray(liste) ? liste : [];
+  if (!ids) return alle;
+  return alle.filter((eintrag) => eintrag && ids.has(eintrag.id));
+}
+
 /**
  * Die moeglichen Gegner eines Titels, samt der Stufe, die dafuer
  * noetig war.
@@ -755,8 +843,13 @@ function zahlText(n) {
  * Aussortiert wird, wer denselben Eintrag meint: gleicher Platz oder
  * gleiche ID. Zwei Plaetze der Liste koennen denselben Eintrag
  * fuehren, und ein Selbstduell darf daraus nie entstehen.
+ *
+ * Mit `ohneFenster` faellt die Messung ganz weg: dann zaehlt das
+ * ganze Feld. Das ist der Fall, wenn der Spieler das Teilnehmerfeld
+ * selbst eingegrenzt hat — die Auswahl tritt dann an die Stelle des
+ * Fensters (siehe DUELL_AUSWAHL_*).
  */
-function duellKandidaten(liste, ankerIndex) {
+function duellKandidaten(liste, ankerIndex, ohneFenster = false) {
   const anker = liste[ankerIndex];
   if (!anker) return [];
   const note = duellNote(anker);
@@ -770,6 +863,12 @@ function duellKandidaten(liste, ankerIndex) {
     moeglich.push(i);
   }
   if (!moeglich.length) return [];
+
+  /* Eine Auswahl ersetzt das Fenster: wer im Feld steht, darf gegen
+     jeden anderen darin antreten. Die Erweiterungsstufen entfallen
+     damit ebenso — sie waeren der Notausgang eines Fensters, das es
+     hier nicht gibt. */
+  if (ohneFenster) return moeglich;
 
   /* Ohne Note gibt es nichts zu messen — dann zaehlt das ganze Feld.
      In der Rangliste kommt das nicht vor, die Sperre steht nur, damit
@@ -840,7 +939,7 @@ function wenigsteDuelle(liste, auswahl, zufall) {
  *    Bei genau zwei Titeln bleibt es zwangslaeufig beim einzigen
  *    moeglichen Paar.
  */
-function ziehePaarung(liste, verlauf, zufall = Math.random, gespielt = null) {
+function ziehePaarung(liste, verlauf, zufall = Math.random, gespielt = null, ohneFenster = false) {
   if (!Array.isArray(liste) || liste.length < MIN_DUELL_TEILNEHMER) return null;
 
   const gesperrt = (Array.isArray(verlauf) ? verlauf : [])
@@ -859,7 +958,7 @@ function ziehePaarung(liste, verlauf, zufall = Math.random, gespielt = null) {
     const anker = liste[ankerIndex];
     if (!anker) continue;
 
-    const imFenster = duellKandidaten(liste, ankerIndex);
+    const imFenster = duellKandidaten(liste, ankerIndex, ohneFenster);
     if (!imFenster.length) continue;
 
     /* Die vorgelagerte Stufe: im Fenster zaehlen zuerst nur die
@@ -892,7 +991,7 @@ function ziehePaarung(liste, verlauf, zufall = Math.random, gespielt = null) {
   /* Kein Anker hatte eine ungespielte Paarung im Fenster. Statt hier
      aufzugeben, kommt die Begegnung wieder, die am laengsten
      zurueckliegt. */
-  return aeltestePaarung(liste, zeitVon, seitenLos, zufall);
+  return aeltestePaarung(liste, zeitVon, seitenLos, zufall, ohneFenster);
 }
 
 /**
@@ -908,13 +1007,13 @@ function ziehePaarung(liste, verlauf, zufall = Math.random, gespielt = null) {
  * hat die Vorrang — die Sperrfrist greift immer erst, wenn wirklich
  * keine ungespielte mehr uebrig ist.
  */
-function aeltestePaarung(liste, zeitVon, seitenLos, zufall) {
+function aeltestePaarung(liste, zeitVon, seitenLos, zufall, ohneFenster = false) {
   const ungespielt = [];
   let aelteste = null;
   for (let i = 0; i < liste.length; i++) {
     const anker = liste[i];
     if (!anker) continue;
-    for (const j of duellKandidaten(liste, i)) {
+    for (const j of duellKandidaten(liste, i, ohneFenster)) {
       const gegner = liste[j];
       if (!gegner) continue;
       const schluessel = paarungsSchluessel(anker.id, gegner.id);
@@ -6658,6 +6757,117 @@ function rueckmeldungsText(rueckmeldung, rangliste) {
   return titel + " steht jetzt auf Platz " + platzJetzt + ".";
 }
 
+/* Die drei Arten der Eingrenzung, wie sie in der Leiste stehen. */
+const DUELL_AUSWAHL_ARTEN = [
+  { key: DUELL_AUSWAHL_ALLE, label: "Alle" },
+  { key: DUELL_AUSWAHL_PLATZ, label: "Nach Platz" },
+  { key: DUELL_AUSWAHL_NOTE, label: "Nach Note" },
+];
+
+/**
+ * Die Leiste ueber dem Duell: wer ueberhaupt antreten soll.
+ *
+ * Die Leiste stellt nur ein — bestimmt wird das Feld erst beim
+ * Uebernehmen, und zwar einmal (siehe uebernehmen in HeadToHead).
+ * Deshalb steht rechts, was gerade wirklich gilt, und nicht, was in
+ * den Feldern getippt ist: beides kann auseinanderlaufen, solange
+ * noch nicht uebernommen wurde.
+ */
+function AuswahlLeiste({
+  art, von, bis, anzahl, gesamt, eingegrenzt, onArt, onVon, onBis, onUebernehmen,
+}) {
+  const nachNote = art === DUELL_AUSWAHL_NOTE;
+
+  const feldStil = {
+    width: 62, padding: "6px 8px", borderRadius: 6,
+    background: "#17171A", border: "1px solid #2A2A2E", color: "#EDEAE3",
+    fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5,
+  };
+
+  return (
+    <div
+      style={{
+        background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 10,
+        padding: "10px 12px", marginBottom: 16,
+        display: "flex", flexDirection: "column", gap: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {DUELL_AUSWAHL_ARTEN.map((a) => {
+            const aktiv = a.key === art;
+            return (
+              <button
+                key={a.key}
+                onClick={() => onArt(a.key)}
+                style={{
+                  padding: "5px 10px", borderRadius: 999, cursor: "pointer",
+                  background: aktiv ? "var(--accent, #C9A227)" : "transparent",
+                  border: "1px solid " + (aktiv ? "var(--accent, #C9A227)" : "#2A2A2E"),
+                  color: aktiv ? "#17171A" : "#9A968C",
+                  fontFamily: "inherit", fontSize: 12.5, fontWeight: aktiv ? 700 : 400,
+                }}
+              >
+                {a.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize: 11, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+          {eingegrenzt ? "Feld: " + anzahl + " von " + gesamt : "Feld: alle " + gesamt}
+        </div>
+      </div>
+
+      {art !== DUELL_AUSWAHL_ALLE && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "#77746c" }}>von</span>
+          <input
+            type="number"
+            inputMode="decimal"
+            value={von}
+            onChange={(e) => onVon(e.target.value)}
+            min={nachNote ? DUELL_NOTE_MIN : 1}
+            max={nachNote ? DUELL_NOTE_MAX : undefined}
+            step={nachNote ? 0.1 : 1}
+            placeholder={nachNote ? "0,0" : "1"}
+            aria-label={nachNote ? "Note von" : "Platz von"}
+            style={feldStil}
+          />
+          <span style={{ fontSize: 12, color: "#77746c" }}>bis</span>
+          <input
+            type="number"
+            inputMode="decimal"
+            value={bis}
+            onChange={(e) => onBis(e.target.value)}
+            min={nachNote ? DUELL_NOTE_MIN : 1}
+            max={nachNote ? DUELL_NOTE_MAX : undefined}
+            step={nachNote ? 0.1 : 1}
+            placeholder={nachNote ? "10,0" : String(gesamt || 1)}
+            aria-label={nachNote ? "Note bis" : "Platz bis"}
+            style={feldStil}
+          />
+          <button
+            onClick={onUebernehmen}
+            style={{
+              padding: "6px 12px", borderRadius: 6, cursor: "pointer",
+              background: "transparent", border: "1px solid var(--accent, #C9A227)",
+              color: "var(--accent, #C9A227)",
+              fontFamily: "inherit", fontSize: 12.5, fontWeight: 700,
+            }}
+          >
+            Übernehmen
+          </button>
+          {/* Ein leeres Feld heisst "ohne Grenze auf dieser Seite" —
+              nicht "nichts". */}
+          <span style={{ fontSize: 11, color: "#55524c", lineHeight: 1.4 }}>
+            Leer = ohne Grenze
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
   const [kategorie, setKategorie] = useState(null);
   const [paar, setPaar] = useState(null);
@@ -6667,6 +6877,27 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      erst, wenn die Auswertung durch ist — vorher waere jede Aussage
      ueber die Platzierung geraten. */
   const [rueckmeldung, setRueckmeldung] = useState(null);
+
+  /* Die Leiste ueber dem Duell: welche Art der Eingrenzung eingestellt
+     ist und was in den beiden Feldern steht. Getippt wird als Text —
+     gelesen wird erst beim Uebernehmen. */
+  const [art, setArt] = useState(DUELL_AUSWAHL_ALLE);
+  const [von, setVon] = useState("");
+  const [bis, setBis] = useState("");
+
+  /* Das Teilnehmerfeld, wie es beim Start der Auswahl feststand — als
+     Menge von IDs. Genau hier sitzt die Zusage, dass sich das Feld
+     nicht nach jedem Duell neu bestimmt: die Menge entsteht einmal
+     beim Uebernehmen und aendert sich erst wieder, wenn die Auswahl
+     oder die Kategorie wechselt.
+
+     null heisst "Alle". Dann wird gar nicht gefiltert, und die
+     Ziehung bekommt dieselbe Liste wie vor dieser Leiste. */
+  const [feld, setFeld] = useState(null);
+
+  /* Eine Auswahl tritt an die Stelle des Notenfensters: innerhalb des
+     Feldes darf jeder gegen jeden. Bei "Alle" bleibt das Fenster. */
+  const ohneFenster = feld !== null;
 
   const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
 
@@ -6687,9 +6918,13 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
   /* Gezogen wird immer aus dem aktuellen Stand: nach einem Duell haben
      sich zwei Endnoten verschoben und die Rangliste sieht anders aus.
      Der Verweis haelt ihn fuer die Zeitschaltung bereit, die nicht bei
-     jedem Neuaufbau neu gesetzt werden soll. */
+     jedem Neuaufbau neu gesetzt werden soll.
+
+     Wer dabei ist, entscheidet allein das festgehaltene Feld — Noten
+     und Duellzahlen bleiben dagegen aktuell, damit die Bevorzugung
+     der wenig gespielten Titel weiter greift. */
   const listeRef = useRef([]);
-  listeRef.current = kategorie ? teilnehmer[kategorie] : [];
+  listeRef.current = feldListe(kategorie ? teilnehmer[kategorie] : [], feld);
   /* Die zuletzt gezogenen Paarungen, die juengste zuletzt. Sie halten
      dieselbe Begegnung fuer ein paar Zuege draussen. */
   const verlaufRef = useRef([]);
@@ -6708,6 +6943,10 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      ohne sie gezogen zu haben hiesse, die Sperrfrist beim ersten
      Duell zu uebergehen. */
   const [laedtPaare, setLaedtPaare] = useState(false);
+  /* Fuer welche Kategorie die gespielten Paarungen schon dastehen.
+     Ein blosser Wechsel der Auswahl soll sie nicht noch einmal
+     holen — die Liste gehoert der Kategorie. */
+  const geladenFuerRef = useRef(null);
 
   function merkePaarung(gezogen) {
     if (!gezogen) return;
@@ -6743,7 +6982,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       setGewaehlt(null);
       setRueckmeldung(null);
       const naechste = ziehePaarung(
-        listeRef.current, verlaufRef.current, Math.random, paareRef.current
+        listeRef.current, verlaufRef.current, Math.random, paareRef.current, ohneFenster
       );
       merkePaarung(naechste);
       setPaar(naechste);
@@ -6780,24 +7019,74 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
     laeuft.then(fertig, fertig);
   }
 
-  /* Erstes Duell einer Kategorie. Nur die Wahl der Kategorie loest es
-     aus — sonst wuerde jede gespeicherte Verschiebung sofort ein neues
-     Paar ziehen und die Rueckmeldung waere nie zu sehen. */
+  /* Zurueck auf "Alle" — beim Wechsel der Kategorie. Die Eingrenzung
+     der einen Kategorie sagt ueber die naechste nichts. */
+  function auswahlZuruecksetzen() {
+    setArt(DUELL_AUSWAHL_ALLE);
+    setVon("");
+    setBis("");
+    setFeld(null);
+  }
+
+  /* Eine andere Art der Eingrenzung einstellen. Bis zum Uebernehmen
+     gilt weiter das ganze Feld: was in der Leiste steht, ist dann
+     eine Absicht und noch keine Auswahl. */
+  function waehleArt(neu) {
+    setArt(neu);
+    setVon("");
+    setBis("");
+    setFeld(null);
+  }
+
+  /* Die eingestellte Eingrenzung uebernehmen. Hier — und nur hier —
+     wird das Teilnehmerfeld bestimmt; danach steht es fest, bis die
+     Auswahl oder die Kategorie wechselt. */
+  function uebernehmen() {
+    if (art === DUELL_AUSWAHL_ALLE) {
+      setFeld(null);
+      return;
+    }
+    const gewaehlt = auswahlFeld(teilnehmer[kategorie] || [], { art, von, bis });
+    setFeld(new Set(gewaehlt.map((eintrag) => eintrag.id)));
+  }
+
+  /* Erstes Duell eines Feldes. Ausgeloest von der Kategorie und von
+     der Auswahl — beide bestimmen, wer antritt. Eine gespeicherte
+     Verschiebung loest hier ausdruecklich nichts aus, sonst zoege
+     jedes Duell sofort ein neues Paar und die Rueckmeldung waere nie
+     zu sehen. */
   useEffect(() => {
     setGewaehlt(null);
     setRueckmeldung(null);
-    /* Neue Kategorie, neuer Verlauf — die gesperrten Paarungen der
-       vorigen Kategorie kommen hier ohnehin nicht vor. */
+    /* Neues Feld, neuer Verlauf — die gesperrten Paarungen des
+       vorigen kommen hier ohnehin nicht vor. */
     verlaufRef.current = [];
-    paareRef.current = [];
-    setPaarungenGespielt(0);
     setPaar(null);
     if (!kategorie) {
+      geladenFuerRef.current = null;
+      paareRef.current = [];
+      setPaarungenGespielt(0);
       setLaedtPaare(false);
       return undefined;
     }
 
+    const zeichne = () => {
+      const erste = ziehePaarung(listeRef.current, null, Math.random, paareRef.current, ohneFenster);
+      merkePaarung(erste);
+      setPaar(erste);
+    };
+
+    /* Die gespielten Paarungen haengen an der Kategorie, nicht an der
+       Auswahl: wechselt nur das Feld, stehen sie schon da und werden
+       nicht noch einmal geholt. */
+    if (geladenFuerRef.current === kategorie) {
+      zeichne();
+      return undefined;
+    }
+
     let abgebrochen = false;
+    paareRef.current = [];
+    setPaarungenGespielt(0);
     setLaedtPaare(true);
     (async () => {
       try {
@@ -6808,14 +7097,13 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
         paareRef.current = [];
       }
       if (abgebrochen) return;
+      geladenFuerRef.current = kategorie;
       setLaedtPaare(false);
       setPaarungenGespielt(paareRef.current.length);
-      const erste = ziehePaarung(listeRef.current, null, Math.random, paareRef.current);
-      merkePaarung(erste);
-      setPaar(erste);
+      zeichne();
     })();
     return () => { abgebrochen = true; };
-  }, [kategorie]);
+  }, [kategorie, feld]);
 
   /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt.
 
@@ -6898,7 +7186,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       }}
     >
       <button
-        onClick={() => setKategorie(null)}
+        onClick={() => { setKategorie(null); auswahlZuruecksetzen(); }}
         style={{ background: "transparent", border: "none", color: "#9A968C", fontSize: 15, cursor: "pointer", padding: "10px 0", marginBottom: 8 }}
       >
         ← Kategorie wechseln
@@ -6926,6 +7214,19 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
         </div>
       </div>
 
+      <AuswahlLeiste
+        art={art}
+        von={von}
+        bis={bis}
+        anzahl={listeRef.current.length}
+        gesamt={(teilnehmer[kategorie] || []).length}
+        eingegrenzt={ohneFenster}
+        onArt={waehleArt}
+        onVon={setVon}
+        onBis={setBis}
+        onUebernehmen={uebernehmen}
+      />
+
       {fehler && (
         <div style={{ background: "#2a1616", border: "1px solid #d9736a", color: "#d9736a", borderRadius: 8, padding: 12, fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
           {fehler}
@@ -6933,8 +7234,13 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       )}
 
       {!paar ? (
-        <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5 }}>
-          {laedtPaare ? "Wird geladen …" : "In dieser Kategorie gibt es gerade kein Duell."}
+        <div style={{ color: "#77746c", textAlign: "center", padding: 50, fontSize: 14.5, lineHeight: 1.5 }}>
+          {laedtPaare
+            ? "Wird geladen …"
+            : listeRef.current.length < MIN_DUELL_TEILNEHMER
+              ? "In dieser Auswahl stehen weniger als zwei Titel. " +
+                "Nimm den Bereich weiter oder wähle „Alle“."
+              : "In dieser Kategorie gibt es gerade kein Duell."}
         </div>
       ) : (
         <>
