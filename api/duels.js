@@ -13,13 +13,16 @@ import {
  *   POST   /api/duels  { category, winnerId, loserId }
  *                                                  -> { category, count, entries: [...], pair }
  *   POST   /api/duels  { category }                -> { category, count }
- *   DELETE /api/duels?id=...                       -> { id, elo, duels }
+ *   DELETE /api/duels?id=...                       -> { id, elo, duels, siege }
  *
  * Ein entschiedenes Duell verschiebt ausschliesslich die Elo-Zahl der
  * beiden Beteiligten und zaehlt hoch — je Eintrag und je Kategorie.
+ * Beim Gewinner waechst zusaetzlich `siege`; die Niederlagen des
+ * Verlierers stehen nirgends, sie sind `duels - siege`.
  * Bauchgefuehl und Kriterienwerte werden hier nirgends angefasst; sie
  * aendert allein das Bewertungsformular. Wer ueberspringt, aendert
- * nichts — auch nicht die Liste der gespielten Paarungen.
+ * nichts — weder einen Zaehler noch die Liste der gespielten
+ * Paarungen.
  *
  * Zusaetzlich haelt jedes entschiedene Duell fest, WER gegen wen
  * angetreten ist (duell_paare). Das ist die Grundlage der Sperrfrist
@@ -137,14 +140,14 @@ async function auswerten(req, res) {
   const now = Date.now();
 
   /* Beide Eintraege und der Kategoriezaehler gehen gemeinsam in die
-     Datenbank — entweder alles oder nichts. Geschrieben werden genau
-     zwei Spalten je Eintrag: `elo` und `duels`. Bauchgefuehl,
-     Kriterienwerte und alles Uebrige bleiben unberuehrt; auch
-     `updated_at` bleibt stehen, damit ein Duell nicht wie eine
+     Datenbank — entweder alles oder nichts. Geschrieben werden je
+     Eintrag `elo` und `duels`, beim Gewinner zusaetzlich `siege`.
+     Bauchgefuehl, Kriterienwerte und alles Uebrige bleiben unberuehrt;
+     auch `updated_at` bleibt stehen, damit ein Duell nicht wie eine
      Bearbeitung aussieht. */
   const ergebnis = await sql.transaction([
     sql`
-      UPDATE media_items SET elo = ${neu.gewinner}, duels = duels + 1
+      UPDATE media_items SET elo = ${neu.gewinner}, duels = duels + 1, siege = siege + 1
       WHERE id = ${gewinnerId} RETURNING *
     `,
     sql`
@@ -167,7 +170,7 @@ async function auswerten(req, res) {
       .filter(Boolean)
       .map((r) => {
         const item = rowToItem(r);
-        return { id: item.id, elo: item.elo, duels: item.duels };
+        return { id: item.id, elo: item.elo, duels: item.duels, siege: item.siege };
       }),
   });
 }
@@ -176,8 +179,8 @@ async function auswerten(req, res) {
  * Elo eines Eintrags auf den Startwert zuruecksetzen.
  *
  * Der Zuschlag auf die Endnote ist danach wieder exakt 0. Die
- * Duell-Historie bleibt: der Zaehler des Eintrags und der Zaehler der
- * Kategorie werden nicht angefasst.
+ * Duell-Historie bleibt: die Zaehler des Eintrags (`duels`, `siege`)
+ * und der Zaehler der Kategorie werden nicht angefasst.
  */
 async function zuruecksetzen(req, res) {
   const id = req.query.id || (req.body && req.body.id);
@@ -189,5 +192,5 @@ async function zuruecksetzen(req, res) {
   if (!rows.length) return res.status(404).json({ error: "Eintrag nicht gefunden." });
 
   const item = rowToItem(rows[0]);
-  return res.status(200).json({ id: item.id, elo: item.elo, duels: item.duels });
+  return res.status(200).json({ id: item.id, elo: item.elo, duels: item.duels, siege: item.siege });
 }

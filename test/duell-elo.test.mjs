@@ -6,7 +6,13 @@
  * gedeckelter Zuschlag auf die Endnote:
  *
  *   Endnote = (0,75 x Kriteriennote + 0,25 x Bauchgefuehl) + Zuschlag
- *   Zuschlag = 0,5 x tanh((elo - 1000) / 200)
+ *   Zuschlag = 0,25 x tanh((elo - 1000) / 100)
+ *
+ * Deckel und Skala sind gegenueber der ersten Fassung halbiert (0,5
+ * und 200). Die Steigung im Nullpunkt bleibt dadurch dieselbe: Der
+ * erste Sieg bringt weiterhin rund +0,04, drei Siege rund +0,11.
+ * Geprueft wird beides — die neue Grenze und das unveraenderte fruehe
+ * Verhalten.
  *
  * Geprueft wird beides, wo es steht: der Zuschlag und die Endnote in
  * src/App.jsx (uebersetzt und um eine Ausfuhrliste ergaenzt, wie in
@@ -28,7 +34,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { transform } from "esbuild";
 
-import { eloNeu, eloErwartung, ELO_START, ELO_K, normalizeElo, normalizeDuels } from "../api/_db.js";
+import {
+  eloNeu, eloErwartung, ELO_START, ELO_K,
+  normalizeElo, normalizeDuels, normalizeSiege,
+} from "../api/_db.js";
 
 const GEPRUEFT = [
   "entryScore",
@@ -39,6 +48,7 @@ const GEPRUEFT = [
   "entryZuschlag",
   "entryElo",
   "entryDuels",
+  "entrySiege",
   "anzeigeNote",
   "zuschlagText",
   "sortWert",
@@ -154,13 +164,21 @@ test("Ein fehlendes Feld gilt als Startwert, eine kaputte Angabe auch", () => {
   assert.equal(app.entryDuels({ duels: -3 }), 0);
   assert.equal(app.entryDuels({ duels: "7" }), 0);
   assert.equal(app.entryDuels({ duels: 7 }), 7);
+
+  assert.equal(app.entrySiege({}), 0);
+  assert.equal(app.entrySiege({ duels: 7 }), 0);
+  assert.equal(app.entrySiege({ duels: 7, siege: -3 }), 0);
+  assert.equal(app.entrySiege({ duels: 7, siege: "4" }), 0);
+  assert.equal(app.entrySiege({ duels: 7, siege: 4 }), 4);
+  // Mehr Siege als Duelle kann es nicht geben.
+  assert.equal(app.entrySiege({ duels: 3, siege: 9 }), 3);
 });
 
 /* ---------------------------------------------------------------- *
  * 2. Der Zuschlag verlaesst nie das Intervall
  * ---------------------------------------------------------------- */
 
-test("Der Zuschlag bleibt zwischen -0,5 und +0,5 — auch nach 50 Siegen", () => {
+test("Der Zuschlag bleibt zwischen -0,25 und +0,25 — auch nach 50 Siegen", () => {
   /* Gespielt wird gegen einen Gegner, der mitwandert: 50 Siege in
      Folge, dann 50 Niederlagen. Der Elo-Wert selbst darf frei
      laufen — der Zuschlag darf es nicht. */
@@ -188,29 +206,76 @@ test("Der Zuschlag bleibt zwischen -0,5 und +0,5 — auch nach 50 Siegen", () =>
 
 test("Auch bei absurden Elo-Werten haelt die Grenze", () => {
   /* Rechnerisch erreicht der tanh seine Grenzen nie. In doppelter
-     Genauigkeit ist er ab rund 3800 Punkten Abstand nicht mehr von 1
-     zu unterscheiden — dort steht der Zuschlag dann auf glatt 0,5.
-     Verlassen wird das Intervall auch dann nicht, und um dorthin zu
-     kommen braeuchte es rund 240 Siege in Folge gegen gleich starke
-     Gegner. Bis dahin (siehe der Test darueber mit 50 Siegen) bleibt
-     der Abstand zur Grenze echt. */
+     Genauigkeit ist er ab rund 1900 Punkten Abstand nicht mehr von 1
+     zu unterscheiden — dort steht der Zuschlag dann auf glatt 0,25.
+     Verlassen wird das Intervall auch dann nicht, und dorthin kommt
+     kein Eintrag: Gegen mitwandernde Gegner laeuft die Elo-Zahl gegen
+     rund 1900 Punkte Vorsprung, ohne sie je zu erreichen. Bis dahin
+     (siehe der Test darueber mit 50 Siegen) bleibt der Abstand zur
+     Grenze echt. */
   for (const elo of [-1e9, 0, 500, 1000, 5000, 1e9]) {
     const z = app.duellZuschlag(elo);
     assert.ok(z >= -app.ZUSCHLAG_MAX && z <= app.ZUSCHLAG_MAX, "Zuschlag bei elo " + elo + ": " + z);
   }
   // Im realistischen Bereich bleibt der Abstand zur Grenze echt.
   assert.ok(app.duellZuschlag(2000) < app.ZUSCHLAG_MAX);
-  assert.ok(app.duellZuschlag(2000) > 0.4999);
+  assert.ok(app.duellZuschlag(2000) > 0.2499);
   assert.ok(app.duellZuschlag(0) > -app.ZUSCHLAG_MAX);
+});
+
+test("Der Deckel liegt bei 0,25 und die Skala bei 100", () => {
+  assert.equal(app.ZUSCHLAG_MAX, 0.25);
+  // Die Skala steht nicht als eigene Ausfuhr; sie laesst sich aus dem
+  // Wert bei einer Skalenlaenge Abstand ablesen: tanh(1) = 0,7616.
+  assert.ok(Math.abs(app.duellZuschlag(1100) - 0.25 * Math.tanh(1)) < 1e-12);
 });
 
 test("Der Zuschlag folgt der vorgegebenen Formel", () => {
   for (const elo of [700, 900, 1000, 1100, 1200, 1400, 1800]) {
-    assert.equal(app.duellZuschlag(elo), 0.5 * Math.tanh((elo - 1000) / 200));
+    assert.equal(app.duellZuschlag(elo), 0.25 * Math.tanh((elo - 1000) / 100));
   }
   // Zwei Bezugspunkte zum Nachrechnen von Hand.
-  assert.ok(Math.abs(app.duellZuschlag(1200) - 0.3808) < 0.0001);
-  assert.ok(Math.abs(app.duellZuschlag(800) + 0.3808) < 0.0001);
+  assert.ok(Math.abs(app.duellZuschlag(1100) - 0.1904) < 0.0001);
+  assert.ok(Math.abs(app.duellZuschlag(900) + 0.1904) < 0.0001);
+});
+
+test("Die Steigung im Nullpunkt ist dieselbe wie vor der Halbierung", () => {
+  /* Der Kern der Aenderung: Deckel UND Skala sind halbiert, also
+     bleibt der Quotient — die Steigung bei elo = 1000 — gleich.
+     Gemessen wird sie als Differenzenquotient ueber einen kleinen
+     Schritt; die alte Formel steht daneben ausgeschrieben. */
+  const alt = (elo) => 0.5 * Math.tanh((elo - 1000) / 200);
+  const h = 1e-6;
+  const steigungNeu = (app.duellZuschlag(1000 + h) - app.duellZuschlag(1000 - h)) / (2 * h);
+  const steigungAlt = (alt(1000 + h) - alt(1000 - h)) / (2 * h);
+  assert.ok(Math.abs(steigungNeu - steigungAlt) < 1e-9, steigungNeu + " / " + steigungAlt);
+  assert.ok(Math.abs(steigungNeu - 0.0025) < 1e-9, "erwartet 0,0025 je Elo-Punkt: " + steigungNeu);
+});
+
+test("Erster Sieg rund +0,04, drei Siege rund +0,11 — praktisch wie vorher", () => {
+  /* Gespielt gegen einen gleich starken, mitwandernden Gegner: genau
+     der Fall, der in der App am haeufigsten vorkommt. Die alte Formel
+     steht zum Vergleich daneben. */
+  const alt = (elo) => 0.5 * Math.tanh((elo - 1000) / 200);
+  let elo = ELO_START;
+  let gegner = ELO_START;
+  const nachSieg = [];
+  for (let i = 0; i < 3; i++) {
+    const n = eloNeu(elo, gegner);
+    elo = n.gewinner;
+    gegner = n.verlierer;
+    nachSieg.push(elo);
+  }
+
+  const ersterSieg = app.duellZuschlag(nachSieg[0]);
+  const dritterSieg = app.duellZuschlag(nachSieg[2]);
+
+  assert.ok(Math.abs(ersterSieg - 0.04) < 0.005, "erster Sieg: " + ersterSieg);
+  assert.ok(Math.abs(dritterSieg - 0.11) < 0.01, "dritter Sieg: " + dritterSieg);
+
+  // Und der Abstand zur alten Formel ist in beiden Faellen winzig.
+  assert.ok(Math.abs(ersterSieg - alt(nachSieg[0])) < 0.005);
+  assert.ok(Math.abs(dritterSieg - alt(nachSieg[2])) < 0.005);
 });
 
 /* ---------------------------------------------------------------- *
@@ -579,21 +644,28 @@ test("Ein Backup ohne elo und duels setzt die Standardwerte", () => {
 
   assert.equal(normalizeElo(ausBackup.elo), null, "fehlt -> der gespeicherte Wert bleibt");
   assert.equal(normalizeDuels(ausBackup.duels), null);
+  assert.equal(normalizeSiege(ausBackup.siege), null);
   assert.equal(normalizeElo(ausBackup.elo) ?? ELO_START, ELO_START);
   assert.equal(normalizeDuels(ausBackup.duels) ?? 0, 0);
+  assert.equal(normalizeSiege(ausBackup.siege) ?? 0, 0);
 
   // Und im Frontend: ohne die Felder ist der Zuschlag exakt 0.
   assert.equal(app.entryElo(ausBackup), app.ELO_START);
   assert.equal(app.entryDuels(ausBackup), 0);
+  assert.equal(app.entrySiege(ausBackup), 0);
   assert.equal(app.entryZuschlag(ausBackup), 0);
 });
 
 test("Ein Backup MIT den Feldern bringt sie mit", () => {
   assert.equal(normalizeElo(1234.5), 1234.5);
   assert.equal(normalizeDuels(9), 9);
+  assert.equal(normalizeSiege(6), 6);
   // Unsinn faellt heraus und wird zum Standardwert.
   assert.equal(normalizeElo("1200"), null);
   assert.equal(normalizeElo(NaN), null);
   assert.equal(normalizeDuels(-4), 0);
   assert.equal(normalizeDuels(3.7), 4);
+  assert.equal(normalizeSiege(-4), 0);
+  assert.equal(normalizeSiege("6"), null);
+  assert.equal(normalizeSiege(NaN), null);
 });

@@ -494,8 +494,8 @@ vercel dev          # startet Frontend + API zusammen
 | DELETE | `/api/header-images?id=…` | Bild-Adresse entfernen |
 | GET | `/api/duels` | Zahl der gespielten Duelle je Kategorie (Head-to-Head und Turnier) |
 | GET | `/api/duels?category=…` | Die schon gespielten Paarungen dieser Kategorie (`{ a, b, at }` je Paarung) — Grundlage der Sperrfrist im Head-to-Head |
-| POST | `/api/duels` | Ein entschiedenes Duell auswerten (`{ category, winnerId, loserId }`): Elo beider Beteiligten verschieben, je Eintrag und je Kategorie hochzählen, die Paarung festhalten. Ohne `winnerId`/`loserId` (`{ category }`) wird nur gezählt |
-| DELETE | `/api/duels?id=…` | Duell-Zuschlag eines Eintrags zurücksetzen — Elo zurück auf 1000; die gespielten Duelle bleiben gezählt |
+| POST | `/api/duels` | Ein entschiedenes Duell auswerten (`{ category, winnerId, loserId }`): Elo beider Beteiligten verschieben, je Eintrag und je Kategorie hochzählen, beim Gewinner `siege` erhöhen, die Paarung festhalten. Ohne `winnerId`/`loserId` (`{ category }`) wird nur gezählt |
+| DELETE | `/api/duels?id=…` | Duell-Zuschlag eines Eintrags zurücksetzen — Elo zurück auf 1000; die gespielten und gewonnenen Duelle bleiben gezählt |
 | GET | `/api/highscores?game=…` | Bestwerte eines Minispiels, je Spielart |
 | POST | `/api/highscores` | Ergebnis eines Durchgangs melden (`{ game, mode, score }`) — gespeichert wird nur, was den Bestwert übertrifft |
 | GET | `/api/xp` | Aktivitäts-Punkte und schon vergebene Einmal-Boni |
@@ -733,10 +733,12 @@ exakt wie zuvor.
 Kategorie-Liste, der Gegner aus einem **Notenfenster von 0,6** um ihn
 herum. Gemessen wird also der Abstand der Endnoten selbst — nicht mehr
 ein Fenster von Rangplätzen. Der Grund steht in der Wirkung weiter
-unten: Der Duell-Zuschlag liegt zwischen −0,5 und +0,5, zwei Titel
-können sich also höchstens um einen Notenpunkt aneinander
-vorbeischieben. Bei mehr als 1,0 Abstand wäre eine Paarung folgenlos,
-der Ausgang stünde ohnehin fest.
+unten: Der Duell-Zuschlag ist gedeckelt, zwei Titel können sich also
+nur um einen begrenzten Betrag aneinander vorbeischieben — bei −0,25
+bis +0,25 je Titel um höchstens einen halben Notenpunkt. Bei deutlich
+mehr Abstand wäre eine Paarung folgenlos, der Ausgang stünde ohnehin
+fest. Die Stufen selbst sind seit der Halbierung des Deckels
+unverändert geblieben.
 
 Gibt das engste Fenster nicht genug her — verlangt sind mindestens zwei
 mögliche Gegner —, wird schrittweise geöffnet:
@@ -777,7 +779,9 @@ darunter steht, auf welchem Platz der Gewinner jetzt liegt. Nach etwa
 
 Ein Duell ändert **weder das Bauchgefühl noch einen Kriterienwert**.
 Jeder Eintrag hat stattdessen einen eigenen **Elo-Wert** (Spalte `elo`,
-Startwert 1000), und nur der verschiebt sich:
+Startwert 1000), und nur der verschiebt sich; daneben wachsen die
+beiden Zähler `duels` (bei beiden Beteiligten) und `siege` (nur beim
+Gewinner):
 
 ```
 expected = 1 / (1 + 10^((Elo_Verlierer − Elo_Gewinner) / 400))
@@ -795,29 +799,42 @@ Titels sich nicht gegenseitig überschreiben können.
 Aus dem Elo-Wert entsteht ein **gedeckelter Zuschlag** auf die Endnote:
 
 ```
-Zuschlag = 0.5 × tanh((Elo − 1000) / 200)
+Zuschlag = 0.25 × tanh((Elo − 1000) / 100)
 
 Endnote  = (75 % Kriterien + 25 % Bauchgefühl) + Zuschlag
 ```
 
 Der Tangens hyperbolicus läuft von −1 bis 1 und erreicht die Grenzen
-nie: Der Zuschlag liegt damit mathematisch **immer echt zwischen −0,5
-und +0,5**, egal wie lang eine Siegesserie wird. Ein Hochschaukeln auf
+nie: Der Zuschlag liegt damit mathematisch **immer echt zwischen −0,25
+und +0,25**, egal wie lang eine Siegesserie wird. Ein Hochschaukeln auf
 einen unrealistischen Wert ist strukturell ausgeschlossen, nicht nur
 unwahrscheinlich. Bei Elo 1000 ist der Zuschlag exakt 0 — ohne
 gespieltes Duell steht Ziffer für Ziffer dieselbe Endnote da wie vor
 der Duell-Wertung.
 
+Deckel und Skala waren zunächst **0,5 und 200**. Beide sind halbiert
+worden, und zwar gemeinsam: An der Spitze der Rangliste liegen die
+Noten nur wenige Hundertstel auseinander, während der Zuschlag bis 0,5
+gehen konnte — dort bestimmte also nicht mehr die Bewertung die
+Reihenfolge, sondern die Duellbilanz. Weil **beide** Zahlen halbiert
+sind, bleibt die Steigung im Nullpunkt exakt dieselbe (0,0025 je
+Elo-Punkt): Der erste Sieg bringt weiterhin +0,04, drei Siege in Folge
++0,10 statt +0,11. Am frühen Verhalten ändert sich also praktisch
+nichts — nur die Sättigung setzt doppelt so früh ein, und mehr als
+±0,25 ist nicht mehr erreichbar.
+
 | Elo | Zuschlag |
 |-----|----------|
-| 800 | −0,38 |
-| 900 | −0,23 |
+| 800 | −0,24 |
+| 900 | −0,19 |
 | 950 | −0,12 |
+| 975 | −0,06 |
 | 1000 (Start) | ±0,00 |
+| 1025 | +0,06 |
 | 1050 | +0,12 |
-| 1100 | +0,23 |
-| 1200 | +0,38 |
-| 1400 | +0,48 |
+| 1100 | +0,19 |
+| 1200 | +0,24 |
+| 1400 | +0,25 |
 
 Gespeichert wird der Zuschlag nirgends — er entsteht immer wieder neu
 aus `elo`. Es gibt damit genau eine Quelle der Wahrheit, und ein
@@ -826,8 +843,8 @@ zurückgesetzter Eintrag steht sofort wieder bei 0.
 | Ausgang | expected | delta | Elo | Zuschlag |
 |---------|----------|-------|-----|----------|
 | Beide bei 1000 | 0.5000 | 16.0 | 1016.0 / 984.0 | +0,04 / −0,04 |
-| 1200 schlägt 1000 (erwartet) | 0.7597 | 7.7 | 1207.7 / 992.3 | +0,39 / −0,02 |
-| 1000 schlägt 1200 (Überraschung) | 0.2403 | 24.3 | 1024.3 / 1175.7 | +0,06 / +0,35 |
+| 1200 schlägt 1000 (erwartet) | 0.7597 | 7.7 | 1207.7 / 992.3 | +0,24 / −0,02 |
+| 1000 schlägt 1200 (Überraschung) | 0.2403 | 24.3 | 1024.3 / 1175.7 | +0,06 / +0,24 |
 
 Wer den ohnehin stärkeren Titel wählt, verschiebt wenig; eine
 Überraschung bewegt deutlich mehr.
@@ -851,10 +868,26 @@ Paarung gilt weiter als ungespielt, und der Zähler bleibt stehen.
 **Auffällige Bewertungen.** Schneidet ein Titel im Duell dauerhaft
 anders ab, als seine Kriterien hergeben, passt womöglich die Bewertung
 selbst nicht mehr — genau das sagt ein großer Zuschlag. Aus einem
-einzigen Duell wäre er allerdings Zufall und kein Hinweis;
-gekennzeichnet wird deshalb erst ab einem Zuschlag von **±0,20**
-(gerundet, so wie er auch dasteht) und **mindestens 3 gespielten
-Duellen**:
+einzigen Duell wäre er allerdings Zufall und kein Hinweis, und ein
+Titel, der jedes Duell gewinnt, sammelt Zuschlag, ohne dass daran etwas
+widersprüchlich wäre: Er hat schlicht niemanden mehr über sich, gegen
+den er verlieren könnte. Gekennzeichnet wird deshalb nur, wo **alle
+drei** Punkte zutreffen:
+
+| Bedingung | Wert |
+|-----------|------|
+| gespielte Duelle | mindestens **3** |
+| Betrag des Zuschlags (gerundet, so wie er auch dasteht) | mindestens **0,15** |
+| Duellbilanz | mindestens **1 Sieg** und **1 Niederlage** |
+
+Die Schwelle des Zuschlags orientiert sich am Deckel: Bei ±0,25 wären
+die früheren 0,20 praktisch das Maximum und damit kaum je erreichbar.
+Aussagekräftig ist die Markierung ohnehin nur bei einem Titel, der
+teils gewinnt und teils verliert und trotzdem stark von seiner Note
+abweicht — das ist der echte Hinweis darauf, dass die Bewertung nicht
+mehr passt.
+
+Gekennzeichnet wird an drei Stellen:
 
 - in der Rangliste durch ein kleines **Warndreieck** vor der Note,
 - in der Detailansicht durch einen Satz unter der Zuschlag-Zeile,
@@ -866,11 +899,20 @@ Duellen**:
 Das ist eine Kennzeichnung, keine Rechnung — an der Endnote ändert sie
 nichts.
 
+Die gewonnenen Duelle stehen je Eintrag in der Spalte `siege`
+(Startwert 0); hochgezählt wird sie nur beim Gewinner. Die Niederlagen
+werden nirgends gespeichert, sie sind `duels − siege`. Weil die
+bisherigen Duellausgänge nirgends festgehalten wurden, startet `siege`
+bei allen vorhandenen Einträgen auf 0 — bis genug neue Duelle gespielt
+sind, erfüllt also kein Titel die Bedingung „mindestens 1 Sieg". Die
+Markierungen verschwinden zunächst und bauen sich mit der Zeit neu
+auf. **Kein Backfill, kein Schätzen von Siegen aus dem Elo-Wert.**
+
 **Zurücksetzen.** Der Zuschlag lässt sich **je Eintrag einzeln**
 zurücksetzen: In der Detailansicht steht neben der Zuschlag-Zeile ein
 „Zurücksetzen" (`DELETE /api/duels?id=…`). Der Elo-Wert geht damit auf
-1000 und der Zuschlag ist wieder exakt 0; die gespielten Duelle bleiben
-gezählt. Wird die Bewertung eines auffälligen Titels geändert, fragt
+1000 und der Zuschlag ist wieder exakt 0; die gespielten und
+gewonnenen Duelle bleiben gezählt. Wird die Bewertung eines auffälligen Titels geändert, fragt
 die App von sich aus nach, ob der Zuschlag aus den alten Duellen stehen
 bleiben soll — von selbst zurückgesetzt wird nichts.
 
@@ -1117,10 +1159,10 @@ Staffelnoten. Der Duell-Zuschlag kommt aus dem Elo-Wert des Eintrags
 und ist ohne gespieltes Duell exakt 0:
 
 ```
-Duell-Zuschlag = 0.5 × tanh((Elo − 1000) / 200)
+Duell-Zuschlag = 0.25 × tanh((Elo − 1000) / 100)
 ```
 
-Er liegt damit immer echt zwischen −0,5 und +0,5. Woher der Elo-Wert
+Er liegt damit immer echt zwischen −0,25 und +0,25. Woher der Elo-Wert
 kommt und wie er sich verschiebt, steht beim Minispiel
 **Head-to-Head**.
 
