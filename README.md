@@ -916,6 +916,68 @@ gewonnenen Duelle bleiben gezählt. Wird die Bewertung eines auffälligen Titels
 die App von sich aus nach, ob der Zuschlag aus den alten Duellen stehen
 bleiben soll — von selbst zurückgesetzt wird nichts.
 
+**Verrechnen.** Der Zuschlag muss kein dauerhafter dritter Wert neben
+der Bewertung bleiben. Hat ein Titel genug Duelle hinter sich, lässt er
+sich **in die eigenen Bewertungsfelder übertragen**: Die Endnote bleibt
+dabei gleich, sie besteht danach aber wieder allein aus Kriterien und
+Bauchgefühl, und der Zuschlag ist 0. Das ist **optional und nie
+automatisch** — wer nichts tut, behält das bisherige Verhalten.
+
+Angeboten wird es über einen Knopf „Verrechnen" neben der
+Zuschlag-Zeile, und nur wenn **beides** zutrifft:
+
+| Bedingung | Schwelle |
+| --- | --- |
+| Gespielte Duelle | mindestens **10** (`VERRECHNEN_MIN_DUELLE`) |
+| Betrag des Zuschlags (gerundet, so wie er auch dasteht) | mindestens **0,05** (`VERRECHNEN_MIN_BETRAG`) |
+
+Die Rechnung ist die Umkehrung der Endnoten-Formel. Aus
+
+```
+Endnote = 0,75 × Kriterien-Note + 0,25 × Bauchgefühl + Zuschlag
+```
+
+folgt, dass derselbe Endwert ohne Zuschlag entsteht, wenn entweder das
+**Bauchgefühl** um `Zuschlag ÷ 0,25` steigt (das Vierfache des
+Zuschlags) oder **jedes Kriterium** um `Zuschlag ÷ 0,75`. Weil die
+Kriteriengewichte in Summe 1 ergeben, hebt der zweite Weg die
+Kriterien-Note um genau diesen Betrag. Beide Wege sind mathematisch
+gleichwertig; sie unterscheiden sich nur darin, wo der Punkt landet.
+
+Ein Bestätigungsdialog zeigt **vor** dem Schreiben, was passieren
+würde — mit konkreten Zahlen („Bauchgefühl 9,50 → 10,00", „jedes
+Kriterium +0,20") sowie der Endnote davor und danach. Zur Wahl stehen
+drei Wege: ins Bauchgefühl, gleichmäßig in die Kriterien, oder **selbst
+verteilen** — dann öffnet das gewohnte Bewertungsformular, ergänzt um
+einen Hinweistext mit der Zielnote; geändert wird dort allein, was der
+Nutzer selbst ändert.
+
+**Rundung wird genannt, nicht verschwiegen.** Die Bewertungsfelder
+laufen in Schritten von 0,1 (dieselbe Schrittweite wie die Schieber im
+Bewertungsformular). Fällt der berechnete Wert nicht genau auf eine
+Stufe, wird auf die nächste gerundet — und die dadurch entstehende
+Abweichung steht im Dialog („Endnote danach: 8,07 statt 8,05"). Sie
+kann bis zu **0,02** betragen, wenn der Zuschlag ins Bauchgefühl geht
+(ein Viertel einer halben Stufe plus Anzeigerundung), und bis zu
+**0,04** bei den Kriterien (drei Viertel einer halben Stufe plus
+Anzeigerundung).
+
+**Was nicht passt, wird nicht gekappt.** Bauchgefühl und Kriterien sind
+auf 0 bis 10 begrenzt. Ein Titel mit Bauchgefühl 9,50 und einem
+Zuschlag von +0,20 bräuchte 10,30 — dieser Weg wird dann mit
+Begründung als nicht möglich angezeigt („Bauchgefühl kann höchstens
+10,0 sein"), der andere bleibt wählbar. Passt keiner, sagt der Dialog
+das und bietet nur das eigene Verteilen an. **Kein automatisches
+Aufteilen auf beide Felder, kein teilweises Verrechnen.**
+
+Gespeichert wird wie eine normale Bewertungsänderung, ergänzt um
+`elo = 1000` in derselben Anfrage (`PUT /api/items?id=…`); der Zuschlag
+ist damit 0. `duels`, `siege` und die Einträge in `duell_paare` bleiben
+stehen — die Duellhistorie geht nicht verloren. Rückgängig machen lässt
+sich der Schritt nicht automatisch, weil die Bewertung danach echt
+geändert ist; der Dialog sagt das. Von Hand zurückstellen geht
+natürlich jederzeit.
+
 ### Turnier
 
 Kein zweites Duellspiel, sondern die Runden drumherum: Statt einzelner
