@@ -662,6 +662,227 @@ function auffaelligText(zuschlag) {
       "hergeben. Vielleicht passt die Bewertung nicht mehr.";
 }
 
+/* ----------------------------------------------------------------
+   Den Zuschlag verrechnen
+
+   Der Duell-Zuschlag steht als dritter Wert neben Kriterien und
+   Bauchgefuehl. Wer genug Duelle hinter sich hat, kann ihn in die
+   eigenen Bewertungsfelder holen: die Endnote bleibt dabei gleich,
+   sie besteht danach aber wieder allein aus Kriterien und
+   Bauchgefuehl — und der Zuschlag ist weg.
+
+   Von selbst passiert das nie. Wer den Knopf nicht drueckt, behaelt
+   Ziffer fuer Ziffer das bisherige Verhalten.
+
+   Die Umkehrrechnung. Es gilt
+
+     Endnote = 0,75 x Kriterien-Note + 0,25 x Bauchgefuehl + Zuschlag
+
+   Denselben Endwert ohne Zuschlag ergibt also, wenn
+
+     - das Bauchgefuehl um Zuschlag / 0,25 steigt (das Vierfache des
+       Zuschlags), oder
+     - JEDES Kriterium um Zuschlag / 0,75 steigt. Die
+       Kriteriengewichte ergeben in Summe 1, deshalb hebt das die
+       Kriterien-Note um genau diesen Betrag.
+
+   Beide Wege sind mathematisch gleichwertig; sie unterscheiden sich
+   nur darin, wo der Punkt landet. Aufgeteilt wird nie — das waere
+   nicht mehr nachvollziehbar.
+   ---------------------------------------------------------------- */
+
+/* Ab so vielen gespielten Duellen wird das Verrechnen ueberhaupt
+   angeboten. Darunter steht zu wenig hinter dem Zuschlag, um ihn in
+   die Bewertung selbst zu schreiben. */
+const VERRECHNEN_MIN_DUELLE = 10;
+
+/* Und erst ab diesem Betrag. Darunter lohnt es nicht: 0,04 gehen in
+   der Schrittweite der Bewertungsfelder ohnehin unter. */
+const VERRECHNEN_MIN_BETRAG = 0.05;
+
+/* Die Schrittweite der Bewertungsfelder und ihre Grenzen — dieselben,
+   mit denen die Schieber im Bewertungsformular laufen (siehe
+   Slider). Ein verrechneter Wert muss genau auf einer dieser Stufen
+   landen, sonst liesse er sich dort nicht wieder einstellen. */
+const BEWERTUNG_SCHRITT = 0.1;
+const BEWERTUNG_MIN = 0;
+const BEWERTUNG_MAX = 10;
+
+/* Die beiden Gewichte der Endnoten-Formel, durch die die
+   Umkehrrechnung oben teilt. Sie stehen hier ein zweites Mal, weil
+   computeFinalScore unangetastet bleibt; die Tests rechnen die
+   Endnote ueber entryScore nach und schlagen an, sollten die beiden
+   Stellen je auseinanderlaufen. */
+const VERRECHNEN_ANTEIL_BAUCH = 0.25;
+const VERRECHNEN_ANTEIL_KRITERIEN = 0.75;
+
+/* Spielraum fuer Gleitkomma-Reste beim Vergleich mit 0 und 10. Ohne
+   ihn faellt ein Wert, der rechnerisch genau auf 10 landet, gelegentlich
+   als "geht nicht" heraus. */
+const VERRECHNEN_TOLERANZ = 1e-9;
+
+/** Ein Wert auf die naechste gueltige Stufe der Bewertungsfelder. */
+function aufBewertungsSchritt(wert) {
+  const stufen = Math.round(wert / BEWERTUNG_SCHRITT);
+  /* Die zweite Rundung haelt Rechenungenauigkeiten heraus: 83 x 0,1
+     ist in Gleitkomma nicht exakt 8,3. */
+  return Math.round(stufen * BEWERTUNG_SCHRITT * 1000) / 1000;
+}
+
+/**
+ * Ob das Verrechnen angeboten wird: genug gespielte Duelle UND ein
+ * Zuschlag, der den Aufwand wert ist.
+ *
+ * Verglichen wird der Betrag so, wie er auch dasteht — auf zwei
+ * Nachkommastellen gerundet (siehe zuschlagText). Sonst stuende in
+ * der Detailansicht "+0,05" ohne Knopf daneben, weil der ungerundete
+ * Wert knapp darunter liegt.
+ */
+function verrechnenAngeboten(entry) {
+  if (entryDuels(entry) < VERRECHNEN_MIN_DUELLE) return false;
+  const betrag = Math.round(Math.abs(entryZuschlag(entry)) * 100) / 100;
+  return betrag >= VERRECHNEN_MIN_BETRAG;
+}
+
+/** Eine Zahl, wie sie im Dialog steht: zwei Nachkommastellen, Komma. */
+function notenText(wert) {
+  return (Math.round(wert * 100) / 100).toFixed(2).replace(".", ",");
+}
+
+/** Eine Grenze oder Schrittweite, wie sie dasteht — „10,0", „0,1". */
+function stufenText(wert) {
+  return wert.toFixed(1).replace(".", ",");
+}
+
+/** Dasselbe mit Vorzeichen — „+0,33". */
+function betragText(wert) {
+  const gerundet = Math.round(wert * 100) / 100;
+  // Math.abs haelt "−0,00" heraus, genau wie in zuschlagText.
+  return (gerundet >= 0 ? "+" : "−") + notenText(Math.abs(gerundet));
+}
+
+/** Die Beschriftung eines Weges. */
+function verrechnungsWegLabel(weg) {
+  return weg === "bauch" ? "Ins Bauchgefühl" : "Gleichmäßig in die Kriterien";
+}
+
+/**
+ * Einer der beiden Wege, durchgerechnet — mit allem, was der Dialog
+ * VOR dem Schreiben zeigen muss.
+ *
+ * Zurueck kommt immer ein Objekt; `moeglich` sagt, ob der Weg
+ * gangbar ist, und `grund` warum nicht. Gekappt wird nie: ein
+ * Bauchgefuehl von 9,5 mit Zuschlag +0,25 braeuchte 10,5 — daraus
+ * stillschweigend 10,0 zu machen ergaebe eine andere Endnote als
+ * versprochen.
+ *
+ * `entwurf` enthaelt die neuen Bewertungsfelder (values, personal,
+ * seasons) und sonst nichts; gespeichert wird damit wie bei einer
+ * normalen Bewertungsaenderung.
+ */
+function verrechnungsWeg(entry, category, weg) {
+  const zuschlag = entryZuschlag(entry);
+  const noteVorher = entryScore(entry, category);
+  const anteil = weg === "bauch" ? VERRECHNEN_ANTEIL_BAUCH : VERRECHNEN_ANTEIL_KRITERIEN;
+  const proFeld = zuschlag / anteil;
+  const kriterien = criteriaFor(category);
+
+  /* Die betroffenen Felder: ohne Staffeln das Bauchgefuehl bzw. jedes
+     Kriterium des Eintrags, mit Staffeln dasselbe in JEDER Staffel.
+     Das gewichtete Mittel ueber die Staffeln steigt genau dann um den
+     gesuchten Betrag, wenn jede einzelne Staffel um ihn steigt. */
+  const quellen = hasSeasons(entry) ? entry.seasons : [entry];
+  const werte = [];
+  for (const quelle of quellen) {
+    if (weg === "bauch") {
+      werte.push(typeof quelle.personal === "number" ? quelle.personal : null);
+    } else {
+      for (const c of kriterien) {
+        const v = quelle.values ? quelle.values[c.key] : undefined;
+        werte.push(typeof v === "number" ? v : null);
+      }
+    }
+  }
+
+  const feldName = weg === "bauch" ? "Bauchgefühl" : "Ein Kriterium";
+  const offen = (grund) => ({
+    weg, moeglich: false, grund, proFeld,
+    beschreibung: "", noteVorher, noteNachher: null, abweichung: null, entwurf: null,
+  });
+
+  if (!werte.length || werte.some((w) => w === null)) {
+    return offen("Dafür fehlen bewertete Felder.");
+  }
+  /* Bauchgefuehl und Kriterien sind auf 0 bis 10 begrenzt. Was
+     darueber hinausmuesste, geht nicht. */
+  if (werte.some((w) => w + proFeld > BEWERTUNG_MAX + VERRECHNEN_TOLERANZ)) {
+    return offen(feldName + " kann höchstens " + stufenText(BEWERTUNG_MAX) + " sein.");
+  }
+  if (werte.some((w) => w + proFeld < BEWERTUNG_MIN - VERRECHNEN_TOLERANZ)) {
+    return offen(feldName + " kann nicht unter " + stufenText(BEWERTUNG_MIN) + " liegen.");
+  }
+
+  const neuerWert = (w) => aufBewertungsSchritt(w + proFeld);
+  const neueQuelle = (q) => {
+    if (weg === "bauch") return { ...q, personal: neuerWert(q.personal) };
+    // Nur die Kriterien dieser Kategorie werden angefasst; was sonst
+    // in `values` steht, bleibt unberuehrt stehen.
+    const neueWerte = { ...(q.values || {}) };
+    for (const c of kriterien) neueWerte[c.key] = neuerWert(neueWerte[c.key]);
+    return { ...q, values: neueWerte };
+  };
+
+  let entwurf;
+  if (hasSeasons(entry)) {
+    const seasons = entry.seasons.map(neueQuelle);
+    const mitStaffeln = { ...entry, seasons };
+    /* Mit Staffeln bekommt der Eintrag die Mittelwerte seiner Staffeln
+       als eigene Werte — genau wie beim Speichern im
+       Bewertungsformular (siehe RatingForm.handleSave). */
+    const obenWerte = {};
+    for (const c of kriterien) obenWerte[c.key] = entryCriterionValue(mitStaffeln, c.key);
+    entwurf = { values: obenWerte, personal: entryPersonal(mitStaffeln), seasons };
+  } else {
+    const neu = neueQuelle(entry);
+    entwurf = { values: neu.values, personal: neu.personal, seasons: [] };
+  }
+
+  /* Was danach wirklich dastuende — ueber dieselbe Rechnung wie
+     ueberall sonst, mit der Elo zurueck auf dem Startwert und damit
+     einem Zuschlag von 0. Die Abweichung stammt allein aus der
+     Schrittweite der Bewertungsfelder und wird im Dialog genannt. */
+  const danach = { ...entry, ...entwurf, elo: ELO_START };
+  const noteNachher = entryScore(danach, category);
+  const abweichung = Math.round((noteNachher - noteVorher) * 100) / 100;
+
+  const mehrfach = quellen.length > 1;
+  const beschreibung =
+    weg === "bauch"
+      ? mehrfach
+        ? "Bauchgefühl jeder Staffel " + betragText(proFeld)
+        : "Bauchgefühl " + notenText(entry.personal) + " → " + notenText(entwurf.personal)
+      : (mehrfach ? "jedes Kriterium jeder Staffel " : "jedes Kriterium ") + betragText(proFeld);
+
+  return { weg, moeglich: true, grund: "", proFeld, beschreibung, noteVorher, noteNachher, abweichung, entwurf };
+}
+
+/** Beide Wege in der Reihenfolge, in der sie im Dialog stehen. */
+function verrechnungsWege(entry, category) {
+  return [verrechnungsWeg(entry, category, "bauch"), verrechnungsWeg(entry, category, "kriterien")];
+}
+
+/* Der Hinweis ueber dem Bewertungsformular, wenn es aus dem Dialog
+   heraus zum eigenen Verteilen geoeffnet wurde. Mehr passiert dort
+   nicht: der Aufbau des Formulars bleibt, wie er ist, und geaendert
+   wird allein, was der Nutzer selbst aendert. */
+function verrechnenHinweisText(entry, category) {
+  return (
+    "Duell-Zuschlag " + zuschlagText(entryZuschlag(entry)) + " selbst verteilen: " +
+    "Ändere die Felder so, dass die Endnote bei " + notenText(entryScore(entry, category)) +
+    " landet. Der Zuschlag bleibt bestehen, bis du ihn in der Detailansicht zurücksetzt."
+  );
+}
+
 /* Wie weit die Endnote des Gegners hoechstens abweichen darf.
    Frueher stand hier ein Fenster von fuenf Raengen. Das Mass ist
    jetzt die Endnote selbst, und zwar aus einem handfesten Grund: Der
@@ -3139,6 +3360,122 @@ function ConfirmDialog({ title, text, confirmLabel, cancelLabel = "Abbrechen", d
   );
 }
 
+/* Ein Weg im Verrechnen-Dialog. Gangbare Wege sind Knoepfe, nicht
+   gangbare stehen mit ihrer Begruendung da — sie verschwinden nicht,
+   sonst bliebe offen, warum es sie nicht gibt. */
+function VerrechnenWeg({ weg, onWaehlen }) {
+  const rahmen = {
+    display: "block", width: "100%", boxSizing: "border-box", textAlign: "left",
+    background: "#141416", border: "1px solid " + (weg.moeglich ? "#33333a" : "#2A2A2E"),
+    borderRadius: 8, padding: "13px 14px", marginBottom: 10,
+    color: "#EDEAE3", fontFamily: "inherit", fontSize: 14,
+    cursor: weg.moeglich ? "pointer" : "default", opacity: weg.moeglich ? 1 : 0.6,
+  };
+  return (
+    <button type="button" onClick={weg.moeglich ? onWaehlen : undefined} disabled={!weg.moeglich} style={rahmen}>
+      <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 4 }}>{verrechnungsWegLabel(weg.weg)}</div>
+      {weg.moeglich ? (
+        <>
+          <div style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5 }}>{weg.beschreibung}</div>
+          <div
+            style={{
+              color: "var(--accent, #C9A227)", fontSize: 13,
+              fontFamily: "'JetBrains Mono', monospace", marginTop: 6,
+            }}
+          >
+            Endnote {notenText(weg.noteVorher)} → {notenText(weg.noteNachher)}
+          </div>
+          {/* Geht die Schrittweite nicht auf, steht die Abweichung hier
+              — und zwar die, die wirklich entsteht. */}
+          {weg.abweichung !== 0 && (
+            <div style={{ color: "#9A968C", fontSize: 12.5, marginTop: 4, lineHeight: 1.5 }}>
+              Endnote danach: {notenText(weg.noteNachher)} statt {notenText(weg.noteVorher)} —
+              die Bewertungsfelder gehen nur in Schritten von {stufenText(BEWERTUNG_SCHRITT)}.
+            </div>
+          )}
+        </>
+      ) : (
+        <div style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5 }}>
+          Nicht möglich: {weg.grund}
+        </div>
+      )}
+    </button>
+  );
+}
+
+/**
+ * Der Dialog zum Verrechnen des Duell-Zuschlags.
+ *
+ * Er zeigt VOR dem Schreiben, was passieren wuerde: beide Wege mit
+ * konkreten Zahlen, die Endnote davor und danach und die Abweichung,
+ * falls die Schrittweite der Bewertungsfelder nicht aufgeht. Passt
+ * ein Weg nicht, steht das mit Begruendung da; passt keiner, bleibt
+ * allein das eigene Verteilen.
+ */
+function VerrechnenDialog({ entry, category, onVerrechnen, onSelbstVerteilen, onCancel }) {
+  const wege = verrechnungsWege(entry, category);
+  const keinerMoeglich = wege.every((w) => !w.moeglich);
+  const absatz = { color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 16px" };
+
+  return (
+    <BottomSheet title="Duell-Zuschlag verrechnen" onClose={onCancel}>
+      {(schliessen) => (
+        <>
+          <p style={absatz}>
+            Der Zuschlag {zuschlagText(entryZuschlag(entry))} wandert in deine eigenen
+            Bewertungsfelder. Die Endnote bleibt dabei gleich — danach besteht sie
+            aber wieder allein aus Kriterien und Bauchgefühl, und der Zuschlag ist 0.
+          </p>
+
+          {wege.map((w) => (
+            <VerrechnenWeg key={w.weg} weg={w} onWaehlen={() => schliessen(() => onVerrechnen(w))} />
+          ))}
+
+          {keinerMoeglich && (
+            <p style={absatz}>
+              Keiner der beiden Wege passt: die Werte lägen außerhalb von 0 bis 10.
+              Bleibt das eigene Verteilen.
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => schliessen(onSelbstVerteilen)}
+            style={{
+              display: "block", width: "100%", boxSizing: "border-box", textAlign: "left",
+              background: "#141416", border: "1px solid #33333a", borderRadius: 8,
+              padding: "13px 14px", marginBottom: 16, color: "#EDEAE3",
+              fontFamily: "inherit", fontSize: 14, cursor: "pointer",
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 14.5, marginBottom: 4 }}>Selbst verteilen</div>
+            <div style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5 }}>
+              Öffnet das Bewertungsformular mit der Zielnote {notenText(entryScore(entry, category))} als Hinweis.
+            </div>
+          </button>
+
+          <p style={{ ...absatz, marginBottom: 20 }}>
+            Rückgängig machen lässt sich das nicht automatisch — die Bewertung ist
+            danach wirklich geändert. Von Hand zurückstellen kannst du sie jederzeit.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => schliessen(onCancel)}
+            style={{
+              width: "100%", padding: "14px", background: "transparent", color: "#9A968C",
+              border: "1px solid #33333a", borderRadius: 8, fontSize: 15,
+              fontFamily: "inherit", cursor: "pointer",
+            }}
+          >
+            Abbrechen
+          </button>
+        </>
+      )}
+    </BottomSheet>
+  );
+}
+
 /**
  * Ein Bereich, der beim Oeffnen hereingleitet und beim Schliessen
  * hinaus. Damit die Aus-Bewegung ueberhaupt zu sehen ist, bleibt der
@@ -4896,7 +5233,7 @@ function NeueStaffelBadge() {
   );
 }
 
-function RatingForm({ category, categoryLabel, initialTitle, initialPoster, initialValues, initialPersonal, initialSeasons, onSave, onCancel }) {
+function RatingForm({ category, categoryLabel, hinweis, initialTitle, initialPoster, initialValues, initialPersonal, initialSeasons, onSave, onCancel }) {
   const criteria = criteriaFor(category);
   const [title, setTitle] = useState(initialTitle || "");
   const [poster, setPoster] = useState(initialPoster || "");
@@ -4992,6 +5329,20 @@ function RatingForm({ category, categoryLabel, initialTitle, initialPoster, init
       <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace", marginBottom: 14 }}>
         {categoryLabel.toUpperCase()} · BEWERTUNGSFORMULAR
       </div>
+
+      {/* Ein zusaetzlicher Hinweistext — mehr aendert sich am Formular
+          nicht. Er steht nur da, wenn es aus dem Verrechnen-Dialog
+          heraus zum eigenen Verteilen geoeffnet wurde. */}
+      {hinweis && (
+        <div
+          style={{
+            background: "#141416", border: "1px dashed var(--accent, #C9A227)", borderRadius: 8,
+            padding: 12, marginBottom: 16, fontSize: 12.5, color: "#9A968C", lineHeight: 1.5,
+          }}
+        >
+          {hinweis}
+        </div>
+      )}
 
       <label style={{ fontSize: 12, letterSpacing: 1, color: "#9A968C", fontFamily: "'JetBrains Mono', monospace" }}>
         TITEL
@@ -5487,7 +5838,7 @@ function ZaehlerFeld({ label, wert, busy, onChange }) {
   );
 }
 
-function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount, onAmSchauen, onEloZuruecksetzen }) {
+function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount, onAmSchauen, onEloZuruecksetzen, onVerrechnen }) {
   const criteria = criteriaFor(category);
   const criteriaScore = entryCriteriaScore(entry, category);
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
@@ -5736,6 +6087,24 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
                 <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700 }}>
                   {zuschlagText(entryZuschlag(entry))}
                 </span>
+                {/* Der Zuschlag laesst sich in die eigenen
+                    Bewertungsfelder holen — aber erst, wenn genug
+                    Duelle dahinterstehen und der Betrag es lohnt
+                    (siehe verrechnenAngeboten). */}
+                {verrechnenAngeboten(entry) && (
+                  <button
+                    onClick={onVerrechnen}
+                    disabled={busy}
+                    title="Den Duell-Zuschlag in die eigenen Bewertungsfelder übertragen. Die Endnote bleibt dabei gleich."
+                    style={{
+                      background: "transparent", border: "1px solid #33333a", borderRadius: 8,
+                      color: "#9A968C", fontSize: 11.5, cursor: busy ? "default" : "pointer",
+                      padding: "5px 10px", fontFamily: "inherit", opacity: busy ? 0.5 : 1,
+                    }}
+                  >
+                    Verrechnen
+                  </button>
+                )}
                 <button
                   onClick={onEloZuruecksetzen}
                   disabled={busy}
@@ -9227,6 +9596,13 @@ export default function App() {
      { catKey, id }, solange sie offen steht. Zurueckgesetzt wird nur
      auf ausdrueckliches "Ja" — von selbst passiert nichts. */
   const [zuschlagRueckfrage, setZuschlagRueckfrage] = useState(null);
+  /* Der Verrechnen-Dialog: die ID des Eintrags, solange er offen
+     steht. Geschrieben wird erst, wenn darin ein Weg gewaehlt wird —
+     ein Abbruch aendert nichts. */
+  const [verrechnenOffen, setVerrechnenOffen] = useState(null);
+  /* Der Hinweistext ueber dem Bewertungsformular, wenn es aus dem
+     Dialog heraus zum eigenen Verteilen geoeffnet wurde. Sonst leer. */
+  const [verrechnenHinweis, setVerrechnenHinweis] = useState("");
   const [showExport, setShowExport] = useState(false);
   /* Der Bilder-Abschnitt im Daten-Panel startet bei jedem Oeffnen
      zugeklappt — gemerkt wird der Zustand bewusst nicht. */
@@ -10512,6 +10888,42 @@ export default function App() {
       setSaveError("");
     } catch (e) {
       setSaveError("Nicht zurückgesetzt: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* Den Zuschlag in die eigenen Bewertungsfelder holen.
+
+     Geschrieben wird genau einmal: die neuen Werte gehen wie bei
+     einer normalen Bewertungsaenderung an den Server, und `elo` faellt
+     im selben Aufruf auf den Startwert zurueck — der Zuschlag ist
+     damit 0. `duels`, `siege` und die Eintraege in duell_paare bleiben
+     stehen; die Duellhistorie geht nicht verloren.
+
+     Die Rueckfrage nach einer auffaelligen Bewertung kommt hier
+     ausdruecklich NICHT: der Zuschlag ist ja schon weg. */
+  async function zuschlagVerrechnen(catKey, id, entwurf) {
+    const current = (items[catKey] || []).find((f) => f.id === id);
+    if (!current || !entwurf) return;
+
+    setBusy(true);
+    try {
+      const saved = await api.update(id, {
+        ...current,
+        category: catKey,
+        values: entwurf.values,
+        personal: entwurf.personal,
+        seasons: entwurf.seasons || [],
+        elo: ELO_START,
+      });
+      setItems((prev) => ({
+        ...prev,
+        [catKey]: prev[catKey].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      }));
+      setSaveError("");
+    } catch (e) {
+      setSaveError("Nicht verrechnet: " + e.message);
     } finally {
       setBusy(false);
     }
@@ -11815,8 +12227,9 @@ export default function App() {
               initialValues={editingEntry.values}
               initialPersonal={editingEntry.personal}
               initialSeasons={editingEntry.seasons}
-              onSave={(payload) => updateEntry(editingEntry.id, payload)}
-              onCancel={() => setMode("list")}
+              hinweis={verrechnenHinweis}
+              onSave={(payload) => { setVerrechnenHinweis(""); updateEntry(editingEntry.id, payload); }}
+              onCancel={() => { setVerrechnenHinweis(""); setMode("list"); }}
             />
           )}
 
@@ -12185,12 +12598,13 @@ export default function App() {
           singular={catInfo.singular}
           busy={busy}
           onBack={() => setSelectedId(null)}
-          onEdit={() => setMode("edit")}
+          onEdit={() => { setVerrechnenHinweis(""); setMode("edit"); }}
           onDelete={() => setConfirmDelete(selectedEntry.id)}
           onSaveAngaben={(werte) => angabenSpeichern(selectedEntry.id, werte)}
           onSaveWatchCount={(n) => zaehlerSpeichern(selectedEntry.id, n)}
           onAmSchauen={(an) => amSchauenSchalten(selectedEntry.id, an)}
           onEloZuruecksetzen={() => eloZuruecksetzen(category, selectedEntry.id)}
+          onVerrechnen={() => setVerrechnenOffen(selectedEntry.id)}
         />
       )}
 
@@ -12219,6 +12633,27 @@ export default function App() {
           danger
           onConfirm={() => deleteEntry(confirmDelete)}
           onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
+      {/* Der Verrechnen-Dialog. Er zeigt, was passieren wuerde;
+          geschrieben wird erst mit der Wahl eines Weges. Ein Abbruch
+          laesst Bewertung und Elo unberuehrt. */}
+      {verrechnenOffen && selectedEntry && selectedEntry.id === verrechnenOffen && (
+        <VerrechnenDialog
+          entry={selectedEntry}
+          category={category}
+          onVerrechnen={(weg) => {
+            const id = verrechnenOffen;
+            setVerrechnenOffen(null);
+            zuschlagVerrechnen(category, id, weg.entwurf);
+          }}
+          onSelbstVerteilen={() => {
+            setVerrechnenHinweis(verrechnenHinweisText(selectedEntry, category));
+            setVerrechnenOffen(null);
+            setMode("edit");
+          }}
+          onCancel={() => setVerrechnenOffen(null)}
         />
       )}
 
