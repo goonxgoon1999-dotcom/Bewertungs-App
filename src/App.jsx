@@ -710,19 +710,22 @@ function imNotenfenster(a, b, fenster) {
 }
 
 /**
- * Wie viele Paarungen eine Kategorie im Grundfenster ueberhaupt
- * hergibt.
+ * Wie viele Paarungen ein Teilnehmerfeld ueberhaupt hergibt.
  *
  * Gezaehlt wird ueber alle Teilnehmer, je Paar genau einmal — die
- * innere Schleife startet deshalb hinter der aeusseren. Ob ein Paar
- * mitzaehlt, entscheidet derselbe Vergleich wie bei der Ziehung
- * (imNotenfenster), nur eben ohne die Erweiterungsstufen: gemeint ist
- * das Feld, aus dem im Normalfall gezogen wird.
+ * innere Schleife startet deshalb hinter der aeusseren.
+ *
+ * Ob ein Paar mitzaehlt, entscheidet dieselbe Frage wie bei der
+ * Ziehung, und `ohneFenster` steht fuer dasselbe wie dort: ohne
+ * Eingrenzung misst das Grundfenster (imNotenfenster, ohne die
+ * Erweiterungsstufen — gemeint ist das Feld, aus dem im Normalfall
+ * gezogen wird); in einer Auswahl faellt die Messung weg, denn dort
+ * darf jeder gegen jeden.
  *
  * Zwei Plaetze der Liste koennten denselben Eintrag fuehren; ein
  * solches Paar gaebe kein Duell und zaehlt deshalb nicht.
  */
-function moeglichePaarungen(liste) {
+function moeglichePaarungen(liste, ohneFenster = false) {
   if (!Array.isArray(liste)) return 0;
   let zahl = 0;
   for (let i = 0; i < liste.length; i++) {
@@ -732,10 +735,36 @@ function moeglichePaarungen(liste) {
       const b = liste[j];
       if (!b) continue;
       if (a.id && b.id && a.id === b.id) continue;
-      if (imNotenfenster(a, b, DUELL_GRUNDFENSTER)) zahl++;
+      if (ohneFenster || imNotenfenster(a, b, DUELL_GRUNDFENSTER)) zahl++;
     }
   }
   return zahl;
+}
+
+/**
+ * Wie viele der schon gespielten Paarungen in ein Feld fallen.
+ *
+ * `gespielt` sind die Zeilen aus duell_paare ({ a, b, at }) — je
+ * Paarung eine, fuer die ganze Kategorie. `ids` ist das
+ * festgehaltene Teilnehmerfeld.
+ *
+ * Ohne Feld (Auswahl "Alle") zaehlt schlicht, was dasteht: die Zeilen
+ * der Kategorie. Mit Feld zaehlen nur die Paarungen, bei denen BEIDE
+ * Seiten dazugehoeren — das sind genau die, die moeglichePaarungen
+ * fuer dieses Feld auch als moeglich zaehlt.
+ *
+ * Doppelte Zeilen zaehlen einmal; unvollstaendige fallen heraus.
+ */
+function gespieltePaarungen(gespielt, ids) {
+  const zeilen = Array.isArray(gespielt) ? gespielt : [];
+  if (!ids) return zeilen.length;
+  const gesehen = new Set();
+  for (const eintrag of zeilen) {
+    if (!eintrag || !eintrag.a || !eintrag.b) continue;
+    if (!ids.has(eintrag.a) || !ids.has(eintrag.b)) continue;
+    gesehen.add(paarungsSchluessel(eintrag.a, eintrag.b));
+  }
+  return gesehen.size;
 }
 
 /** Zahlen mit Tausenderpunkt — „1.612". */
@@ -6901,15 +6930,6 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
 
   const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
 
-  /* Wie viele Paarungen diese Kategorie im Grundfenster ueberhaupt
-     hergibt — die Bezugsgroesse der Zeile unter dem Zaehler. Nach
-     einem Duell haben sich zwei Endnoten verschoben, deshalb haengt
-     die Zahl am Teilnehmerfeld und wird mit ihm neu gerechnet. */
-  const paarungenMoeglich = useMemo(
-    () => (kategorie ? moeglichePaarungen(teilnehmer[kategorie]) : 0),
-    [kategorie, teilnehmer]
-  );
-
   /* Die Rangliste der laufenden Kategorie, immer aktuell. Aus ihr
      kommt der Platz vor und nach dem Duell. */
   const ranglisteRef = useRef([]);
@@ -6923,8 +6943,29 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      Wer dabei ist, entscheidet allein das festgehaltene Feld — Noten
      und Duellzahlen bleiben dagegen aktuell, damit die Bevorzugung
      der wenig gespielten Titel weiter greift. */
+  const feldJetzt = useMemo(
+    () => feldListe(kategorie ? teilnehmer[kategorie] : [], feld),
+    [kategorie, teilnehmer, feld]
+  );
   const listeRef = useRef([]);
-  listeRef.current = feldListe(kategorie ? teilnehmer[kategorie] : [], feld);
+  listeRef.current = feldJetzt;
+  /* Das festgehaltene Feld auch als Verweis: die Auswertung eines
+     Duells laeuft asynchron und soll hinterher mit dem Feld rechnen,
+     das dann gilt — nicht mit dem, das beim Antippen galt. */
+  const feldRef = useRef(null);
+  feldRef.current = feld;
+
+  /* Wie viele Paarungen dieses Feld ueberhaupt hergibt — die
+     Bezugsgroesse der Zeile unter dem Zaehler. Bei "Alle" ist das die
+     ganze Kategorie im Grundfenster, in einer Auswahl das Feld ohne
+     Fenster: gemessen wird genau das, woraus auch gezogen wird. Nach
+     einem Duell haben sich zwei Endnoten verschoben, deshalb wird die
+     Zahl mit dem Feld neu gerechnet. */
+  const paarungenMoeglich = useMemo(
+    () => moeglichePaarungen(feldJetzt, ohneFenster),
+    [feldJetzt, ohneFenster]
+  );
+
   /* Die zuletzt gezogenen Paarungen, die juengste zuletzt. Sie halten
      dieselbe Begegnung fuer ein paar Zuege draussen. */
   const verlaufRef = useRef([]);
@@ -7013,7 +7054,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
          und die Paarung bleibt ungespielt. */
       merkeGespielt(gespielt);
       if (!lebtRef.current) return;
-      setPaarungenGespielt(paareRef.current.length);
+      setPaarungenGespielt(gespieltePaarungen(paareRef.current, feldRef.current));
       setRueckmeldung({ id: gewinner.id, titel: gewinner.title, platzVorher });
     };
     laeuft.then(fertig, fertig);
@@ -7080,6 +7121,9 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
        Auswahl: wechselt nur das Feld, stehen sie schon da und werden
        nicht noch einmal geholt. */
     if (geladenFuerRef.current === kategorie) {
+      /* Nur das Feld hat gewechselt — die Zeile unter dem Zaehler
+         bezieht sich ab jetzt darauf. */
+      setPaarungenGespielt(gespieltePaarungen(paareRef.current, feld));
       zeichne();
       return undefined;
     }
@@ -7099,7 +7143,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       if (abgebrochen) return;
       geladenFuerRef.current = kategorie;
       setLaedtPaare(false);
-      setPaarungenGespielt(paareRef.current.length);
+      setPaarungenGespielt(gespieltePaarungen(paareRef.current, feld));
       zeichne();
     })();
     return () => { abgebrochen = true; };

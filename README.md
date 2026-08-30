@@ -690,12 +690,16 @@ daneben. Ein Tippen wählt den Favoriten, „Überspringen" springt ohne
 jede Auswertung zum nächsten Duell. Ein Zähler zeigt, wie oft in dieser
 Kategorie schon gespielt wurde; gezählt werden nur ausgewertete Duelle.
 
-Darunter steht, wie weit die Kategorie durchgespielt ist — etwa „38 von
-1.612 Paarungen gespielt". Gemeint sind **Paarungen**, nicht Duelle:
-möglich sind alle Paare bewerteter Einträge, die im Grundfenster von 0,6
-liegen (die Erweiterungsstufen unten zählen nicht mit, sie sind der
-Notausgang für dünne Kategorien), je Paar einmal gezählt. Gespielt sind
-die Zeilen in `duell_paare` dieser Kategorie, also eindeutige Paarungen.
+Darunter steht, wie weit das Feld durchgespielt ist — etwa „38 von 1.612
+Paarungen gespielt". Gemeint sind **Paarungen**, nicht Duelle, je Paar
+einmal gezählt. Die Zeile misst immer genau das, woraus auch gezogen
+wird:
+
+| | möglich | gespielt |
+|---|---|---|
+| **Alle** | alle Paare bewerteter Einträge der Kategorie im Grundfenster von 0,6 (die Erweiterungsstufen unten zählen nicht mit, sie sind der Notausgang für dünne Kategorien) | die Zeilen in `duell_paare` dieser Kategorie |
+| **Eingegrenzt** | alle Paare des eingefrorenen Feldes, ohne Notenfenster — wie beim Ziehen | die Zeilen in `duell_paare`, bei denen **beide** Seiten zum Feld gehören |
+
 Der Zähler eine Zeile darüber ist bewusst etwas anderes: Er zählt jedes
 ausgewertete Duell samt Wiederholungen und Turniermatches und ergäbe als
 Quote ein schiefes Bild.
