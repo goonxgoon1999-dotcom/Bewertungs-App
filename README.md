@@ -700,6 +700,31 @@ Der Zähler eine Zeile darüber ist bewusst etwas anderes: Er zählt jedes
 ausgewertete Duell samt Wiederholungen und Turniermatches und ergäbe als
 Quote ein schiefes Bild.
 
+**Teilnehmerfeld.** Eine kleine Leiste über dem Duell grenzt ein, wer
+überhaupt antritt:
+
+| Auswahl | Bedeutung |
+|---------|-----------|
+| **Alle** | Vorgabe — die ganze Kategorie, Verhalten wie bisher |
+| **Nach Platz** | von–bis, zwei Zahlenfelder; Platz 3 bis 7 heißt die Ränge 3 bis 7 der Kategorie-Rangliste, beide dabei |
+| **Nach Note** | von–bis, zwei Felder mit einer Nachkommastelle; gemessen wird die angezeigte Endnote, wie beim Notenfilter der Rangliste |
+
+„Übernehmen" bestimmt das Feld — **einmal**. Danach steht fest, wer
+dabei ist, bis die Auswahl oder die Kategorie wechselt. Das ist keine
+Kleinigkeit, sondern der Kern der Sache: Würde das Feld nach jedem Duell
+neu bestimmt, verschöbe es sich durch die eigenen Ergebnisse — ein Titel
+fiele mitten im Spiel aus „Platz 3 bis 7" heraus, weil er gerade
+gewonnen hat. Noten und Duellzahlen der Teilnehmer bleiben dagegen
+aktuell; nur die Zugehörigkeit ist eingefroren. Ein leeres Feld heißt
+„ohne Grenze auf dieser Seite", verdrehte Grenzen werden gerade gerückt.
+
+Innerhalb einer Auswahl **entfällt das Notenfenster** samt seiner
+Erweiterungsstufen — die Auswahl tritt an seine Stelle, und im Feld darf
+jeder gegen jeden. Sperrfrist und die Bevorzugung wenig gespielter Titel
+bleiben unverändert aktiv. Stehen weniger als zwei Titel in der Auswahl,
+kommt statt eines Duells eine kurze Meldung. Bei „Alle" bleibt alles
+exakt wie zuvor.
+
 **Paarung.** Ein zufälliger Anker aus der nach Endnote sortierten
 Kategorie-Liste, der Gegner aus einem **Notenfenster von 0,6** um ihn
 herum. Gemessen wird also der Abstand der Endnoten selbst — nicht mehr
@@ -720,7 +745,8 @@ mögliche Gegner —, wird schrittweise geöffnet:
 | 4 | ohne Grenze |
 
 Die letzte Stufe lässt alles zu, damit auch in einer dünn besetzten
-Kategorie überhaupt gespielt werden kann. Innerhalb des Fensters kommt
+Kategorie überhaupt gespielt werden kann. Die Tabelle gilt für „Alle";
+in einer eingegrenzten Auswahl greift sie nicht (siehe oben). Innerhalb des Fensters kommt
 bevorzugt, wer die wenigsten Duelle hinter sich hat; bei Gleichstand
 entscheidet das Los — sonst käme in einer frischen Kategorie, in der
 alle bei 0 stehen, immer derselbe. Welcher der beiden links steht, wird
