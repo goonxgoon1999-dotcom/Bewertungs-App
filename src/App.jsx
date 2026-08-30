@@ -625,6 +625,12 @@ function auffaelligText(zuschlag) {
    duennen Kategorie ueberhaupt gespielt werden kann. */
 const DUELL_FENSTER_STUFEN = [0.6, 1.0, 1.5, Infinity];
 
+/* Die erste Stufe — das Fenster, in dem eine Paarung normalerweise
+   zustande kommt. Die Erweiterungsstufen sind der Notausgang fuer
+   duenne Kategorien und zaehlen deshalb nicht mit, wenn es darum
+   geht, wie viele Paarungen es ueberhaupt gibt. */
+const DUELL_GRUNDFENSTER = DUELL_FENSTER_STUFEN[0];
+
 /* So viele Gegner muss ein Fenster mindestens hergeben, sonst wird
    die naechste Stufe genommen. Bei nur einem Kandidaten gaebe es
    nichts zu waehlen — dieselbe Begegnung kaeme immer wieder. */
@@ -687,6 +693,57 @@ function duellNote(eintrag) {
 }
 
 /**
+ * Liegen zwei Teilnehmer im selben Notenfenster?
+ *
+ * Das ist der eine Vergleich, an dem die Paarung haengt — er steht
+ * deshalb hier und nur hier. Die Ziehung fragt ihn Stufe fuer Stufe
+ * (siehe duellKandidaten), die Zaehlung der moeglichen Paarungen
+ * fragt ihn fuer das Grundfenster. Ohne Begrenzung passt jedes Paar;
+ * fehlt einem der beiden die Endnote, gibt es nichts zu messen.
+ */
+function imNotenfenster(a, b, fenster) {
+  if (fenster === Infinity) return true;
+  const noteA = duellNote(a);
+  const noteB = duellNote(b);
+  if (noteA === null || noteB === null) return false;
+  return Math.abs(noteA - noteB) <= fenster;
+}
+
+/**
+ * Wie viele Paarungen eine Kategorie im Grundfenster ueberhaupt
+ * hergibt.
+ *
+ * Gezaehlt wird ueber alle Teilnehmer, je Paar genau einmal — die
+ * innere Schleife startet deshalb hinter der aeusseren. Ob ein Paar
+ * mitzaehlt, entscheidet derselbe Vergleich wie bei der Ziehung
+ * (imNotenfenster), nur eben ohne die Erweiterungsstufen: gemeint ist
+ * das Feld, aus dem im Normalfall gezogen wird.
+ *
+ * Zwei Plaetze der Liste koennten denselben Eintrag fuehren; ein
+ * solches Paar gaebe kein Duell und zaehlt deshalb nicht.
+ */
+function moeglichePaarungen(liste) {
+  if (!Array.isArray(liste)) return 0;
+  let zahl = 0;
+  for (let i = 0; i < liste.length; i++) {
+    const a = liste[i];
+    if (!a) continue;
+    for (let j = i + 1; j < liste.length; j++) {
+      const b = liste[j];
+      if (!b) continue;
+      if (a.id && b.id && a.id === b.id) continue;
+      if (imNotenfenster(a, b, DUELL_GRUNDFENSTER)) zahl++;
+    }
+  }
+  return zahl;
+}
+
+/** Zahlen mit Tausenderpunkt — „1.612". */
+function zahlText(n) {
+  return Math.round(n).toLocaleString("de-DE");
+}
+
+/**
  * Die moeglichen Gegner eines Titels, samt der Stufe, die dafuer
  * noetig war.
  *
@@ -721,13 +778,7 @@ function duellKandidaten(liste, ankerIndex) {
 
   let letzte = moeglich;
   for (const fenster of DUELL_FENSTER_STUFEN) {
-    const imFenster =
-      fenster === Infinity
-        ? moeglich
-        : moeglich.filter((i) => {
-            const gegnerNote = duellNote(liste[i]);
-            return gegnerNote !== null && Math.abs(gegnerNote - note) <= fenster;
-          });
+    const imFenster = moeglich.filter((i) => imNotenfenster(anker, liste[i], fenster));
     letzte = imFenster;
     if (imFenster.length >= DUELL_MIN_KANDIDATEN) return imFenster;
   }
@@ -6619,6 +6670,15 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
 
   const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
 
+  /* Wie viele Paarungen diese Kategorie im Grundfenster ueberhaupt
+     hergibt — die Bezugsgroesse der Zeile unter dem Zaehler. Nach
+     einem Duell haben sich zwei Endnoten verschoben, deshalb haengt
+     die Zahl am Teilnehmerfeld und wird mit ihm neu gerechnet. */
+  const paarungenMoeglich = useMemo(
+    () => (kategorie ? moeglichePaarungen(teilnehmer[kategorie]) : 0),
+    [kategorie, teilnehmer]
+  );
+
   /* Die Rangliste der laufenden Kategorie, immer aktuell. Aus ihr
      kommt der Platz vor und nach dem Duell. */
   const ranglisteRef = useRef([]);
@@ -6638,6 +6698,12 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      frueheren Sitzungen und aus dem Turnier. Sie kommen vom Server
      (duell_paare) und wachsen waehrend des Spielens mit. */
   const paareRef = useRef([]);
+  /* Dieselbe Liste als Zahl, damit die Anzeige sie mitbekommt: der
+     Verweis oben aendert sich lautlos, ein Zustand nicht. Gezaehlt
+     werden die Zeilen aus duell_paare, also eindeutige Paarungen —
+     ausdruecklich nicht der Duellzaehler daneben, der Wiederholungen
+     und Turniermatches mitzaehlt. */
+  const [paarungenGespielt, setPaarungenGespielt] = useState(0);
   /* Solange die Liste noch unterwegs ist, steht noch kein Duell da —
      ohne sie gezogen zu haben hiesse, die Sperrfrist beim ersten
      Duell zu uebergehen. */
@@ -6708,6 +6774,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
          und die Paarung bleibt ungespielt. */
       merkeGespielt(gespielt);
       if (!lebtRef.current) return;
+      setPaarungenGespielt(paareRef.current.length);
       setRueckmeldung({ id: gewinner.id, titel: gewinner.title, platzVorher });
     };
     laeuft.then(fertig, fertig);
@@ -6723,6 +6790,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
        vorigen Kategorie kommen hier ohnehin nicht vor. */
     verlaufRef.current = [];
     paareRef.current = [];
+    setPaarungenGespielt(0);
     setPaar(null);
     if (!kategorie) {
       setLaedtPaare(false);
@@ -6741,6 +6809,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       }
       if (abgebrochen) return;
       setLaedtPaare(false);
+      setPaarungenGespielt(paareRef.current.length);
       const erste = ziehePaarung(listeRef.current, null, Math.random, paareRef.current);
       merkePaarung(erste);
       setPaar(erste);
@@ -6839,8 +6908,21 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
         <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
           HEAD-TO-HEAD · {catInfo.label.toUpperCase()}
         </div>
-        <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
-          {gespielt} {gespielt === 1 ? "Duell" : "Duelle"} gespielt
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
+            {gespielt} {gespielt === 1 ? "Duell" : "Duelle"} gespielt
+          </div>
+          {/* Wie weit die Kategorie durchgespielt ist. Oben stehen die
+              Duelle mit allen Wiederholungen, hier die Paarungen: wie
+              viele es im Grundfenster gibt und wie viele davon schon
+              einmal angetreten sind. Solange die gespielten Paarungen
+              noch geladen werden, stuende hier eine 0, die nichts
+              bedeutet — dann bleibt die Zeile weg. */}
+          {!laedtPaare && (
+            <div style={{ fontSize: 11, color: "#55524c", fontFamily: "'JetBrains Mono', monospace", marginTop: 3 }}>
+              {zahlText(paarungenGespielt)} von {zahlText(paarungenMoeglich)} Paarungen gespielt
+            </div>
+          )}
         </div>
       </div>
 
@@ -8350,7 +8432,7 @@ function rangFuer(xp) {
 
 /** Punktzahlen mit Tausenderpunkt — "1.240". */
 function xpText(n) {
-  return Math.round(n).toLocaleString("de-DE");
+  return zahlText(n);
 }
 
 /**
