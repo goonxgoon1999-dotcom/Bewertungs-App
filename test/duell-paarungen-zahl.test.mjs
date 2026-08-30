@@ -18,6 +18,8 @@
  *   4. Derselbe Vergleich wie bei der Ziehung: was moeglichePaarungen
  *      zaehlt, deckt sich mit dem, was duellKandidaten im
  *      Grundfenster hergibt.
+ *   5. In einer Auswahl faellt das Fenster weg — gezaehlt wird dann
+ *      das ganze Feld, und gespielt zaehlt nur, was ganz hineinfaellt.
  *
  *   npm test
  */
@@ -32,6 +34,8 @@ import { transform } from "esbuild";
 
 const GEPRUEFT = [
   "moeglichePaarungen",
+  "gespieltePaarungen",
+  "paarungsSchluessel",
   "imNotenfenster",
   "duellKandidaten",
   "DUELL_GRUNDFENSTER",
@@ -145,4 +149,94 @@ test("dieselbe Messung wie bei der Ziehung", () => {
 test("Zahlen bekommen den Tausenderpunkt", () => {
   assert.equal(app.zahlText(1612), "1.612");
   assert.equal(app.zahlText(38), "38");
+});
+
+/* ---- In einer Auswahl: ohne Fenster ---- */
+
+test("ohne Fenster zaehlt jedes Paar des Feldes", () => {
+  /* Fuenf Titel, weit auseinander: mit Fenster gaebe es keine
+     einzige Paarung, ohne Fenster sind es alle zehn. */
+  const weit = [
+    eintrag("a", 9.5), eintrag("b", 8.0), eintrag("c", 6.0),
+    eintrag("d", 4.0), eintrag("e", 1.0),
+  ];
+  assert.equal(app.moeglichePaarungen(weit, true), 10);
+  assert.equal(app.moeglichePaarungen(weit, false), 0);
+});
+
+test("ohne Fenster ist es die Zahl aller Paare — n mal (n-1) durch 2", () => {
+  for (const n of [2, 3, 5, 8, 20]) {
+    const feld = Array.from({ length: n }, (_, i) => eintrag("id" + i, 10 - i * 0.4));
+    assert.equal(app.moeglichePaarungen(feld, true), (n * (n - 1)) / 2);
+  }
+});
+
+test("die Vorgabe misst weiter das Grundfenster", () => {
+  const liste = [eintrag("a", 8.0), eintrag("b", 7.0)];
+  assert.equal(app.moeglichePaarungen(liste), 0);
+  assert.equal(app.moeglichePaarungen(liste, false), 0);
+  assert.equal(app.moeglichePaarungen(liste, true), 1);
+});
+
+test("auch ohne Fenster kein Selbstduell und keine Note noetig", () => {
+  const doppelt = eintrag("a", 8.0);
+  assert.equal(app.moeglichePaarungen([doppelt, { ...doppelt }], true), 0);
+  /* Ohne Note zaehlt ein Paar hier trotzdem: in einer Auswahl misst
+     niemand mehr die Note. */
+  assert.equal(app.moeglichePaarungen([eintrag("a", 8), { id: "b", score: null }], true), 1);
+});
+
+/* ---- Gespielte Paarungen im Feld ---- */
+
+const zeile = (a, b, at = 1) => ({ a, b, at });
+
+test("ohne Feld zaehlen schlicht die Zeilen — „Alle“ bleibt, wie es war", () => {
+  const zeilen = [zeile("a", "b"), zeile("c", "d"), zeile("e", "f")];
+  assert.equal(app.gespieltePaarungen(zeilen, null), zeilen.length);
+  assert.equal(app.gespieltePaarungen([], null), 0);
+  assert.equal(app.gespieltePaarungen(null, null), 0);
+});
+
+test("mit Feld zaehlen nur Paarungen, bei denen beide Seiten dazugehoeren", () => {
+  const feld = new Set(["a", "b", "c"]);
+  const zeilen = [
+    zeile("a", "b"),   // beide drin
+    zeile("b", "c"),   // beide drin
+    zeile("a", "x"),   // eine Seite draussen
+    zeile("y", "c"),   // eine Seite draussen
+    zeile("x", "y"),   // beide draussen
+  ];
+  assert.equal(app.gespieltePaarungen(zeilen, feld), 2);
+});
+
+test("doppelte Zeilen zaehlen einmal, unvollstaendige gar nicht", () => {
+  const feld = new Set(["a", "b"]);
+  const zeilen = [
+    zeile("a", "b", 1),
+    zeile("b", "a", 9),      // dieselbe Paarung, andere Seite
+    { a: "a", b: null },     // unvollstaendig
+    { at: 5 },               // unvollstaendig
+  ];
+  assert.equal(app.gespieltePaarungen(zeilen, feld), 1);
+});
+
+test("gespielt ueberschreitet moeglich nicht — beide messen dasselbe Feld", () => {
+  const feld = [eintrag("a", 9), eintrag("b", 5), eintrag("c", 2)];
+  const ids = new Set(feld.map((e) => e.id));
+  /* Alle drei Paarungen gespielt, dazu zwei, die nicht ins Feld
+     gehoeren. */
+  const zeilen = [
+    zeile("a", "b"), zeile("a", "c"), zeile("b", "c"),
+    zeile("a", "fremd"), zeile("fremd", "anders"),
+  ];
+  const moeglich = app.moeglichePaarungen(feld, true);
+  const gespielt = app.gespieltePaarungen(zeilen, ids);
+  assert.equal(moeglich, 3);
+  assert.equal(gespielt, 3);
+  assert.ok(gespielt <= moeglich);
+});
+
+test("ein Feld ohne gespielte Paarungen steht bei 0", () => {
+  const ids = new Set(["a", "b"]);
+  assert.equal(app.gespieltePaarungen([zeile("x", "y"), zeile("a", "x")], ids), 0);
 });
