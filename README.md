@@ -1,4 +1,4 @@
-# Bewertungs-App — Filme, Serien, Anime, Kinderserien, Adult Animation, Spiele
+# Bewertungs-App — Filme, Serien, Anime, Kinderserien, Adult Animation, Dokus, Spiele
 
 Persönliche Bewertungs-App mit gewichteten Kriterien je Kategorie
 (sechs oder sieben, je nach Kategorie) + Bauchgefühl,
@@ -7,11 +7,11 @@ getrennten Rankings, Filtern, Statistik, Postern und echter Datenbank.
 - **Frontend:** React + Vite
 - **Backend:** Vercel Serverless Functions (Ordner `api/`)
 - **Datenbank:** Neon Postgres (kostenloser Plan)
-- **Kategorien:** Filme, Serien, Anime, Kinderserien, Adult Animation und
-  Spiele — je mit eigenen Kriterien
+- **Kategorien:** Filme, Serien, Anime, Kinderserien, Adult Animation,
+  Dokus und Spiele — je mit eigenen Kriterien
 - **Poster:** automatisch über TMDB / Jikan / TVMaze / iTunes, Spiele über SteamGridDB
 - **Angaben zum Werk:** Erscheinungsjahr und Regie über TMDB, IMDb-Note als
-  Vergleichswert über OMDb — bei Filmen, Serien und Anime
+  Vergleichswert über OMDb — überall außer bei Spielen
 
 ---
 
@@ -164,6 +164,27 @@ Bei **Anime** und **Adult Animation** heißen zwei davon anders:
 **Synchronstimme**. Das ist reine Beschriftung — dieselben Datenfelder,
 dieselben Gewichte, dieselben gespeicherten Werte.
 
+**Dokus** (eigene Kriterien und eigene Gewichte):
+
+| Kriterium | Gewicht |
+|-----------|---------|
+| Informationsgehalt / Erkenntnisgewinn | 25 % |
+| Aufbau & Erzählweise | 20 % |
+| Protagonisten & Wirkung | 15 % |
+| Inszenierung / Bildsprache | 15 % |
+| Unterhaltung / Spannung | 10 % |
+| Glaubwürdigkeit & Recherche | 10 % |
+| Sound & Sprecher | 5 % |
+
+Wie bei Anime und Kinderserien wechselt nur die Beschriftung, nicht die
+Datenspalte: Informationsgehalt liegt in `emotion`, Aufbau in `story`,
+Protagonisten in `charaktere`, Bildsprache in `inszenierung`,
+Unterhaltung in `unterhaltung`, Glaubwürdigkeit in `schauspiel` und
+Sound in `sound`. Eine neue Spalte braucht die Kategorie damit nicht.
+
+Einzeldokus und Doku-Serien stehen in **einem** Reiter. Staffeln gibt es
+dort nicht: Auch eine Doku-Serie bekommt genau eine Gesamtnote.
+
 **Kinderserien** (eigene Kriterien, sechs statt sieben):
 
 | Kriterium | Gewicht |
@@ -260,11 +281,21 @@ Quellen, jeweils in dieser Reihenfolge:
 | Anime | Jikan → TMDB |
 | Kinderserien | TVMaze → TMDB → iTunes |
 | Adult Animation | TVMaze → TMDB → iTunes |
+| Dokus | TMDB (movie) → TMDB (tv) → iTunes |
 | Spiele | SteamGridDB |
 
 Kinderserien und Adult Animation laufen über dieselbe Kette wie Serien:
 Für TVMaze und TMDB sind es schlicht Serien, eigene Kategorien sind sie
 nur in dieser App.
+
+Dokus fragen TMDB in **beiden** Bereichen — erst `movie`, dann `tv`.
+Im Doku-Reiter stehen Einzeldokus und Doku-Serien nebeneinander, und
+nur eine Suche über beide Bereiche findet beides. Dasselbe gilt für die
+Titelauswahl beim Hinzufügen (`api/search.js`): Dort werden die beiden
+Trefferlisten abwechselnd zusammengelegt, damit keine der beiden
+Arten verdrängt wird. Die Laufzeit richtet sich danach, was TMDB
+geliefert hat: eine Filmlaufzeit bei der Einzeldoku, Folgenlänge mal
+Folgenzahl bei der Doku-Serie.
 
 TVMaze taucht bei Filmen nicht auf, weil es ausschließlich Serien kennt.
 Für Spiele gibt es nur SteamGridDB — die übrigen Quellen kennen keine
@@ -595,6 +626,7 @@ einzelner Film sagt über den Geschmack nichts aus.
 | Serien | TMDB `/discover/tv` | Genre-Kombination, Genres einzeln, Jahrzehnt |
 | Kinderserien | TMDB `/discover/tv` | wie Serien, Profil aus der eigenen Kategorie |
 | Adult Animation | TMDB `/discover/tv` | wie Serien, Profil aus der eigenen Kategorie |
+| Dokus | TMDB `/discover/movie` | Profil aus der eigenen Kategorie |
 | Anime | Jikan `/anime` | Genres, Jahrzehnt, nach Note sortiert, Mindestnote 7, zwei Seiten je Abfrage |
 
 Bei Serien gibt es keine Abfrage nach Regie: TMDBs Entdecken-Endpunkt für
@@ -1199,6 +1231,15 @@ Kinderserien:
 ```
 Kriteriennote = Nostalgie×0.20 + Charaktere×0.20 + Humor×0.20
               + Story×0.15 + Optik×0.15 + Intro×0.10
+```
+
+Dokus:
+
+```
+Kriteriennote = Informationsgehalt×0.25 + Aufbau×0.20
+              + Protagonisten×0.15 + Bildsprache×0.15
+              + Unterhaltung×0.10 + Glaubwürdigkeit×0.10
+              + Sound×0.05
 ```
 
 Spiele:

@@ -110,6 +110,35 @@ const KIDS_CRITERIA = [
   { key: "sound", label: "Intro & Musik", weight: 0.10, hint: "Titellied, Themen, Geräuschkulisse" },
 ];
 
+/* Dokus haben eigene Kriterien und eigene Gewichte: Bei einer Doku
+   zaehlt zuerst, was man aus ihr mitnimmt — nicht, wie gut gespielt
+   wird. Sieben Kriterien, wie bei Film/Serie/Anime.
+
+   Wie bei Anime und Kinderserien wechselt nur die Beschriftung, nicht
+   die Datenspalte: gespeichert wird weiterhin in den sieben Feldern
+   von Film, Serie und Anime (siehe DOKU_KEYS in api/_db.js). Damit
+   braucht auch diese Kategorie keine einzige neue Spalte.
+
+     emotion      -> "Informationsgehalt / Erkenntnisgewinn"
+     story        -> "Aufbau & Erzählweise"
+     charaktere   -> "Protagonisten & Wirkung"
+     inszenierung -> "Inszenierung / Bildsprache"
+     unterhaltung -> "Unterhaltung / Spannung"
+     schauspiel   -> "Glaubwürdigkeit & Recherche"
+     sound        -> "Sound & Sprecher"
+
+   Staffeln gibt es hier bewusst nicht: Auch eine Doku-Serie bekommt
+   genau eine Gesamtnote (siehe SEASON_CATEGORIES). */
+const DOKU_CRITERIA = [
+  { key: "emotion", label: "Informationsgehalt / Erkenntnisgewinn", weight: 0.25, hint: "Was bleibt an Wissen? Neue Einsichten, Tiefe des Themas" },
+  { key: "story", label: "Aufbau & Erzählweise", weight: 0.20, hint: "Roter Faden, Dramaturgie, Tempo" },
+  { key: "charaktere", label: "Protagonisten & Wirkung", weight: 0.15, hint: "Wer kommt zu Wort? Nähe, Glaubwürdigkeit, Präsenz" },
+  { key: "inszenierung", label: "Inszenierung / Bildsprache", weight: 0.15, hint: "Kamera, Schnitt, Archivmaterial, Atmosphäre" },
+  { key: "unterhaltung", label: "Unterhaltung / Spannung", weight: 0.10, hint: "Wie fesselnd ist es trotz Sachthema?" },
+  { key: "schauspiel", label: "Glaubwürdigkeit & Recherche", weight: 0.10, hint: "Quellen, Einordnung, Ausgewogenheit" },
+  { key: "sound", label: "Sound & Sprecher", weight: 0.05, hint: "Musik, Geräuschkulisse, Kommentarstimme" },
+];
+
 const GAME_CRITERIA = [
   { key: "gameplay", label: "Gameplay", weight: 0.25, hint: "Steuerung, Spielmechanik, Spielgefühl" },
   { key: "story", label: "Story", weight: 0.25, hint: "Handlung, Aufbau, Erzählung" },
@@ -128,6 +157,7 @@ const CRITERIA_BY_CATEGORY = {
   // Adult Animation wird wie Anime bewertet — es ist Animation, die
   // Fragen nach Animationsqualitaet und Synchronstimme sind dieselben.
   adultanim: ANIME_CRITERIA,
+  doku: DOKU_CRITERIA,
   game: GAME_CRITERIA,
 };
 
@@ -138,13 +168,17 @@ function criteriaFor(category) {
 
 /* Die Reihenfolge hier bestimmt die Reihenfolge ueberall: Tab-Leiste,
    Statistik, Export. Kinderserien und Adult Animation stehen bei den
-   uebrigen Serienarten, Spiele bleiben am Ende. */
+   uebrigen Serienarten, Dokus dahinter, Spiele bleiben am Ende.
+
+   Dokus sind ein gemeinsamer Reiter fuer Einzeldokus und Doku-Serien
+   — beides bekommt genau eine Gesamtnote. */
 const CATEGORIES = [
   { key: "movie", label: "Filme", singular: "Film" },
   { key: "series", label: "Serien", singular: "Serie" },
   { key: "anime", label: "Anime", singular: "Anime" },
   { key: "kids", label: "Kinderserien", singular: "Kinderserie" },
   { key: "adultanim", label: "Adult Animation", singular: "Adult Animation" },
+  { key: "doku", label: "Dokus", singular: "Doku" },
   { key: "game", label: "Spiele", singular: "Spiel" },
 ];
 
@@ -159,6 +193,7 @@ const CATEGORY_COLORS = {
   anime: "#8B6BC9",
   kids: "#C4568C",
   adultanim: "#4A7FC1",
+  doku: "#6B9C4F",
   game: "#C4633E",
 };
 
@@ -322,6 +357,10 @@ function computeFinalScore(values, personal, category) {
    Ein Eintrag mit Staffeln wird nicht mehr selbst bewertet: seine
    Endnote ist der ungewichtete Durchschnitt der Staffelnoten. Jede
    Staffelnote entsteht nach genau derselben Formel wie bisher.
+
+   Dokus stehen bewusst NICHT in der Liste: Auch eine Doku-Serie
+   bekommt genau eine Gesamtnote, die Staffel-Funktion wird dort also
+   gar nicht erst angeboten.
    --------------------------------------------------------------- */
 const SEASON_CATEGORIES = ["series", "anime", "kids", "adultanim"];
 
@@ -4545,12 +4584,12 @@ function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLa
    Titel suchen — zwei Aufrufe je Titel. Deshalb gehen nur die
    Bestbewerteten als Titel mit. Bei Anime weniger, weil Jikan nur drei
    Anfragen je Sekunde zulaesst. */
-const PROFIL_TITEL = { movie: 12, series: 12, anime: 8, kids: 12, adultanim: 12 };
+const PROFIL_TITEL = { movie: 12, series: 12, anime: 8, kids: 12, adultanim: 12, doku: 12 };
 
 /* So viele Vorschlaege stehen am Ende in der Liste. Der Server liefert
    deutlich mehr (rund 40) — der Rest ist Vorrat und rueckt nach, sobald
    ein Vorschlag auf der Watchlist landet. */
-const EMPFEHLUNGEN_SICHTBAR = { movie: 15, series: 10, anime: 10, kids: 10, adultanim: 10 };
+const EMPFEHLUNGEN_SICHTBAR = { movie: 15, series: 10, anime: 10, kids: 10, adultanim: 10, doku: 10 };
 
 /* Vorschlaege werden nur etwa einmal im Monat neu berechnet. Der Cache
    liegt im localStorage und ueberdauert damit auch das Schliessen der
@@ -9578,7 +9617,7 @@ export default function App() {
   anzeigeCacheRef.current = anzeigeCache;
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("movie");
-  // eine der Kategorien (movie, series, anime, kids, adultanim, game),
+  // eine der Kategorien (movie, series, anime, kids, adultanim, doku, game),
   // stats oder minigames
   const [activeTab, setActiveTab] = useState("movie");
   const [search, setSearch] = useState("");

@@ -132,10 +132,27 @@ const KIDS_KEYS = [
   "sound",
 ];
 
+/* Dokus haben eigene Kriterien mit eigenen Gewichten, kommen dafuer
+   aber ebenfalls ohne neue Spalte aus: Sie belegen dieselben sieben
+   Felder wie Film, Serie und Anime, nur anders beschriftet (die
+   Zuordnung steht in src/App.jsx):
+
+     emotion      -> "Informationsgehalt / Erkenntnisgewinn"
+     story        -> "Aufbau & Erzählweise"
+     charaktere   -> "Protagonisten & Wirkung"
+     inszenierung -> "Inszenierung / Bildsprache"
+     unterhaltung -> "Unterhaltung / Spannung"
+     schauspiel   -> "Glaubwürdigkeit & Recherche"
+     sound        -> "Sound & Sprecher"
+
+   Staffeln gibt es bei Dokus nicht (siehe SEASON_CATEGORIES) — auch
+   eine Doku-Serie traegt genau eine Gesamtnote. */
+const DOKU_KEYS = AV_KEYS;
+
 /* Kinderserien und Adult Animation kamen nach den vier urspruenglichen
    Kategorien dazu. Adult Animation ist technisch eine Serie mit den
-   Kriterien und Beschriftungen von Anime. */
-export const CATEGORIES = ["movie", "series", "anime", "kids", "adultanim", "game"];
+   Kriterien und Beschriftungen von Anime. Dokus kamen zuletzt hinzu. */
+export const CATEGORIES = ["movie", "series", "anime", "kids", "adultanim", "doku", "game"];
 
 export const CRITERIA_KEYS_BY_CATEGORY = {
   movie: AV_KEYS,
@@ -143,6 +160,7 @@ export const CRITERIA_KEYS_BY_CATEGORY = {
   anime: AV_KEYS,
   kids: KIDS_KEYS,
   adultanim: AV_KEYS,
+  doku: DOKU_KEYS,
   game: GAME_KEYS,
 };
 
@@ -254,6 +272,7 @@ async function init() {
   await ensureLaufzeit();
   await ensureBewertetAm();
   await ensureNeueKategorien();
+  await ensureDokuKategorie();
   await ensureDuelle();
   await ensureEloWerte();
   await ensureDuellPaare();
@@ -471,8 +490,61 @@ async function ensureNeueKategorien() {
   await sql`ALTER TABLE seasons ALTER COLUMN schauspiel DROP NOT NULL`;
 }
 
+/* ----------------------------------------------------------------
+   Dokus
+
+   Die siebte Kategorie. Sie braucht wie die beiden davor keine neue
+   Spalte — Dokus teilen sich die sieben Kriterien-Spalten von Film,
+   Serie und Anime (siehe DOKU_KEYS oben) und kennen keine Staffeln.
+
+   Zu tun ist deshalb nur eines: Der CHECK auf `category` kennt 'doku'
+   noch nicht. Wie bei den beiden Schritten davor werden alle CHECKs
+   auf die Spalte gesucht und durch einen ersetzt, der alle sieben
+   Kategorien erlaubt. Der Block laeuft genau einmal: danach steht
+   'doku' in der Bedingung.
+
+   Der Constraint-Name bleibt derselbe wie bei den Schritten davor —
+   und weil deren Bedingung ('%kids%') auch im neuen Constraint noch
+   zutrifft, ueberschreiben sich die Migrationen nicht gegenseitig.
+
+   Rein strukturell: Es wird KEINE bestehende Zeile angefasst, alle
+   Bewertungen bleiben Bit fuer Bit erhalten. Vorhandene Doku-
+   Eintraege im Filme-Reiter bleiben unveraendert Filme.
+   ---------------------------------------------------------------- */
+async function ensureDokuKategorie() {
+  await sql`
+    DO $$
+    DECLARE con_name text;
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+        JOIN pg_class r ON r.oid = c.conrelid
+        WHERE r.relname = 'media_items'
+          AND c.conname = 'media_items_category_allowed'
+          AND pg_get_constraintdef(c.oid) ILIKE '%doku%'
+      ) THEN
+        FOR con_name IN
+          SELECT c.conname FROM pg_constraint c
+          JOIN pg_class r ON r.oid = c.conrelid
+          WHERE r.relname = 'media_items'
+            AND c.contype = 'c'
+            AND pg_get_constraintdef(c.oid) ILIKE '%category%'
+        LOOP
+          EXECUTE 'ALTER TABLE media_items DROP CONSTRAINT IF EXISTS ' || quote_ident(con_name);
+        END LOOP;
+
+        ALTER TABLE media_items
+          ADD CONSTRAINT media_items_category_allowed
+          CHECK (category IN ('movie','series','anime','kids','adultanim','doku','game'));
+      END IF;
+    END $$
+  `;
+}
+
 /* Kategorien, die optional in Staffeln unterteilt werden koennen.
-   Kinderserien und Adult Animation gehoeren dazu — es sind Serien. */
+   Kinderserien und Adult Animation gehoeren dazu — es sind Serien.
+   Dokus gehoeren bewusst nicht dazu: Auch eine Doku-Serie bekommt
+   genau eine Gesamtnote. */
 export const SEASON_CATEGORIES = ["series", "anime", "kids", "adultanim"];
 
 export function supportsSeasons(category) {
