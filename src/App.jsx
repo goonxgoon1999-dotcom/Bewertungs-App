@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, createContext, useContext } from "react";
 
 /* ============================================================
    APP-NAME — die eine Stelle, an der der Name steht
@@ -183,6 +183,153 @@ const CATEGORIES = [
 ];
 
 const CATEGORY_KEYS = CATEGORIES.map((c) => c.key);
+
+/* ============================================================
+   KATEGORIE-ANSICHT — welche Kategorien dieses Geraet zeigt
+   und in welcher Reihenfolge
+
+   Eine reine Anzeige-Einstellung, je Geraet im localStorage. Sie
+   liegt bewusst NICHT in der Datenbank: Sie sagt nichts ueber die
+   Sammlung aus, sondern darueber, was auf diesem Bildschirm zu sehen
+   sein soll. Am Datenmodell und am CHECK auf `category` aendert sie
+   entsprechend nichts.
+
+   NICHT VERHANDELBARE REGELN — beim Aendern bitte lesen:
+
+   1. Ausblenden loescht nichts. Ein ausgeblendeter Reiter nimmt seine
+      Eintraege mit aus der Anzeige und bringt sie beim Wiedereinschalten
+      unveraendert zurueck.
+   2. Mindestens eine Kategorie bleibt sichtbar. Waeren alle versteckt,
+      gilt die Vorgabe — sonst stuende die App vor einem leeren Reiter.
+   3. Gespeichert wird, was VERSTECKT ist, nicht was sichtbar ist.
+      Kommt spaeter eine Kategorie im Code dazu, ist sie damit von
+      selbst sichtbar, auch wenn schon eine aeltere Auswahl gespeichert
+      ist. Die gespeicherte Liste ist nie abschliessend.
+   4. Unbekannte Namen im Speicher werden still verworfen, ein
+      kaputter Eintrag faellt still auf die Vorgabe zurueck. Ein Fehler
+      an dieser Stelle darf die App nicht aufhalten.
+   5. Zwei Stellen halten sich ausdruecklich NICHT daran, und das ist
+      so gewollt:
+        - die XP-Berechnung (xpAusBestand) zaehlt weiter alle
+          bewerteten Eintraege — gesehen ist gesehen;
+        - Export und Backup enthalten weiter alles — sie sind die
+          Sicherung, da darf nichts fehlen.
+   ============================================================ */
+const KATEGORIE_ANSICHT_SCHLUESSEL = "bewertungsapp.kategorieAnsicht";
+
+/**
+ * Ein gespeicherter Stand -> eine brauchbare Ansicht.
+ *
+ * Zurueck kommt immer `{ reihenfolge, versteckt }` mit genau den
+ * Kategorien, die es im Code gibt: die gespeicherte Reihenfolge
+ * zuerst, alles Uebrige (neu dazugekommene Kategorien) in der
+ * Code-Reihenfolge dahinter.
+ */
+function normalisiereKategorieAnsicht(roh) {
+  const bekannt = new Set(CATEGORY_KEYS);
+  const reihenfolge = [];
+
+  const gespeichert = Array.isArray(roh && roh.reihenfolge) ? roh.reihenfolge : [];
+  for (const key of gespeichert) {
+    if (bekannt.has(key) && !reihenfolge.includes(key)) reihenfolge.push(key);
+  }
+  /* Was der Speicher nicht kennt, haengt hinten an — genau das macht
+     eine neue Kategorie von selbst sichtbar (Regel 3). */
+  for (const key of CATEGORY_KEYS) {
+    if (!reihenfolge.includes(key)) reihenfolge.push(key);
+  }
+
+  const gemerkt = Array.isArray(roh && roh.versteckt) ? roh.versteckt : [];
+  const versteckt = reihenfolge.filter((key) => gemerkt.includes(key));
+
+  // Regel 2: waere nichts mehr uebrig, gilt die Vorgabe.
+  return { reihenfolge, versteckt: versteckt.length < reihenfolge.length ? versteckt : [] };
+}
+
+/** Die Vorgabe: alle Kategorien sichtbar, in der Code-Reihenfolge. */
+function standardKategorieAnsicht() {
+  return normalisiereKategorieAnsicht(null);
+}
+
+function ladeKategorieAnsicht() {
+  try {
+    const roh = window.localStorage.getItem(KATEGORIE_ANSICHT_SCHLUESSEL);
+    return normalisiereKategorieAnsicht(roh ? JSON.parse(roh) : null);
+  } catch (e) {
+    // Kein localStorage, kaputter Eintrag: still zurueck zur Vorgabe.
+    return standardKategorieAnsicht();
+  }
+}
+
+function speichereKategorieAnsicht(ansicht) {
+  try {
+    window.localStorage.setItem(
+      KATEGORIE_ANSICHT_SCHLUESSEL,
+      JSON.stringify(normalisiereKategorieAnsicht(ansicht))
+    );
+  } catch (e) {
+    // Ohne localStorage gilt die Einstellung nur fuer diesen Besuch.
+  }
+}
+
+/** Alle Kategorien in der eingestellten Reihenfolge — auch die versteckten. */
+function geordneteKategorien(ansicht) {
+  const rein = normalisiereKategorieAnsicht(ansicht);
+  return rein.reihenfolge.map((key) => CATEGORIES.find((c) => c.key === key));
+}
+
+/**
+ * Die eine zentrale Stelle: welche Kategorien angezeigt werden, in
+ * welcher Reihenfolge. Alles, was Kategorien auflistet, fragt hier.
+ */
+function sichtbareKategorien(ansicht) {
+  const rein = normalisiereKategorieAnsicht(ansicht);
+  const versteckt = new Set(rein.versteckt);
+  return rein.reihenfolge
+    .filter((key) => !versteckt.has(key))
+    .map((key) => CATEGORIES.find((c) => c.key === key));
+}
+
+function istVersteckt(ansicht, key) {
+  return normalisiereKategorieAnsicht(ansicht).versteckt.includes(key);
+}
+
+/** Eine Kategorie ein- oder ausschalten. Die letzte sichtbare bleibt. */
+function schalteKategorie(ansicht, key) {
+  const rein = normalisiereKategorieAnsicht(ansicht);
+  if (!rein.reihenfolge.includes(key)) return rein;
+  const versteckt = new Set(rein.versteckt);
+  if (versteckt.has(key)) versteckt.delete(key);
+  else if (rein.reihenfolge.length - versteckt.size > 1) versteckt.add(key);
+  else return rein; // Regel 2: die letzte sichtbare laesst sich nicht abwaehlen.
+  return normalisiereKategorieAnsicht({ reihenfolge: rein.reihenfolge, versteckt: [...versteckt] });
+}
+
+/**
+ * Eine Kategorie um einen Platz verschieben. `richtung` ist -1 (nach
+ * oben) oder 1 (nach unten); am Rand passiert nichts.
+ */
+function verschiebeKategorie(ansicht, key, richtung) {
+  const rein = normalisiereKategorieAnsicht(ansicht);
+  const von = rein.reihenfolge.indexOf(key);
+  const nach = von + richtung;
+  if (von < 0 || nach < 0 || nach >= rein.reihenfolge.length) return rein;
+  const reihenfolge = [...rein.reihenfolge];
+  reihenfolge[von] = reihenfolge[nach];
+  reihenfolge[nach] = key;
+  return normalisiereKategorieAnsicht({ reihenfolge, versteckt: rein.versteckt });
+}
+
+/* Die Ansicht steht allen Bausteinen zur Verfuegung, ohne sie durch
+   jede Ebene durchzureichen. `sichtbar` ist die fertige Liste — wer
+   Kategorien auflistet, nimmt useKategorien(). */
+const KategorieAnsichtContext = createContext(null);
+
+/** Die sichtbaren Kategorien, in der eingestellten Reihenfolge. */
+function useKategorien() {
+  const ctx = useContext(KategorieAnsichtContext);
+  return ctx ? ctx.sichtbar : CATEGORIES;
+}
 
 /* Akzentfarbe je Kategorie. Sie faerbt nur Bedienelemente —
    Notenfarben (scoreToColor) bleiben davon unberuehrt, weil sie die
@@ -4125,6 +4272,150 @@ function FilmSenkung({ plan, busy, ergebnis, onVorschau, onSenken, onAbbrechen }
   );
 }
 
+/* ------------------------------------------------------------
+   KATEGORIEN — was angezeigt wird und in welcher Reihenfolge
+
+   Der Abschnitt im Daten-Panel. Er aendert ausschliesslich die
+   Anzeige dieses Geraets: Es wird nichts geloescht und keine
+   Bewertung angefasst. Wer eine Kategorie wieder einschaltet, findet
+   ihre Eintraege unveraendert vor.
+
+   Verschoben wird mit zwei Pfeilen je Zeile statt per Ziehen. Auf dem
+   Handy ist das der treffsichere Weg, und die App kennt sonst keine
+   Ziehgesten — ein neues Bedienmuster nur fuer diese Liste waere
+   der teurere Weg zum selben Ergebnis.
+   ------------------------------------------------------------ */
+function KategorieSchalter({ an, gesperrt, label, onClick }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={an}
+      aria-label={label}
+      disabled={gesperrt}
+      onClick={onClick}
+      title={gesperrt ? "Mindestens eine Kategorie muss sichtbar bleiben." : undefined}
+      style={{
+        width: 26, height: 26, flexShrink: 0, borderRadius: 6,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: an ? "var(--accent, #C9A227)" : "transparent",
+        border: "1px solid " + (an ? "var(--accent, #C9A227)" : "#33333a"),
+        color: an ? "#17171A" : "#55524c",
+        fontSize: 15, lineHeight: 1, fontWeight: 700,
+        cursor: gesperrt ? "default" : "pointer",
+        opacity: gesperrt ? 0.5 : 1,
+      }}
+    >
+      {an ? "✓" : ""}
+    </button>
+  );
+}
+
+/* Pfeilknopf zum Verschieben. Am Rand der Liste ist er abgeblendet
+   und ohne Wirkung — verschwinden soll er nicht, sonst wandern die
+   Knoepfe der Nachbarzeilen. */
+function KategoriePfeil({ richtung, gesperrt, label, onClick }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={gesperrt}
+      onClick={onClick}
+      style={{
+        width: 34, height: 34, flexShrink: 0, borderRadius: 6,
+        background: "transparent", border: "1px solid #33333a",
+        color: gesperrt ? "#3a3a3f" : "#9A968C",
+        fontSize: 13, lineHeight: 1,
+        cursor: gesperrt ? "default" : "pointer",
+      }}
+    >
+      {richtung < 0 ? "▲" : "▼"}
+    </button>
+  );
+}
+
+function KategorieAnsichtEinstellung({ ansicht, onAendern }) {
+  const rein = normalisiereKategorieAnsicht(ansicht);
+  const versteckt = new Set(rein.versteckt);
+  const zeilen = geordneteKategorien(rein);
+  const sichtbar = zeilen.length - versteckt.size;
+
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: "#77746c", marginBottom: 12, lineHeight: 1.5 }}>
+        Welche Kategorien angezeigt werden und in welcher Reihenfolge. Die
+        Einstellung gilt nur auf diesem Gerät und ändert nichts an der
+        Sammlung: Ausgeblendete Einträge bleiben gespeichert und sind
+        wieder da, sobald die Kategorie zurückkommt. Export und Backup
+        enthalten weiterhin alles.
+      </div>
+
+      {zeilen.map((c, i) => {
+        const an = !versteckt.has(c.key);
+        const letzte = an && sichtbar <= 1;
+        return (
+          <div
+            key={c.key}
+            style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "8px 0", borderBottom: "1px solid #232326",
+            }}
+          >
+            <KategorieSchalter
+              an={an}
+              gesperrt={letzte}
+              label={c.label + (an ? " ausblenden" : " einblenden")}
+              onClick={() => onAendern(schalteKategorie(rein, c.key))}
+            />
+            <span
+              style={{
+                flex: 1, minWidth: 0, fontSize: 14,
+                color: an ? "#EDEAE3" : "#55524c",
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              }}
+            >
+              {c.label}
+            </span>
+            <KategoriePfeil
+              richtung={-1}
+              gesperrt={i === 0}
+              label={c.label + " nach oben"}
+              onClick={() => onAendern(verschiebeKategorie(rein, c.key, -1))}
+            />
+            <KategoriePfeil
+              richtung={1}
+              gesperrt={i === zeilen.length - 1}
+              label={c.label + " nach unten"}
+              onClick={() => onAendern(verschiebeKategorie(rein, c.key, 1))}
+            />
+          </div>
+        );
+      })}
+
+      <div style={{ fontSize: 11, color: "#77746c", marginTop: 10, lineHeight: 1.5 }}>
+        {sichtbar <= 1
+          ? "Mindestens eine Kategorie muss sichtbar bleiben — die letzte lässt sich deshalb nicht abwählen."
+          : sichtbar + " von " + zeilen.length + " Kategorien sichtbar."}
+      </div>
+
+      {rein.versteckt.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onAendern({ reihenfolge: rein.reihenfolge, versteckt: [] })}
+          style={{
+            width: "100%", marginTop: 12, padding: "10px", borderRadius: 8, fontSize: 13,
+            background: "transparent", color: "var(--accent, #C9A227)",
+            border: "1px solid var(--accent, #C9A227)", cursor: "pointer", fontWeight: 600,
+          }}
+        >
+          Alle wieder einblenden
+        </button>
+      )}
+    </div>
+  );
+}
+
 /**
  * Ein Bereich, der beim Oeffnen hereingleitet und beim Schliessen
  * hinaus. Damit die Aus-Bewegung ueberhaupt zu sehen ist, bleibt der
@@ -5738,10 +6029,23 @@ function speichereFortsetzungen(eintrag) {
   }
 }
 
-function fortsetzungenFrisch(eintrag) {
+/**
+ * Ist der gespeicherte Stand noch brauchbar?
+ *
+ * Neben der Frist zaehlt, welche Kategorien beim letzten Durchgang
+ * ueberhaupt gefragt wurden: Wer eine ausgeblendete Kategorie wieder
+ * einschaltet, soll ihre Hinweise nicht erst eine Woche spaeter
+ * bekommen. Aeltere Staende ohne dieses Feld stammen aus der Zeit, in
+ * der immer alles gefragt wurde — sie gelten als vollstaendig.
+ */
+function fortsetzungenFrisch(eintrag, sichtbar = CATEGORY_KEYS) {
   if (!eintrag || eintrag.fassung !== FORTSETZUNGS_FASSUNG) return false;
   const frist = eintrag.fehler ? FORTSETZUNGS_TTL_FEHLER_MS : FORTSETZUNGS_TTL_MS;
-  return Date.now() - eintrag.zeit < frist;
+  if (Date.now() - eintrag.zeit >= frist) return false;
+  const abgedeckt = Array.isArray(eintrag.kategorien) ? eintrag.kategorien : FORTSETZUNGS_KATEGORIEN;
+  return FORTSETZUNGS_KATEGORIEN.filter((k) => sichtbar.includes(k)).every((k) =>
+    abgedeckt.includes(k)
+  );
 }
 
 /**
@@ -5763,11 +6067,14 @@ function erfassteStaffeln(entry) {
  * Die Anfrage an den Endpunkt: alle bewerteten Serien, dazu die
  * Kennungen aus dem letzten Durchgang.
  */
-function fortsetzungsAnfrage(items, alt) {
+function fortsetzungsAnfrage(items, alt, sichtbar = CATEGORY_KEYS) {
   const bekannt = (alt && alt.stand) || {};
   const raus = [];
 
-  for (const key of FORTSETZUNGS_KATEGORIEN) {
+  /* Ausgeblendete Kategorien bleiben aussen vor: Ihr Hinweis waere
+     nirgends zu sehen, und der Abgleich kostet je Serie einen
+     externen Aufruf. */
+  for (const key of FORTSETZUNGS_KATEGORIEN.filter((k) => sichtbar.includes(k))) {
     for (const eintrag of items[key] || []) {
       if (istVorgemerkt(eintrag)) continue;
       const frueher = bekannt[eintrag.id];
@@ -6840,7 +7147,11 @@ function statsFor(list) {
   return { count, avg, max, min };
 }
 
-const STATS_SCOPES = [{ key: "all", label: "Alle" }, ...CATEGORIES.map((c) => ({ key: c.key, label: c.label }))];
+/* Die Bereichsauswahl ueber der Statistik: "Alle" und dahinter die
+   sichtbaren Kategorien in ihrer Reihenfolge. */
+function statsBereiche(kategorien) {
+  return [{ key: "all", label: "Alle" }, ...kategorien.map((c) => ({ key: c.key, label: c.label }))];
+}
 
 /* Eine Zeile der Rangliste — dasselbe Format wie ueberall:
    Rang, Poster, Titel, Endnote. */
@@ -6869,6 +7180,7 @@ function RanglistenZeile({ platz, eintrag }) {
    sortiert wird wie in jeder Rangliste nach der Endnote.
    ------------------------------------------------------------ */
 function TopTen({ ranked }) {
+  const kategorien = useKategorien();
   const [gewaehlt, setGewaehlt] = useState(() => new Set(CATEGORY_KEYS));
 
   function umschalten(key) {
@@ -6880,22 +7192,24 @@ function TopTen({ ranked }) {
     });
   }
 
-  const auswahl = CATEGORIES.filter((c) => gewaehlt.has(c.key));
+  /* Die Auswahl kann Kategorien enthalten, die inzwischen
+     ausgeblendet sind — gezaehlt wird nur, was auch angezeigt wird. */
+  const auswahl = kategorien.filter((c) => gewaehlt.has(c.key));
 
   const { liste, gesamt } = useMemo(() => {
-    const alle = CATEGORY_KEYS.filter((k) => gewaehlt.has(k)).flatMap((k) => ranked[k]);
+    const alle = kategorien.filter((c) => gewaehlt.has(c.key)).flatMap((c) => ranked[c.key]);
     return {
       liste: [...alle].sort((a, b) => sortWert(b.score) - sortWert(a.score)).slice(0, 10),
       gesamt: alle.length,
     };
-  }, [ranked, gewaehlt]);
+  }, [ranked, gewaehlt, kategorien]);
 
   return (
     <div style={{ marginBottom: 28 }}>
       <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>Top 10</h3>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        {CATEGORIES.map((c) => {
+        {kategorien.map((c) => {
           const aktiv = gewaehlt.has(c.key);
           const farbe = accentFor(c.key);
           return (
@@ -6951,9 +7265,9 @@ function TopTen({ ranked }) {
    Erreicht kein Titel die Schwelle, gibt es den Abschnitt nicht: eine
    leere Liste mit Ueberschrift waere ein Hinweis auf nichts.
    ------------------------------------------------------------ */
-function auffaelligeTitel(ranked) {
+function auffaelligeTitel(ranked, kategorien = CATEGORIES) {
   const gesammelt = [];
-  for (const c of CATEGORIES) {
+  for (const c of kategorien) {
     for (const eintrag of ranked[c.key] || []) {
       if (!entryAuffaellig(eintrag)) continue;
       gesammelt.push({
@@ -6968,7 +7282,8 @@ function auffaelligeTitel(ranked) {
 }
 
 function BewertungPruefen({ ranked, onOeffnen }) {
-  const liste = useMemo(() => auffaelligeTitel(ranked), [ranked]);
+  const kategorien = useKategorien();
+  const liste = useMemo(() => auffaelligeTitel(ranked, kategorien), [ranked, kategorien]);
   if (!liste.length) return null;
 
   return (
@@ -7038,7 +7353,12 @@ function BewertungPruefen({ ranked, onOeffnen }) {
    Watchlist statt den Noten. Spiele stehen mit in der Auswahl und
    erklaeren beim Anklicken, warum es fuer sie keine Zahl gibt.
    ------------------------------------------------------------ */
-const ZEITAUFWAND_KATEGORIEN = CATEGORIES.filter((c) => unterstuetztLaufzeit(c.key));
+/* Welche der angezeigten Kategorien ueberhaupt eine Laufzeit haben.
+   Spiele fallen hier heraus — sie stehen zwar in der Auswahl, bringen
+   aber keine Zahl mit. */
+function zeitaufwandKategorien(kategorien) {
+  return kategorien.filter((c) => unterstuetztLaufzeit(c.key));
+}
 
 /* Knopf der Bereichsauswahl. Baugleich zu den Knoepfen der
    Detailauswertung — dort steht das Markup weiterhin an Ort und
@@ -7062,10 +7382,15 @@ function ZeitaufwandBereich({ label, aktiv, onClick }) {
 }
 
 function ZeitaufwandWatchlist({ watchlist }) {
+  const kategorien = useKategorien();
+  const bereiche = statsBereiche(kategorien);
   const [scope, setScope] = useState("all");
+  /* Wird die gewaehlte Kategorie ausgeblendet, faellt der Abschnitt
+     auf "Alle" zurueck statt auf einen Bereich, den es nicht gibt. */
+  const bereich = bereiche.some((b) => b.key === scope) ? scope : "all";
 
   const daten = useMemo(() => {
-    const jeKategorie = ZEITAUFWAND_KATEGORIEN.map((cat) => {
+    const jeKategorie = zeitaufwandKategorien(kategorien).map((cat) => {
       let minuten = 0;
       let gezaehlt = 0;
       let offen = 0;
@@ -7091,13 +7416,13 @@ function ZeitaufwandWatchlist({ watchlist }) {
     );
 
     return { jeKategorie, gesamt };
-  }, [watchlist]);
+  }, [watchlist, kategorien]);
 
   /* Spiele haben keine Laufzeit und deshalb auch keine Zahlen — die
      Auswahl fuehrt sie trotzdem, damit die Frage "und meine Spiele?"
      eine Antwort bekommt statt einfach zu fehlen. */
   const gewaehlt =
-    scope === "all" ? daten.gesamt : daten.jeKategorie.find((k) => k.key === scope) || null;
+    bereich === "all" ? daten.gesamt : daten.jeKategorie.find((k) => k.key === bereich) || null;
 
   const inTagen = gewaehlt ? tageText(gewaehlt.minuten) : null;
 
@@ -7108,7 +7433,7 @@ function ZeitaufwandWatchlist({ watchlist }) {
   const nebenzeile = [];
   if (gewaehlt && gewaehlt.gezaehlt > 0) {
     if (inTagen) nebenzeile.push("das sind " + inTagen);
-    if (scope === "all") {
+    if (bereich === "all") {
       for (const k of daten.jeKategorie) nebenzeile.push(k.label + ": " + stundenKurz(k.minuten));
     }
   }
@@ -7120,11 +7445,11 @@ function ZeitaufwandWatchlist({ watchlist }) {
       </h2>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {STATS_SCOPES.map((s) => (
+        {bereiche.map((s) => (
           <ZeitaufwandBereich
             key={s.key}
             label={s.label}
-            aktiv={scope === s.key}
+            aktiv={bereich === s.key}
             onClick={() => setScope(s.key)}
           />
         ))}
@@ -7136,7 +7461,7 @@ function ZeitaufwandWatchlist({ watchlist }) {
         </div>
       ) : gewaehlt.gezaehlt === 0 && gewaehlt.offen === 0 ? (
         <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
-          {scope === "all"
+          {bereich === "all"
             ? "Nichts vorgemerkt — Spiele zählen hier nicht mit."
             : "Keine " + gewaehlt.label + " vorgemerkt."}
         </div>
@@ -7202,13 +7527,14 @@ function jahrDerBewertung(entry) {
 }
 
 function Jahresrueckblick({ ranked }) {
+  const kategorien = useKategorien();
   const [gewaehlt, setGewaehlt] = useState(() => new Date().getFullYear());
 
   const daten = useMemo(() => {
     const nachJahr = new Map();
     let ohneDatum = 0;
 
-    for (const cat of CATEGORIES) {
+    for (const cat of kategorien) {
       for (const eintrag of ranked[cat.key] || []) {
         const jahr = jahrDerBewertung(eintrag);
         if (!jahr) {
@@ -7225,7 +7551,7 @@ function Jahresrueckblick({ ranked }) {
       ohneDatum,
       jahre: [...nachJahr.keys()].sort((a, b) => b - a),
     };
-  }, [ranked]);
+  }, [ranked, kategorien]);
 
   /* Das laufende Jahr, solange darin etwas steht — sonst das neueste
      Jahr, zu dem es ueberhaupt etwas zu zeigen gibt. */
@@ -7235,7 +7561,7 @@ function Jahresrueckblick({ ranked }) {
     const liste = (jahr && daten.nachJahr.get(jahr)) || [];
     if (!liste.length) return null;
 
-    const zaehler = Object.fromEntries(CATEGORY_KEYS.map((k) => [k, 0]));
+    const zaehler = Object.fromEntries(kategorien.map((c) => [c.key, 0]));
     const genres = new Map();
     let bester = null;
     let minuten = 0;
@@ -7262,7 +7588,7 @@ function Jahresrueckblick({ ranked }) {
       }
     }
 
-    const staerksteKategorie = CATEGORIES.map((c) => ({ label: c.label, anzahl: zaehler[c.key] }))
+    const staerksteKategorie = kategorien.map((c) => ({ label: c.label, anzahl: zaehler[c.key] }))
       .filter((k) => k.anzahl > 0)
       .sort((a, b) => b.anzahl - a.anzahl)[0] || null;
 
@@ -7279,7 +7605,7 @@ function Jahresrueckblick({ ranked }) {
       minuten,
       ohneLaufzeit,
     };
-  }, [jahr, daten]);
+  }, [jahr, daten, kategorien]);
 
   if (!daten.jahre.length) {
     return (
@@ -7317,7 +7643,7 @@ function Jahresrueckblick({ ranked }) {
       {rueckblick && (
         <>
           <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-            {CATEGORIES.filter((c) => rueckblick.zaehler[c.key] > 0).map((c) => (
+            {kategorien.filter((c) => rueckblick.zaehler[c.key] > 0).map((c) => (
               <StatCard
                 key={c.key}
                 label={c.label.toUpperCase()}
@@ -7434,21 +7760,26 @@ function RueckblickZeile({ label, wert, zusatz, zusatzFarbe, letzte }) {
 }
 
 function StatsPage({ ranked, watchlist, onOeffnen }) {
+  const kategorien = useKategorien();
+  const bereiche = statsBereiche(kategorien);
   const [scope, setScope] = useState("all");
+  /* Wird die gewaehlte Kategorie ausgeblendet, gilt wieder "Alle" —
+     sonst stuende die Detailauswertung vor einem leeren Bereich. */
+  const bereich = bereiche.some((b) => b.key === scope) ? scope : "all";
 
   const overall = useMemo(() => {
-    const all = CATEGORY_KEYS.flatMap((k) => ranked[k]);
+    const all = kategorien.flatMap((c) => ranked[c.key]);
     return {
-      counts: Object.fromEntries(CATEGORY_KEYS.map((k) => [k, ranked[k].length])),
+      counts: Object.fromEntries(kategorien.map((c) => [c.key, ranked[c.key].length])),
       countTotal: all.length,
       ...statsFor(all),
     };
-  }, [ranked]);
+  }, [ranked, kategorien]);
 
   const scopedList = useMemo(() => {
-    if (scope === "all") return CATEGORY_KEYS.flatMap((k) => ranked[k]);
-    return ranked[scope];
-  }, [ranked, scope]);
+    if (bereich === "all") return kategorien.flatMap((c) => ranked[c.key]);
+    return ranked[bereich];
+  }, [ranked, bereich, kategorien]);
 
   const scopedStats = statsFor(scopedList);
 
@@ -7459,9 +7790,9 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
      einen Topf. */
   const criteriaGroups = useMemo(() => {
     const base =
-      scope === "all"
-        ? CATEGORIES.map((c) => ({ key: c.key, label: c.label, list: ranked[c.key] }))
-        : [{ key: scope, label: null, list: ranked[scope] }];
+      bereich === "all"
+        ? kategorien.map((c) => ({ key: c.key, label: c.label, list: ranked[c.key] }))
+        : [{ key: bereich, label: null, list: ranked[bereich] }];
 
     return base
       .filter((g) => g.list.length > 0)
@@ -7479,7 +7810,7 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
           return werte.length ? werte.reduce((a, b) => a + b, 0) / werte.length : 0;
         })(),
       }));
-  }, [ranked, scope]);
+  }, [ranked, bereich, kategorien]);
 
   const bands = DISTRIBUTION_BANDS.map((b) => ({
     ...b,
@@ -7496,7 +7827,7 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
       <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>Gesamtstatistik</h2>
       <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-        {CATEGORIES.map((c) => (
+        {kategorien.map((c) => (
           <StatCard key={c.key} label={c.label.toUpperCase()} value={overall.counts[c.key]} />
         ))}
         <StatCard label="GESAMT" value={overall.countTotal} />
@@ -7518,16 +7849,16 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
 
       <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>Detailauswertung</h2>
       <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
-        {STATS_SCOPES.map((s) => (
+        {bereiche.map((s) => (
           <button
             key={s.key}
             onClick={() => setScope(s.key)}
             style={{
               padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
-              background: scope === s.key ? "#C9A227" : "transparent",
-              color: scope === s.key ? "#17171A" : "#9A968C",
-              border: "1px solid " + (scope === s.key ? "#C9A227" : "#33333a"),
-              fontWeight: scope === s.key ? 700 : 400,
+              background: bereich === s.key ? "#C9A227" : "transparent",
+              color: bereich === s.key ? "#17171A" : "#9A968C",
+              border: "1px solid " + (bereich === s.key ? "#C9A227" : "#33333a"),
+              fontWeight: bereich === s.key ? 700 : 400,
             }}
           >
             {s.label}
@@ -7570,7 +7901,7 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
           </div>
 
           <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 14px" }}>Ø je Kriterium</h3>
-          {scope === "all" && (
+          {bereich === "all" && (
             <div style={{ fontSize: 12, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
               Getrennt nach Kategorie — die Kriterien unterscheiden sich je Kategorie
               und werden deshalb nicht zusammengerechnet.
@@ -7805,9 +8136,9 @@ function DuellKarte({ eintrag, zustand, onClick }) {
  * Die Reihenfolge bleibt die der Rangliste; das Fenster der
  * Head-to-Head-Paarung misst allerdings die Endnote, nicht den Rang.
  */
-function duellTeilnehmer(ranked) {
+function duellTeilnehmer(ranked, kategorien = CATEGORIES) {
   const result = {};
-  for (const c of CATEGORIES) {
+  for (const c of kategorien) {
     /* Jeder Eintrag tritt hoechstens einmal an. Stuende derselbe
        zweimal in der Liste, koennte er im Duell gegen sich selbst
        antreten und im Turnierbaum zweimal auftauchen. Die Sperre sitzt
@@ -7967,7 +8298,13 @@ function AuswahlLeiste({
 }
 
 function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
-  const [kategorie, setKategorie] = useState(null);
+  const kategorien = useKategorien();
+  const [kategorieWahl, setKategorie] = useState(null);
+  /* Eine ausgeblendete Kategorie gilt als nicht gewaehlt: dann steht
+     wieder die Auswahl da statt einer leeren Seite. Der gemerkte Wert
+     bleibt stehen — wird sie wieder eingeschaltet, geht es dort
+     weiter, wo aufgehoert wurde. */
+  const kategorie = kategorien.some((c) => c.key === kategorieWahl) ? kategorieWahl : null;
   const [paar, setPaar] = useState(null);
   // ID des gewaehlten Titels — solange sie steht, laeuft die Rueckmeldung.
   const [gewaehlt, setGewaehlt] = useState(null);
@@ -7997,7 +8334,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
      Feldes darf jeder gegen jeden. Bei "Alle" bleibt das Fenster. */
   const ohneFenster = feld !== null;
 
-  const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
+  const teilnehmer = useMemo(() => duellTeilnehmer(ranked, kategorien), [ranked, kategorien]);
 
   /* Die Rangliste der laufenden Kategorie, immer aktuell. Aus ihr
      kommt der Platz vor und nach dem Duell. */
@@ -8249,7 +8586,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {CATEGORIES.map((c) => {
+          {kategorien.map((c) => {
             const anzahl = teilnehmer[c.key].length;
             const moeglich = anzahl >= MIN_DUELL_TEILNEHMER;
             const gespielt = duellZahlen[c.key] || 0;
@@ -8747,12 +9084,18 @@ function TurnierBracket({ baum, ort, akzent }) {
 }
 
 function Turnier({ ranked, onDuell, fehler, onZurueck }) {
-  const [kategorie, setKategorie] = useState(null);
+  const kategorien = useKategorien();
+  const [kategorieWahl, setKategorie] = useState(null);
+  /* Eine ausgeblendete Kategorie gilt als nicht gewaehlt: dann steht
+     wieder die Auswahl da statt einer leeren Seite. Der gemerkte Wert
+     bleibt stehen — wird sie wieder eingeschaltet, geht es dort
+     weiter, wo aufgehoert wurde. */
+  const kategorie = kategorien.some((c) => c.key === kategorieWahl) ? kategorieWahl : null;
   const [baum, setBaum] = useState(null);
   // ID des gewaehlten Titels — solange sie steht, laeuft die Rueckmeldung.
   const [gewaehlt, setGewaehlt] = useState(null);
 
-  const teilnehmer = useMemo(() => duellTeilnehmer(ranked), [ranked]);
+  const teilnehmer = useMemo(() => duellTeilnehmer(ranked, kategorien), [ranked, kategorien]);
 
   /* Dieselbe Wahl darf nur einmal weiterruecken. Der Verweis
      entscheidet das ohne Umweg ueber den naechsten Aufbau: ein Tippen
@@ -8832,7 +9175,7 @@ function Turnier({ ranked, onDuell, fehler, onZurueck }) {
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {CATEGORIES.map((c) => {
+          {kategorien.map((c) => {
             const anzahl = teilnehmer[c.key].length;
             const moeglich = anzahl >= TURNIER_MIN_TEILNEHMER;
             return (
@@ -9074,10 +9417,12 @@ const HOL_SPIEL = "higher-or-lower";
 
 /* Gemischt ueber alle Kategorien oder eine einzelne. Jede Spielart
    fuehrt ihren eigenen Bestwert. */
-const HOL_MODI = [
-  { key: "mixed", label: "Gemischt" },
-  ...CATEGORIES.map((c) => ({ key: c.key, label: c.label })),
-];
+function holModi(kategorien) {
+  return [
+    { key: "mixed", label: "Gemischt" },
+    ...kategorien.map((c) => ({ key: c.key, label: c.label })),
+  ];
+}
 
 /* Unter zwei bewerteten Titeln gibt es nichts zu vergleichen. */
 const HOL_MIN_TITEL = 2;
@@ -9155,7 +9500,12 @@ function HoLKarte({ eintrag, verdeckt, rahmen }) {
 }
 
 function HigherOrLower({ ranked, onZurueck }) {
-  const [modus, setModus] = useState(null);
+  const kategorien = useKategorien();
+  const modi = holModi(kategorien);
+  const [modusWahl, setModus] = useState(null);
+  /* Eine ausgeblendete Spielart gilt als nicht gewaehlt: dann steht
+     wieder die Auswahl da statt einer leeren Runde. */
+  const modus = modi.some((m) => m.key === modusWahl) ? modusWahl : null;
   const [bestwerte, setBestwerte] = useState({});
   const [fehler, setFehler] = useState("");
 
@@ -9187,10 +9537,10 @@ function HigherOrLower({ ranked, onZurueck }) {
   const titelJeModus = useMemo(() => {
     const bewertet = (k) => (ranked[k] || []).filter((f) => typeof f.score === "number");
     const result = {};
-    for (const c of CATEGORIES) result[c.key] = bewertet(c.key);
-    result.mixed = CATEGORY_KEYS.flatMap((k) => result[k]);
+    for (const c of kategorien) result[c.key] = bewertet(c.key);
+    result.mixed = kategorien.flatMap((c) => result[c.key]);
     return result;
-  }, [ranked]);
+  }, [ranked, kategorien]);
 
   const liste = modus ? titelJeModus[modus] : [];
   const listeRef = useRef(liste);
@@ -9292,7 +9642,7 @@ function HigherOrLower({ ranked, onZurueck }) {
         )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {HOL_MODI.map((m) => {
+          {modi.map((m) => {
             const anzahl = (titelJeModus[m.key] || []).length;
             const moeglich = anzahl >= HOL_MIN_TITEL;
             const best = bestwerte[m.key] || 0;
@@ -9341,7 +9691,7 @@ function HigherOrLower({ ranked, onZurueck }) {
   }
 
   // ---- Spiel ----
-  const modusInfo = HOL_MODI.find((m) => m.key === modus);
+  const modusInfo = modi.find((m) => m.key === modus);
   const best = bestwerte[modus] || 0;
   const aufgedeckt = phase !== "raten";
   const rahmenUnten = phase === "richtig" ? TREFFER_GRUEN : phase === "ende" ? "#d9736a" : undefined;
@@ -9615,7 +9965,11 @@ function RadFenster({ eintrag, hervorgehoben }) {
 }
 
 function WasSchauIch({ watchlist, onBewerten, onZurueck }) {
-  const [kategorie, setKategorie] = useState(null);
+  const kategorien = useKategorien();
+  const [kategorieWahl, setKategorie] = useState(null);
+  /* Eine ausgeblendete Kategorie gilt als nicht gewaehlt: dann steht
+     wieder die Auswahl da statt einer leeren Seite. */
+  const kategorie = kategorien.some((c) => c.key === kategorieWahl) ? kategorieWahl : null;
   // bereit | dreht | ergebnis
   const [phase, setPhase] = useState("bereit");
   const [lauf, setLauf] = useState(null);
@@ -9674,7 +10028,7 @@ function WasSchauIch({ watchlist, onBewerten, onZurueck }) {
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {CATEGORIES.map((c) => {
+          {kategorien.map((c) => {
             const anzahl = (watchlist[c.key] || []).length;
             const moeglich = anzahl > 0;
             return (
@@ -9865,6 +10219,10 @@ const XP_PRO_BEWERTUNG = 10;
  * Durchlaeufe, keine Eintraege. Welche Kategorien es gibt, steht in
  * CATEGORIES — kommt spaeter eine dazu, zaehlt sie hier von selbst mit.
  */
+/* Bewusst ueber ALLE Kategorien, auch ueber ausgeblendete: Gesehen ist
+   gesehen. Der Punktestand kann dadurch hoeher stehen, als die
+   sichtbaren Eintraege erklaeren — das ist so gewollt und kein Fehler
+   (siehe Kategorie-Ansicht, Regel 5). */
 function xpAusBestand(items) {
   let bewertet = 0;
   for (const k of CATEGORY_KEYS) {
@@ -10273,6 +10631,26 @@ export default function App() {
   const [filmSenkungPlan, setFilmSenkungPlan] = useState(null);
   const [filmSenkungErgebnis, setFilmSenkungErgebnis] = useState("");
 
+  /* Welche Kategorien dieses Geraet zeigt und in welcher Reihenfolge.
+     Reine Anzeige-Einstellung aus dem localStorage — an der Sammlung
+     aendert sie nichts (siehe Kategorie-Ansicht ganz oben). */
+  const [kategorieAnsicht, setKategorieAnsicht] = useState(() => ladeKategorieAnsicht());
+  const sichtbareKats = useMemo(() => sichtbareKategorien(kategorieAnsicht), [kategorieAnsicht]);
+  const sichtbareKeys = useMemo(() => sichtbareKats.map((c) => c.key), [sichtbareKats]);
+
+  /* Jede Aenderung geht durch diese eine Stelle: normalisieren,
+     speichern, anzeigen. */
+  function aendereKategorieAnsicht(naechste) {
+    const rein = normalisiereKategorieAnsicht(naechste);
+    speichereKategorieAnsicht(rein);
+    setKategorieAnsicht(rein);
+  }
+
+  const kategorieAnsichtWert = useMemo(
+    () => ({ ansicht: kategorieAnsicht, sichtbar: sichtbareKats }),
+    [kategorieAnsicht, sichtbareKats]
+  );
+
   const [showExport, setShowExport] = useState(false);
   /* Der Bilder-Abschnitt im Daten-Panel startet bei jedem Oeffnen
      zugeklappt — gemerkt wird der Zustand bewusst nicht. */
@@ -10319,6 +10697,20 @@ export default function App() {
        Sortierung bleiben wie bisher stehen. */
     setFilterState((f) => ({ ...f, genre: "", jahrzehnt: "", regie: "", reihe: "" }));
   }
+
+  /* Die offene Kategorie wurde ausgeblendet: auf die erste sichtbare
+     wechseln. Ohne diesen Schritt stuende die App vor einem Reiter,
+     den es nicht mehr gibt. */
+  useEffect(() => {
+    if (sichtbareKeys.includes(category)) return;
+    const ziel = sichtbareKeys[0];
+    if (!ziel) return;
+    const vorher = activeTab;
+    waehleKategorie(ziel, 0);
+    /* Stand oben die Statistik oder die Minispiele, bleibt das so —
+       gewechselt wird dann nur die Kategorie darunter. */
+    if (vorher === "stats" || vorher === "minigames") setActiveTab(vorher);
+  }, [sichtbareKeys, category, activeTab]);
 
   useEffect(() => {
     const leiste = tabLeisteRef.current;
@@ -10795,7 +11187,7 @@ export default function App() {
 
   /* Im Statistik-Tab zaehlt die Kopfzeile alle Kategorien zusammen,
      nicht die zuletzt gewaehlte. */
-  const gesamtAnzahl = CATEGORY_KEYS.reduce((s, k) => s + rankedByCategory[k].length, 0);
+  const gesamtAnzahl = sichtbareKeys.reduce((s, k) => s + rankedByCategory[k].length, 0);
 
   /* ---- Poster-Hintergrund im Kopfbereich ----
      Die Mischung entsteht neu, wenn die Kategorie wechselt — und
@@ -10886,9 +11278,9 @@ export default function App() {
     fortsetzungenGeprueft.current = true;
 
     const alt = ladeFortsetzungen();
-    if (fortsetzungenFrisch(alt)) return;
+    if (fortsetzungenFrisch(alt, sichtbareKeys)) return;
 
-    const anfrage = fortsetzungsAnfrage(items, alt);
+    const anfrage = fortsetzungsAnfrage(items, alt, sichtbareKeys);
     if (!anfrage.length) return;
 
     let abgebrochen = false;
@@ -10910,7 +11302,12 @@ export default function App() {
       }
 
       if (abgebrochen) return;
-      const eintrag = { zeit: Date.now(), fassung: FORTSETZUNGS_FASSUNG, stand };
+      const eintrag = {
+        zeit: Date.now(),
+        fassung: FORTSETZUNGS_FASSUNG,
+        stand,
+        kategorien: FORTSETZUNGS_KATEGORIEN.filter((k) => sichtbareKeys.includes(k)),
+      };
       speichereFortsetzungen(eintrag);
       setFortsetzungen(eintrag);
     })().catch(() => {
@@ -10918,7 +11315,13 @@ export default function App() {
       /* Gescheitert — der Stand wird trotzdem vermerkt, damit es nicht
          bei jedem Neuladen der Seite erneut versucht wird. Er haelt nur
          einen Tag statt einer Woche. */
-      const eintrag = { zeit: Date.now(), fassung: FORTSETZUNGS_FASSUNG, stand: {}, fehler: true };
+      const eintrag = {
+        zeit: Date.now(),
+        fassung: FORTSETZUNGS_FASSUNG,
+        stand: {},
+        fehler: true,
+        kategorien: FORTSETZUNGS_KATEGORIEN.filter((k) => sichtbareKeys.includes(k)),
+      };
       speichereFortsetzungen(eintrag);
       setFortsetzungen(eintrag);
     });
@@ -12031,10 +12434,10 @@ export default function App() {
 
     // Nach links gewischt heisst: eine Kategorie weiter nach rechts.
     const richtung = dx < 0 ? 1 : -1;
-    const jetzt = CATEGORY_KEYS.indexOf(category);
+    const jetzt = sichtbareKeys.indexOf(category);
     const ziel = jetzt + richtung;
-    if (jetzt < 0 || ziel < 0 || ziel >= CATEGORY_KEYS.length) return;
-    waehleKategorie(CATEGORY_KEYS[ziel], richtung);
+    if (jetzt < 0 || ziel < 0 || ziel >= sichtbareKeys.length) return;
+    waehleKategorie(sichtbareKeys[ziel], richtung);
   }
 
   return (
@@ -12044,6 +12447,7 @@ export default function App() {
        "clip" und nicht "hidden": es macht die Seite nicht zum
        Rollbereich und laesst die Detailseite (position: fixed)
        unberuehrt. */
+    <KategorieAnsichtContext.Provider value={kategorieAnsichtWert}>
     <div style={{ "--accent": accent, minHeight: "100vh", background: "#17171A", color: "#EDEAE3", fontFamily: "'Inter', system-ui, sans-serif", padding: "0 0 60px 0", overflowX: "clip" }}>
       <style>{`
         /* ----------------------------------------------------------
@@ -12697,7 +13101,7 @@ export default function App() {
 
           {/* Tabs — seitlich wischbar, siehe .tab-leiste */}
           <div className="tab-leiste" ref={tabLeisteRef} style={{ marginBottom: 0 }}>
-            {CATEGORIES.map((c, i) => (
+            {sichtbareKats.map((c, i) => (
               <button
                 key={c.key}
                 data-tab={c.key}
@@ -12705,7 +13109,7 @@ export default function App() {
                 onClick={() => {
                   /* Richtung aus der Position in der Leiste: weiter
                      rechts heisst, der Inhalt kommt von rechts. */
-                  const jetzt = CATEGORY_KEYS.indexOf(category);
+                  const jetzt = sichtbareKeys.indexOf(category);
                   waehleKategorie(c.key, i === jetzt ? 0 : i > jetzt ? 1 : -1);
                 }}
                 className="tab-btn"
@@ -12729,6 +13133,19 @@ export default function App() {
           deshalb nicht mehr an eine Kategorie gebunden. */}
       <Seite offen={showExport}>
         <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 0" }}>
+          {/* Die Anzeige-Einstellung steht vorn: sie aendert nur, was
+              zu sehen ist, waehrend alles darunter an den Daten
+              arbeitet. */}
+          <div style={{ background: "#141416", border: "1px solid #2A2A2E", borderRadius: 8, padding: 16, marginBottom: 18 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
+              KATEGORIEN
+            </div>
+            <KategorieAnsichtEinstellung
+              ansicht={kategorieAnsicht}
+              onAendern={aendereKategorieAnsicht}
+            />
+          </div>
+
           <div style={{ background: "#141416", border: "1px solid var(--accent, #C9A227)", borderRadius: 8, padding: 16, marginBottom: 18 }}>
             <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
               EXPORT & BACKUP
@@ -13484,5 +13901,6 @@ export default function App() {
         />
       )}
     </div>
+    </KategorieAnsichtContext.Provider>
   );
 }
