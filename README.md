@@ -498,8 +498,6 @@ vercel dev          # startet Frontend + API zusammen
 | DELETE | `/api/duels?id=…` | Duell-Zuschlag eines Eintrags zurücksetzen — Elo zurück auf 1000; die gespielten und gewonnenen Duelle bleiben gezählt |
 | GET | `/api/highscores?game=…` | Bestwerte eines Minispiels, je Spielart |
 | POST | `/api/highscores` | Ergebnis eines Durchgangs melden (`{ game, mode, score }`) — gespeichert wird nur, was den Bestwert übertrifft |
-| GET | `/api/xp` | Aktivitäts-Punkte und schon vergebene Einmal-Boni |
-| POST | `/api/xp` | Eine Aktion melden (`{ source, count?, once? }`) — wie viel sie wert ist, entscheidet der Server |
 
 Alle Eingaben werden serverseitig validiert: Titel darf nicht leer sein,
 alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
@@ -1007,8 +1005,7 @@ Paarung muss eine Wahl getroffen werden, sonst käme niemand weiter.
 Jede Wahl löst **dieselbe Auswertung** aus wie ein freies Duell: Der
 Elo-Wert beider Titel verschiebt sich über die Formel oben und mit ihm
 ihr Zuschlag auf die Endnote, die Paarung wird für die Sperrfrist
-mitprotokolliert, der Duell-Zähler der Kategorie wächst, und es gibt
-die 2 XP fürs Duell. Die
+mitprotokolliert und der Duell-Zähler der Kategorie wächst. Die
 Auswertungen laufen nacheinander, damit zwei schnell hintereinander
 gewählte Paarungen sich nicht gegenseitig überschreiben.
 
@@ -1030,12 +1027,14 @@ steht dort der Titel.
 
 **Ende.** Nach dem Finale erscheint der Sieger-Bildschirm — Pokal,
 „TURNIERSIEGER", Poster und Titel —, darunter führt **Neues Turnier**
-zurück zur Größenwahl. Ein abgeschlossenes Turnier gibt **25 XP**.
+zurück zur Größenwahl.
 
-**Abbrechen** ist jederzeit möglich („← Turnier abbrechen"). Ein
-abgebrochenes Turnier zählt nicht als abgeschlossen und gibt **keine**
-Turnier-XP. Die bereits ausgespielten Paarungen behalten ihre Wirkung —
-sie waren richtige Duelle.
+**Abbrechen** ist jederzeit möglich („← Turnier abbrechen"). Die bereits
+ausgespielten Paarungen behalten ihre Wirkung — sie waren richtige
+Duelle.
+
+Auf den [Aktivitäts-Rang](#aktivitäts-rang) wirkt sich nichts davon aus:
+Minispiele geben keine XP.
 
 ### Higher or Lower
 
@@ -1143,44 +1142,45 @@ die Farbe kommt vom Umfeld, also von der Stufe. Der Pokal ist derselbe
 wie beim Turniersieger. Eine später ergänzte Stufe ohne hinterlegtes
 Zeichen trägt weiterhin das Schild.
 
-Gespeichert wird **nur die Gesamtzahl der Punkte**; die Stufe wird
-daraus abgeleitet und nirgends festgehalten. Eine spätere Änderung der
+Gespeichert wird **nichts davon** — weder die Punkte noch die Stufe.
+Beides wird bei jeder Anzeige neu gerechnet: die Punkte aus dem
+Bestand, die Stufe aus den Punkten. Eine spätere Änderung der
 Schwellen muss deshalb nichts umschreiben.
 
 ### Punkte
 
-| Aktion | XP |
+| Quelle | XP |
 |---|---|
-| Neue Bewertung abgegeben | 10 |
-| Vorgemerkter Eintrag wird bewertet | 15 |
-| Head-to-Head-Duell gespielt (auch je Turnier-Paarung) | 2 |
-| Turnier abgeschlossen | 25 |
-| Neuer persönlicher Bestwert bei Higher or Lower | 10 |
-| In **jeder** Kategorie mindestens ein Titel bewertet (einmalig) | 20 |
+| Je **bewertetem** Eintrag in der Sammlung | 10 |
 
-Wie viel eine Aktion wert ist, entscheidet ausschließlich der Server —
-das Frontend meldet nur, was passiert ist. Punkte werden nur addiert;
-es gibt keinen Weg, sie zu verringern oder zurückzusetzen.
+Das ist die einzige Quelle. Der Stand ist keine mitgeführte Summe,
+sondern eine Rechnung auf dem aktuellen Bestand:
 
-Der Kategorie-Bonus zählt die Kategorien **dynamisch** aus der
-Kategorienliste: kommt später eine neue dazu, gehört sie automatisch
-dazu. Einmalige Boni sind serverseitig gesichert — ihr Schlüssel wird
-mit derselben Anweisung eingetragen, mit der die Punkte gutgeschrieben
-werden, sodass auch zwei gleichzeitige Meldungen nur einmal zählen.
+```
+XP = 10 × Anzahl der bewerteten Einträge (alle Kategorien zusammen)
+```
 
-Nach jeder Gutschrift blendet sich kurz „+10 XP" ein, in der Farbe des
-aktuellen Rangs.
+Steigen kann also nur, wer wirklich schaut und bewertet. Und weil
+gerechnet und nicht gezählt wird, nimmt ein **entfernter Titel seine
+Punkte von selbst wieder mit** — dafür braucht es keine Abzugslogik
+und keine Zuordnung „XP ↔ Titel".
 
-**Turnier:** Die 25 XP gibt es für ein **abgeschlossenes** Turnier, also
-für ein entschiedenes Finale. Ein abgebrochenes Turnier bringt nichts.
-Die einzelnen Paarungen zählen davon unabhängig als Duelle und bringen
-je 2 XP — ein Turnier mit 8 Teilnehmern kommt so auf 7 × 2 + 25 XP.
+**Was nicht zählt:** Vorgemerktes (Watchlist bzw. Backlog) hat keine
+Note und zählt nicht. „Am Schauen" ist ein Kennzeichen *neben* der
+Bewertung und ändert nichts; der Sehzähler zählt Durchläufe, keine
+Einträge. Und die **Minispiele geben gar keine Punkte**: weder das
+Head-to-Head-Duell noch der Turnier-Modus, das Zufallsrad oder ein
+neuer Bestwert bei Higher or Lower. Sie bleiben ansonsten unverändert —
+Elo-Zuschlag auf die Endnoten, Bestwerte und Serien laufen weiter wie
+zuvor, nur eben ohne Wirkung auf den Rang.
 
-**Der Bestand:** Beim ersten Start nach Einführung der Punkte werden
-die bereits vorhandenen Bewertungen einmalig mit je 10 XP angerechnet.
-Das passiert genau einmal (Schlüssel `bestand`) und erst, wenn die
-Sammlung wirklich geladen ist — eine leer geladene Sammlung soll den
-Bonus nicht mit 0 verbrauchen.
+Kommt eine Bewertung dazu, blendet sich kurz „+10 XP" ein, in der Farbe
+des aktuellen Rangs. Fällt der Stand (ein Eintrag wurde entfernt), gibt
+es keine Einblendung.
+
+Solange die Sammlung noch lädt, steht anstelle des Chips ein gedimmter
+Platzhalter: Die Punkte kommen aus ihr, „0 XP" hieße also „Kupfer" und
+wäre schlicht falsch.
 
 ---
 
