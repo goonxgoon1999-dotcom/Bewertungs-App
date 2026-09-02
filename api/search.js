@@ -11,7 +11,9 @@
  * iTunes), Serien (auch Kinderserien und Adult Animation) -> TVMaze,
  * Anime -> Jikan, Spiele -> SteamGridDB.
  * Findet die erste Quelle nichts, springt bei Serien und Anime TMDB
- * ein. Die Suche laeuft serverseitig, damit die Schluessel auf dem
+ * ein. Dokus fragen TMDB in BEIDEN Bereichen (movie und tv), weil im
+ * Doku-Reiter Einzeldokus und Doku-Serien nebeneinander stehen.
+ * Die Suche laeuft serverseitig, damit die Schluessel auf dem
  * Server bleiben und es keine CORS-Probleme gibt.
  */
 
@@ -115,6 +117,24 @@ function mitTmdbTiteln(treffer, tmdbTreffer) {
     if (!beste || bester < MIN_ZUORDNUNG) return t;
     return { ...t, titel: eintrag(t.title, t.year, t.poster, ...beste.titel).titel };
   });
+}
+
+/**
+ * Zwei Trefferlisten abwechselnd zusammenlegen — erst der eine, dann
+ * der andere, und so fort.
+ *
+ * Fuer Dokus: Ein blosses Aneinanderhaengen wuerde die Serien
+ * verdraengen, sobald der Filmbereich schon acht Treffer liefert. So
+ * ist beides in der Auswahl zu sehen, und die Reihenfolge innerhalb
+ * einer Quelle bleibt, wie die Quelle sie geliefert hat.
+ */
+function abwechselnd(a, b) {
+  const raus = [];
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (i < a.length) raus.push(a[i]);
+    if (i < b.length) raus.push(b[i]);
+  }
+  return raus;
 }
 
 async function tvmazeSuche(title) {
@@ -228,6 +248,18 @@ export default async function handler(req, res) {
     } else if (category === "anime") {
       results = await jikanSuche(title);
       if (!results.length && hasTmdb) results = await tmdbSuche(title, "tv");
+    } else if (category === "doku") {
+      // Beide TMDB-Bereiche, abwechselnd zusammengelegt. Ohne
+      // Schluessel bleibt es wie bei Filmen bei iTunes.
+      if (hasTmdb) {
+        const [filme, serien] = await Promise.all([
+          tmdbSuche(title, "movie"),
+          tmdbSuche(title, "tv"),
+        ]);
+        results = abwechselnd(filme, serien);
+      } else {
+        results = await fromItunes(title);
+      }
     } else {
       results = hasTmdb ? await tmdbSuche(title, "movie") : await fromItunes(title);
     }

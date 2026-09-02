@@ -26,7 +26,9 @@
  * Quellen: Filme -> TMDB, dann iTunes. Serien -> TVMaze, dann TMDB,
  * dann iTunes. Anime -> Jikan, dann TMDB. Spiele -> SteamGridDB.
  * Kinderserien und Adult Animation laufen ueber dieselbe Kette wie
- * Serien — fuer die Quellen sind es Serien.
+ * Serien — fuer die Quellen sind es Serien. Dokus laufen ueber TMDB,
+ * dort aber ueber BEIDE Bereiche (movie und tv): im Doku-Reiter
+ * stehen Einzeldokus und Doku-Serien nebeneinander.
  *
  * TMDB braucht TMDB_API_KEY; fehlt der, wird TMDB übersprungen und
  * alles läuft über die freien Quellen wie zuvor. Spiele brauchen
@@ -940,7 +942,12 @@ function ersterWert(quellen, feld) {
  * Statistik nicht mit, statt mit einer erfundenen Zahl einzugehen.
  */
 async function ermittleLaufzeit(category, tmdbInfo, eigenTreffer, debugListe) {
-  if (category === "movie") {
+  /* Bei Dokus steht erst nach der Suche fest, was TMDB geliefert hat:
+     eine Filmlaufzeit gibt es nur beim Filmbereich (bei `tv` ist
+     `runtime` immer null, siehe tmdbAngaben). Steht sie da, ist es
+     eine Einzeldoku und wird wie ein Film gerechnet; sonst laeuft die
+     Doku-Serie unten ueber Episodenlaenge mal Episodenanzahl. */
+  if (category === "movie" || (category === "doku" && tmdbInfo && tmdbInfo.runtime)) {
     return { ...KEINE_LAUFZEIT, runtimeMinutes: (tmdbInfo && tmdbInfo.runtime) || null };
   }
 
@@ -979,8 +986,9 @@ function omdbKey() {
   return key && key.trim() ? key.trim() : null;
 }
 
-/* Welcher OMDb-Typ zu welcher Kategorie passt. Anime laeuft bewusst
-   ohne Vorgabe: es gibt Anime-Filme und Anime-Serien. Kinderserien und
+/* Welcher OMDb-Typ zu welcher Kategorie passt. Anime und Dokus laufen
+   bewusst ohne Vorgabe: es gibt Anime-Filme und Anime-Serien, und im
+   Doku-Reiter stehen Einzeldokus neben Doku-Serien. Kinderserien und
    Adult Animation sind dagegen immer Serien. */
 const OMDB_TYP = { movie: "movie", series: "series", kids: "series", adultanim: "series" };
 
@@ -1080,6 +1088,19 @@ export default async function handler(req, res) {
     chain = [() => fromTvmaze(title)];
     if (hasTmdb) chain.push(() => fromTmdb(title, "tv"));
     chain.push(() => fromItunes(title, "tv"));
+  } else if (category === "doku") {
+    /* Im Doku-Reiter stehen Einzeldokus und Doku-Serien nebeneinander
+       — die Suche muss deshalb BEIDE TMDB-Bereiche abdecken. Erst der
+       Filmbereich, dann der Serienbereich; die Kette bricht ohnehin
+       ab, sobald alles Gesuchte da ist, der zweite Schritt kostet also
+       nur dort einen Aufruf, wo der erste nichts fand. iTunes bleibt
+       wie bei Filmen das Netz darunter. */
+    chain = [];
+    if (hasTmdb) {
+      chain.push(() => fromTmdb(title, "movie"));
+      chain.push(() => fromTmdb(title, "tv"));
+    }
+    chain.push(() => fromItunes(title, "movie"));
   } else {
     // Filme laufen jetzt über TMDB; iTunes bleibt als Netz darunter.
     // Kein TVMaze — TVMaze kennt ausschließlich Serien.
