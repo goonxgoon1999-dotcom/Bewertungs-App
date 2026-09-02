@@ -1008,6 +1008,45 @@ sich der Schritt nicht automatisch, weil die Bewertung danach echt
 geändert ist; der Dialog sagt das. Von Hand zurückstellen geht
 natürlich jederzeit.
 
+**Alle Zuschläge auf einmal.** Dasselbe gibt es als Sammelfunktion für
+die ganze Sammlung: im Daten-Panel (Zahnrad im Kopfbereich) unter
+**„Duell-Zuschläge"** steht der Knopf **„Alle Duell-Zuschläge
+verrechnen"**. Betroffen ist genau, was auch einzeln angeboten würde —
+mindestens **10 Duelle** und ein Zuschlag im Betrag **ab 0,05**. Der
+Zuschlag geht dabei immer **gleichmäßig in die Kriterien** (je
+Kriterium `Zuschlag ÷ 0,75`), danach steht `elo` auf 1000. Der Weg ins
+Bauchgefühl steht hier nicht zur Wahl: Bei einem Stapel kann niemand
+Eintrag für Eintrag entscheiden. `duels`, `siege` und die Einträge in
+`duell_paare` bleiben stehen.
+
+**Erst Vorschau, dann schreiben.** Der erste Klick rechnet nur und
+fasst nichts an. Er zeigt, wie viele Einträge betroffen wären, wie
+viele davon verrechnet würden — und welche **übersprungen** werden,
+namentlich und mit Begründung. Geschrieben wird erst nach einem
+zweiten, ausdrücklichen Klick („N Einträge verrechnen"). Übersprungen
+wird, wo ein Kriterium unter 0 oder über 10 fiele: **kein stilles
+Kappen.**
+
+**Höchstens 0,01 Abweichung — nachgerechnet, nicht behauptet.** Für
+die Sammelaktion gilt eine engere Zusage als für den Einzelweg: Die
+Endnote eines verrechneten Eintrags darf sich um höchstens **0,01**
+verschieben (`SAMMEL_MAX_ABWEICHUNG`). Dafür rechnet sie auf dem
+**Hundertstel** statt auf der 0,1-Stufe des Schiebers
+(`SAMMEL_SCHRITT`) — eine halbe Schieberstufe je Kriterium schlüge
+sonst mit bis zu 0,04 durch. Angezeigt werden Kriterien ohnehin mit
+einer Nachkommastelle, und krumme Werte stehen dort mit Staffeln schon
+lange, weil deren Mittel ebenfalls nicht auf der Stufe liegt. Bleibt
+trotzdem ein größerer Rest aus den Zwischenrundungen der
+Endnoten-Formel, geht dieser Eintrag **unverändert durch** und steht
+mit Begründung in der Liste der Übersprungenen. Getestet wird die
+Zusage über einen vollständigen Datensatz mit erspielten Elo-Zahlen
+(`test/sammel-verrechnen.test.mjs`): Endnoten davor und danach im
+Vergleich, Eintrag für Eintrag.
+
+**Die einzelne Verrechnung bleibt, wie sie war.** Der Knopf in der
+Detailansicht, seine beiden Wege und seine 0,1-Stufe sind von der
+Sammelfunktion unberührt.
+
 ### Turnier
 
 Kein zweites Duellspiel, sondern die Runden drumherum: Statt einzelner

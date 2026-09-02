@@ -922,6 +922,206 @@ function verrechnenHinweisText(entry, category) {
   );
 }
 
+/* ----------------------------------------------------------------
+   Alle Duell-Zuschlaege auf einmal verrechnen (Sammelfunktion)
+
+   Dieselbe Idee wie der Knopf in der Detailansicht, nur ueber die
+   ganze Sammlung: Betroffen ist jeder Eintrag, dem das Verrechnen
+   auch einzeln angeboten wuerde (siehe verrechnenAngeboten — ab 10
+   Duellen und ab Betrag 0,05). Der Zuschlag geht dabei immer
+   gleichmaessig in die Kriterien, je Kriterium um Zuschlag / 0,75;
+   der Weg ins Bauchgefuehl steht hier nicht zur Wahl, weil bei einer
+   Sammelaktion niemand Eintrag fuer Eintrag entscheiden kann.
+
+   Zwei Dinge unterscheiden die Sammelfunktion vom Einzelweg, und
+   beide haben denselben Grund — bei einem Stapel sieht niemand jede
+   einzelne Zahl nach:
+
+   1. Sie rechnet auf dem Hundertstel, nicht auf der 0,1-Stufe des
+      Schiebers. Eine halbe Schieberstufe je Kriterium schlaegt mit
+      bis zu 0,04 auf die Endnote durch (siehe README); zugesagt ist
+      hier aber, dass sich keine Endnote um mehr als
+      SAMMEL_MAX_ABWEICHUNG aendert. Ein Hundertstel je Kriterium
+      bringt das auf ein Rundungsrest-Mass herunter. Angezeigt werden
+      Kriterien ohnehin mit einer Nachkommastelle (siehe
+      DetailView) — und krumme Werte stehen dort mit Staffeln schon
+      lange, weil deren Mittel ebenfalls nicht auf der Stufe liegt.
+   2. Sie prueft die Zusage einzeln nach, statt sie zu behaupten:
+      Was die Grenzen 0 bis 10 sprengen wuerde ODER wo die Endnote
+      trotz allem um mehr als SAMMEL_MAX_ABWEICHUNG wandern wuerde,
+      wird uebersprungen und namentlich genannt. Gekappt wird nichts,
+      und still uebergangen auch nichts.
+
+   Geschrieben wird erst nach ausdruecklicher Bestaetigung: Die
+   Vorschau (sammelVerrechnungsPlan) rechnet nur, sie fasst keinen
+   Eintrag an.
+   ---------------------------------------------------------------- */
+
+/* Die Schrittweite, auf der die Sammelfunktion die neuen
+   Kriterienwerte ablegt. */
+const SAMMEL_SCHRITT = 0.01;
+
+/* So weit darf die Endnote eines verrechneten Eintrags hoechstens
+   wandern. Mehr als Rundung soll die Sammelaktion nicht bewirken. */
+const SAMMEL_MAX_ABWEICHUNG = 0.01;
+
+/** Ein Wert auf das Hundertstel — die Stufe der Sammelfunktion.
+
+    Gerundet wird ueber den Kehrwert der Stufe statt ueber eine
+    Division durch sie: 0,01 ist in Gleitkomma nicht exakt, und ein
+    Wert wie 8,27 kaeme sonst als 8,270000000000001 heraus. */
+function aufSammelSchritt(wert) {
+  const proStufe = Math.round(1 / SAMMEL_SCHRITT);
+  return Math.round(wert * proStufe) / proStufe;
+}
+
+/**
+ * Ein Eintrag der Sammelaktion, durchgerechnet.
+ *
+ * Aufbau wie verrechnungsWeg: zurueck kommt immer ein Objekt,
+ * `moeglich` sagt, ob der Eintrag verrechnet wird, und `grund`
+ * warum nicht. Angefasst wird hier nichts — `entwurf` ist ein
+ * Vorschlag, mehr nicht.
+ */
+function sammelVerrechnung(entry, category) {
+  const zuschlag = entryZuschlag(entry);
+  const noteVorher = entryScore(entry, category);
+  /* Der Betrag je Kriterium, auf dem Hundertstel: Die
+     Kriteriengewichte ergeben in Summe 1, deshalb hebt er die
+     Kriterien-Note um genau diesen Betrag. */
+  const proFeld = aufSammelSchritt(zuschlag / VERRECHNEN_ANTEIL_KRITERIEN);
+  const kriterien = criteriaFor(category);
+
+  /* Ohne Staffeln die Kriterien des Eintrags, mit Staffeln dieselben
+     in JEDER Staffel — genau wie beim Einzelweg. */
+  const quellen = hasSeasons(entry) ? entry.seasons : [entry];
+  const werte = [];
+  for (const quelle of quellen) {
+    for (const c of kriterien) {
+      const v = quelle.values ? quelle.values[c.key] : undefined;
+      werte.push(typeof v === "number" ? v : null);
+    }
+  }
+
+  const grundlage = {
+    id: entry.id, category, titel: entry.title || "", zuschlag, proFeld,
+    duels: entryDuels(entry), noteVorher,
+  };
+  const offen = (grund) => ({
+    ...grundlage, moeglich: false, grund,
+    noteNachher: null, abweichung: null, entwurf: null,
+  });
+
+  if (typeof noteVorher !== "number") return offen("Der Eintrag hat keine Endnote.");
+  if (!werte.length || werte.some((w) => w === null)) return offen("Dafür fehlen bewertete Kriterien.");
+  /* Kriterien sind auf 0 bis 10 begrenzt. Was darueber hinausmuesste,
+     geht nicht — und wird nicht stillschweigend gekappt. */
+  if (werte.some((w) => w + proFeld > BEWERTUNG_MAX + VERRECHNEN_TOLERANZ)) {
+    return offen("Ein Kriterium käme über " + stufenText(BEWERTUNG_MAX) + ".");
+  }
+  if (werte.some((w) => w + proFeld < BEWERTUNG_MIN - VERRECHNEN_TOLERANZ)) {
+    return offen("Ein Kriterium fiele unter " + stufenText(BEWERTUNG_MIN) + ".");
+  }
+
+  const neueQuelle = (q) => {
+    // Nur die Kriterien dieser Kategorie werden angefasst; was sonst
+    // in `values` steht, bleibt unberuehrt stehen. Das Bauchgefuehl
+    // ebenso: die Sammelfunktion geht ausschliesslich in die Kriterien.
+    const neueWerte = { ...(q.values || {}) };
+    for (const c of kriterien) neueWerte[c.key] = aufSammelSchritt(neueWerte[c.key] + proFeld);
+    return { ...q, values: neueWerte };
+  };
+
+  let entwurf;
+  if (hasSeasons(entry)) {
+    const seasons = entry.seasons.map(neueQuelle);
+    const mitStaffeln = { ...entry, seasons };
+    /* Mit Staffeln bekommt der Eintrag die Mittelwerte seiner Staffeln
+       als eigene Werte — genau wie beim Speichern im
+       Bewertungsformular (siehe RatingForm.handleSave). */
+    const obenWerte = {};
+    for (const c of kriterien) obenWerte[c.key] = entryCriterionValue(mitStaffeln, c.key);
+    entwurf = { values: obenWerte, personal: entryPersonal(mitStaffeln), seasons };
+  } else {
+    const neu = neueQuelle(entry);
+    entwurf = { values: neu.values, personal: neu.personal, seasons: [] };
+  }
+
+  /* Was danach wirklich dastuende — ueber dieselbe Rechnung wie
+     ueberall sonst, mit der Elo zurueck auf dem Startwert und damit
+     einem Zuschlag von 0. */
+  const danach = { ...entry, ...entwurf, elo: ELO_START };
+  const noteNachher = entryScore(danach, category);
+  const abweichung = Math.round((noteNachher - noteVorher) * 100) / 100;
+
+  /* Die Zusage wird nachgerechnet, nicht behauptet. Bliebe ein Rest
+     aus den Zwischenrundungen der Endnoten-Formel groesser als
+     zugesagt, geht dieser Eintrag lieber unveraendert durch. */
+  if (Math.abs(abweichung) > SAMMEL_MAX_ABWEICHUNG + VERRECHNEN_TOLERANZ) {
+    return offen("Die Endnote würde sich um " + betragText(abweichung) + " ändern.");
+  }
+
+  return { ...grundlage, moeglich: true, grund: "", noteNachher, abweichung, entwurf };
+}
+
+/**
+ * Die Vorschau ueber die ganze Sammlung. Rechnet nur.
+ *
+ * `items` ist der Bestand nach Kategorien, so wie ihn die App haelt.
+ * Zurueck kommen zwei Listen in der Reihenfolge der Kategorien:
+ * was verrechnet wuerde, und was uebersprungen wird — Letzteres mit
+ * Titel und Begruendung, damit es sich namentlich auflisten laesst.
+ */
+function sammelVerrechnungsPlan(items) {
+  const verrechenbar = [];
+  const uebersprungen = [];
+  for (const catKey of CATEGORY_KEYS) {
+    const liste = (items && items[catKey]) || [];
+    for (const entry of liste) {
+      if (!verrechnenAngeboten(entry)) continue;
+      const vorgang = sammelVerrechnung(entry, catKey);
+      (vorgang.moeglich ? verrechenbar : uebersprungen).push(vorgang);
+    }
+  }
+  return { verrechenbar, uebersprungen, betroffen: verrechenbar.length + uebersprungen.length };
+}
+
+/**
+ * Die Anfrage, mit der ein einzelner Vorgang gespeichert wird: eine
+ * ganz normale Bewertungsaenderung, ergaenzt um `elo` auf dem
+ * Startwert. `duels`, `siege` und die Eintraege in duell_paare
+ * bleiben damit stehen — die Duellhistorie geht nicht verloren.
+ */
+function sammelVerrechnungsAnfrage(entry, vorgang) {
+  return {
+    ...entry,
+    category: vorgang.category,
+    values: vorgang.entwurf.values,
+    personal: vorgang.entwurf.personal,
+    seasons: vorgang.entwurf.seasons || [],
+    elo: ELO_START,
+  };
+}
+
+/* Die Zeile ueber der Vorschau — wie viele Eintraege betroffen sind
+   und was mit ihnen geschieht. */
+function sammelVorschauText(plan) {
+  if (!plan || !plan.betroffen) {
+    return "Kein Eintrag hat genug Duelle und einen Zuschlag, der sich zu verrechnen lohnt.";
+  }
+  const eintraege = plan.betroffen === 1 ? "1 Eintrag" : plan.betroffen + " Einträge";
+  const wuerden =
+    plan.verrechenbar.length === 1
+      ? "1 würde verrechnet"
+      : plan.verrechenbar.length + " würden verrechnet";
+  if (!plan.uebersprungen.length) return eintraege + " betroffen, " + wuerden + ".";
+  const rest =
+    plan.uebersprungen.length === 1
+      ? "1 wird übersprungen"
+      : plan.uebersprungen.length + " werden übersprungen";
+  return eintraege + " betroffen, " + wuerden + ", " + rest + ":";
+}
+
 /* Wie weit die Endnote des Gegners hoechstens abweichen darf.
    Frueher stand hier ein Fenster von fuenf Raengen. Das Mass ist
    jetzt die Endnote selbst, und zwar aus einem handfesten Grund: Der
@@ -3492,6 +3692,108 @@ function VerrechnenDialog({ entry, category, onVerrechnen, onSelbstVerteilen, on
         </>
       )}
     </BottomSheet>
+  );
+}
+
+/**
+ * Die Sammelfunktion im Daten-Panel: „Alle Duell-Zuschläge
+ * verrechnen".
+ *
+ * Zwei Zustaende, und der erste schreibt nichts: Ohne `plan` steht
+ * hier nur der Knopf, der die Vorschau rechnet. Mit `plan` steht da,
+ * wie viele Eintraege betroffen waeren, welche uebersprungen werden
+ * und warum — und erst darunter der Knopf, der es wirklich tut.
+ */
+function SammelVerrechnen({ plan, busy, ergebnis, onVorschau, onVerrechnen, onAbbrechen }) {
+  const hinweis = { fontSize: 11, color: "#77746c", marginTop: 8, lineHeight: 1.5 };
+  const knopf = {
+    width: "100%", padding: "12px", borderRadius: 8, fontSize: 14,
+    background: "transparent", color: "var(--accent, #C9A227)",
+    border: "1px solid var(--accent, #C9A227)", cursor: "pointer", fontWeight: 600,
+    opacity: busy ? 0.5 : 1,
+  };
+
+  if (!plan) {
+    return (
+      <div>
+        <button type="button" onClick={onVorschau} disabled={busy} style={knopf}>
+          Alle Duell-Zuschläge verrechnen
+        </button>
+        <div style={hinweis}>
+          Holt bei jedem Eintrag mit mindestens {VERRECHNEN_MIN_DUELLE} Duellen und einem
+          Zuschlag ab {notenText(VERRECHNEN_MIN_BETRAG)} den Zuschlag gleichmäßig in die
+          Kriterien und setzt die Elo auf {ELO_START} zurück. Gespielte und gewonnene
+          Duelle bleiben gezählt. Zuerst kommt eine Vorschau — geschrieben wird erst
+          nach deiner Bestätigung.
+        </div>
+        {ergebnis && (
+          <div style={{ ...hinweis, color: "#9A968C", marginTop: 10 }}>{ergebnis}</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: "#EDEAE3", lineHeight: 1.5 }}>
+        {sammelVorschauText(plan)}
+      </div>
+
+      {plan.uebersprungen.length > 0 && (
+        <ul style={{ margin: "10px 0 0", padding: 0, listStyle: "none" }}>
+          {plan.uebersprungen.map((v) => (
+            <li key={v.category + ":" + v.id} style={{ fontSize: 12, color: "#9A968C", lineHeight: 1.5, marginBottom: 6 }}>
+              <span style={{ color: "#EDEAE3" }}>{v.titel}</span>
+              <span style={{ color: "#55524c" }}>
+                {" · "}
+                {(CATEGORIES.find((c) => c.key === v.category) || {}).singular || v.category}
+              </span>
+              <div style={{ fontSize: 11.5, color: "#77746c" }}>{v.grund}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {plan.verrechenbar.length > 0 && (
+        <div style={{ ...hinweis, marginTop: 12 }}>
+          Die Endnote ändert sich dabei um höchstens {notenText(SAMMEL_MAX_ABWEICHUNG)} — was
+          weiter wandern würde, steht oben unter den übersprungenen. Rückgängig machen lässt
+          sich das nicht automatisch.
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <button
+          type="button"
+          onClick={onVerrechnen}
+          disabled={busy || !plan.verrechenbar.length}
+          style={{
+            ...knopf, flex: 1,
+            background: plan.verrechenbar.length ? "var(--accent, #C9A227)" : "transparent",
+            color: plan.verrechenbar.length ? "#17171A" : "#55524c",
+            border: "1px solid " + (plan.verrechenbar.length ? "var(--accent, #C9A227)" : "#33333a"),
+            cursor: plan.verrechenbar.length ? "pointer" : "default",
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          {plan.verrechenbar.length === 1
+            ? "1 Eintrag verrechnen"
+            : plan.verrechenbar.length + " Einträge verrechnen"}
+        </button>
+        <button
+          type="button"
+          onClick={onAbbrechen}
+          disabled={busy}
+          style={{
+            flex: 1, padding: "12px", borderRadius: 8, fontSize: 14,
+            background: "transparent", color: "#9A968C", border: "1px solid #33333a",
+            cursor: "pointer", opacity: busy ? 0.5 : 1,
+          }}
+        >
+          Abbrechen
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -9629,6 +9931,14 @@ export default function App() {
   /* Der Hinweistext ueber dem Bewertungsformular, wenn es aus dem
      Dialog heraus zum eigenen Verteilen geoeffnet wurde. Sonst leer. */
   const [verrechnenHinweis, setVerrechnenHinweis] = useState("");
+
+  /* Die Sammelfunktion im Daten-Panel. `sammelPlan` ist die
+     durchgerechnete Vorschau, solange sie dasteht — null heisst: es
+     ist noch nichts gerechnet und erst recht nichts geschrieben.
+     `sammelErgebnis` ist der Satz, der nach dem Schreiben zurueckbleibt. */
+  const [sammelPlan, setSammelPlan] = useState(null);
+  const [sammelErgebnis, setSammelErgebnis] = useState("");
+
   const [showExport, setShowExport] = useState(false);
   /* Der Bilder-Abschnitt im Daten-Panel startet bei jedem Oeffnen
      zugeklappt — gemerkt wird der Zustand bewusst nicht. */
@@ -10893,6 +11203,78 @@ export default function App() {
     }
   }
 
+  /* ---- Alle Duell-Zuschlaege auf einmal verrechnen ----
+
+     Zwei getrennte Schritte, und der erste fasst nichts an:
+     `sammelVorschau` rechnet nur und stellt das Ergebnis hin,
+     `sammelVerrechnen` schreibt — und wird ausschliesslich aus dem
+     Bestaetigungsknopf der Vorschau heraus gerufen.
+
+     Geschrieben wird Eintrag fuer Eintrag ueber genau denselben Weg
+     wie beim einzelnen Verrechnen (PUT /api/items mit elo = 1000).
+     Nacheinander, nicht alle auf einmal: bei einer grossen Sammlung
+     waeren das sonst Dutzende gleichzeitiger Anfragen. Scheitert
+     einer, laufen die uebrigen trotzdem durch; was geglueckt ist,
+     bleibt geglueckt, und die Fehler stehen danach da. */
+  function sammelVorschau() {
+    setSammelErgebnis("");
+    setSammelPlan(sammelVerrechnungsPlan(items));
+  }
+
+  function sammelAbbrechen() {
+    setSammelPlan(null);
+  }
+
+  async function sammelVerrechnen() {
+    const liste = sammelPlan ? sammelPlan.verrechenbar : [];
+    if (!liste.length) { setSammelPlan(null); return; }
+
+    setBusy(true);
+    const gespeichert = [];
+    const fehler = [];
+    try {
+      for (const vorgang of liste) {
+        const current = (items[vorgang.category] || []).find((f) => f.id === vorgang.id);
+        if (!current) continue;
+        /* Noch einmal auf dem Stand gerechnet, der jetzt wirklich
+           dasteht: Zwischen Vorschau und Bestaetigung kann sich ein
+           Eintrag geaendert haben, und ein alter Entwurf traefe die
+           Endnote dann nicht mehr. */
+        const frisch = sammelVerrechnung(current, vorgang.category);
+        if (!frisch.moeglich) { fehler.push(vorgang.titel + ": " + frisch.grund); continue; }
+        try {
+          const saved = await api.update(vorgang.id, sammelVerrechnungsAnfrage(current, frisch));
+          gespeichert.push({ category: vorgang.category, eintrag: normalizeEntry(saved) });
+        } catch (e) {
+          fehler.push(vorgang.titel + ": " + e.message);
+        }
+      }
+
+      if (gespeichert.length) {
+        setItems((prev) => {
+          const next = { ...prev };
+          for (const g of gespeichert) {
+            next[g.category] = (next[g.category] || []).map((f) =>
+              f.id === g.eintrag.id ? g.eintrag : f
+            );
+          }
+          return next;
+        });
+      }
+
+      const zahl = gespeichert.length === 1 ? "1 Zuschlag" : gespeichert.length + " Zuschläge";
+      setSammelErgebnis(
+        zahl + " verrechnet" +
+        (sammelPlan.uebersprungen.length ? ", " + sammelPlan.uebersprungen.length + " übersprungen" : "") +
+        "."
+      );
+      setSaveError(fehler.length ? "Nicht verrechnet — " + fehler.join("; ") : "");
+    } finally {
+      setSammelPlan(null);
+      setBusy(false);
+    }
+  }
+
   /* ---- Minispiel "Was schau ich?" ----
      Der ausgeloste Titel geht in genau dasselbe Bewertungsformular, das
      auch "✓ Ansehen" in der Watchlist oeffnet. Dafuer muss der
@@ -11844,7 +12226,14 @@ export default function App() {
             <KopfIconButton
               title="Daten (Export & Import)"
               active={showExport}
-              onClick={() => { setShowExport((v) => !v); setZeigeKopfbilder(false); }}
+              onClick={() => {
+                setShowExport((v) => !v);
+                setZeigeKopfbilder(false);
+                /* Eine offene Vorschau gilt nur, solange das Panel
+                   offen ist — sonst stuende beim naechsten Aufschlagen
+                   eine Rechnung auf altem Stand da. */
+                setSammelPlan(null);
+              }}
             >
               <IconZahnrad />
             </KopfIconButton>
@@ -12085,6 +12474,23 @@ export default function App() {
               </button>
               {importError && <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{importError}</div>}
             </div>
+          </div>
+
+          {/* Die Sammelfunktion steht bewusst in einem eigenen Kasten:
+              Sie aendert Bewertungen, waehrend darueber nur gelesen und
+              gesichert wird. */}
+          <div style={{ background: "#141416", border: "1px solid #2A2A2E", borderRadius: 8, padding: 16, marginBottom: 18 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
+              DUELL-ZUSCHLÄGE
+            </div>
+            <SammelVerrechnen
+              plan={sammelPlan}
+              busy={busy}
+              ergebnis={sammelErgebnis}
+              onVorschau={sammelVorschau}
+              onVerrechnen={sammelVerrechnen}
+              onAbbrechen={sammelAbbrechen}
+            />
           </div>
         </div>
       </Seite>
