@@ -2631,13 +2631,40 @@ function entryWatchCount(entry) {
   return typeof n === "number" && Number.isFinite(n) ? Math.max(WATCH_COUNT_MIN, Math.round(n)) : WATCH_COUNT_MIN;
 }
 
-/** "hinzugefuegt vor X Tagen" — angefangen bei heute. */
-function hinzugefuegtVor(zeit) {
-  if (!zeit) return "hinzugefügt";
+/**
+ * Wie lange ein Eintrag schon vorgemerkt ist, kurz genug fuer die
+ * Meta-Zeile einer Listenzeile: "heute", "gestern", "vor 43 Tagen".
+ *
+ * Die lange Fassung ("hinzugefuegt vor 43 Tagen") stand frueher allein
+ * neben dem Jahr und wurde bei 430 px Breite zu "hinzu…" abgeschnitten.
+ * Ist kein Zeitpunkt bekannt, faellt die Angabe ganz weg — ein leerer
+ * Platzhalter in der Meta-Zeile saehe aus wie ein Fehler.
+ */
+function hinzugefuegtKurz(zeit) {
+  if (!zeit) return "";
   const tage = Math.floor((Date.now() - zeit) / 86400000);
-  if (tage <= 0) return "heute hinzugefügt";
-  if (tage === 1) return "gestern hinzugefügt";
-  return "hinzugefügt vor " + tage + " Tagen";
+  if (tage <= 0) return "heute";
+  if (tage === 1) return "gestern";
+  return "vor " + tage + " Tagen";
+}
+
+/**
+ * Die Meta-Zeile einer Listenzeile: "1968 · 2 Std. 29 Min. · vor 12
+ * Tagen".
+ *
+ * Fehlt ein Wert — kein Jahr, keine bekannte Laufzeit —, faellt er
+ * mitsamt seinem Trennzeichen weg. Sonst blieben je nach Datenlage ein
+ * fuehrendes "·" oder zwei Trennzeichen hintereinander stehen.
+ */
+function zeilenMeta(eintrag) {
+  const laufzeit = eintragLaufzeit(eintrag);
+  return [
+    eintrag && typeof eintrag.releaseYear === "number" ? String(eintrag.releaseYear) : "",
+    laufzeit ? laufzeitKurz(laufzeit) : "",
+    hinzugefuegtKurz(eintrag && eintrag.createdAt),
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /* Fassung der Angaben, muss zu ANGABEN_VERSION in api/poster.js passen.
@@ -4910,83 +4937,136 @@ function duplikatText(warnung, categoryLabel, category) {
   );
 }
 
-/* Kantenlaenge der beiden schmalen Quadratknoepfe: "▶" an der
-   Watchlist-Zeile und "+1" an der Zeile im Reiter "Am Schauen".
-   Bewusst schmal und rechts statt als breite Zeile darunter — bei
-   430 px Breite wurde es sonst zu eng. */
-const PLUS_EINS_GROESSE = 34;
+/* ------------------------------------------------------------
+   Bausteine der Zeilen in "Watchlist"/"Backlog" und "Am Schauen"
+
+   Beide Zeilen sind gleich aufgebaut: Poster links, rechts daneben
+   untereinander der Titel, die Meta-Zeile und zuletzt die Knopfreihe.
+   Frueher teilten sich Titel, Angaben und Knoepfe eine einzige Zeile —
+   bei 430 px blieb fuer den Titel so wenig uebrig, dass nach etwa zehn
+   Zeichen Schluss war ("Shrek 2 - …").
+   ------------------------------------------------------------ */
+
+/* Der Titel darf ueber die volle Restbreite laufen und zwei Zeilen
+   hoch werden; erst danach kommen die Auslassungspunkte. */
+const ZEILEN_TITEL = {
+  fontSize: 15,
+  display: "-webkit-box",
+  WebkitBoxOrient: "vertical",
+  WebkitLineClamp: 2,
+  overflow: "hidden",
+  overflowWrap: "anywhere",
+};
+
+/* Die Meta-Zeile darunter — dieselbe gedaempfte Schrift wie bisher. */
+const ZEILEN_META = {
+  fontFamily: "'JetBrains Mono', monospace",
+  fontSize: 11,
+  color: "#77746c",
+  marginTop: 3,
+};
+
+/* Die Knopfreihe ganz unten: der breite Knopf nimmt den uebrigen
+   Platz, die Symbolknoepfe behalten ihre Kantenlaenge. */
+const ZEILEN_KNOPFREIHE = { display: "flex", alignItems: "center", gap: 8, marginTop: 10 };
+
+/* Mindest-Antippflaeche eines reinen Symbolknopfs. */
+const SYMBOL_KNOPF_GROESSE = 44;
+
+/* Grundform der Symbolknoepfe in der Knopfreihe: quadratisch, mittig,
+   nicht schrumpfend. Farbe und Rahmen setzt jeder Knopf selbst. */
+const SYMBOL_KNOPF = {
+  flexShrink: 0,
+  width: SYMBOL_KNOPF_GROESSE,
+  height: SYMBOL_KNOPF_GROESSE,
+  minWidth: SYMBOL_KNOPF_GROESSE,
+  minHeight: SYMBOL_KNOPF_GROESSE,
+  padding: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  lineHeight: 1,
+  fontFamily: "inherit",
+  background: "transparent",
+};
+
+/* Der breite Knopf links in der Knopfreihe — er fuehrt ins
+   Bewertungsformular und nimmt den restlichen Platz ein. */
+function bewertenKnopfStil(busy) {
+  return {
+    flex: "1 1 auto",
+    minWidth: 0,
+    minHeight: SYMBOL_KNOPF_GROESSE,
+    padding: "8px 12px",
+    borderRadius: 6,
+    fontSize: 12.5,
+    fontFamily: "inherit",
+    cursor: busy ? "default" : "pointer",
+    background: "transparent",
+    color: "var(--accent, #C9A227)",
+    border: "1px solid var(--accent, #C9A227)",
+    fontWeight: 600,
+    opacity: busy ? 0.5 : 1,
+  };
+}
 
 /* ============================================================
    WATCHLIST — vorgemerkt, noch ohne Note
    ============================================================ */
 function WatchlistZeile({ eintrag, busy, merkliste, amSchauenLabelText, onAmSchauen, onBewerten, onEntfernen, reihe = 0, vorrang = false }) {
-  /* Die eigene Laufzeit des Eintrags. Ist sie nicht bekannt — oder
-     handelt es sich um ein Spiel —, bleibt sie einfach weg. */
-  const laufzeit = eintragLaufzeit(eintrag);
+  /* Jahr, Laufzeit und Vormerkdatum in einer Zeile. Was nicht bekannt
+     ist — bei Spielen etwa die Laufzeit —, faellt samt Trennzeichen
+     weg. */
+  const meta = zeilenMeta(eintrag);
+  const entfernenText = "Aus " + (merkliste === "Backlog" ? "dem" : "der") + " " + merkliste + " entfernen";
   return (
-    <div className="listen-eintrag" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326", animationDelay: listenVersatz(reihe) }}>
+    <div className="listen-eintrag" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326", animationDelay: listenVersatz(reihe) }}>
       <Poster url={eintrag.poster} title={eintrag.title} size={34} vorrang={vorrang} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {eintrag.title}
+        <div style={ZEILEN_TITEL}>{eintrag.title}</div>
+        {meta && <div style={ZEILEN_META}>{meta}</div>}
+        {/* Die Bedienelemente stehen unter dem Titel statt neben ihm:
+            nebeneinander blieb bei 430 px weder fuer den Titel noch
+            fuer das Hinzufuegedatum genug Platz. */}
+        <div style={ZEILEN_KNOPFREIHE}>
+          <button onClick={onBewerten} disabled={busy} style={bewertenKnopfStil(busy)}>
+            ✓ Ansehen
+          </button>
+          {/* Der Einstieg ins "Am Schauen" fuer vorgemerkte Eintraege.
+              Sie haben keine Detailansicht, in der der Schalter sonst
+              steht — und gerade sie sind der Hauptfall: ein Titel, den
+              man von der Watchlist angefangen hat. Ausgeschaltet wird
+              im eigenen Reiter, hier steht nie ein Eintrag, der bereits
+              am Schauen ist. */}
+          <button
+            onClick={onAmSchauen}
+            disabled={busy}
+            title={amSchauenLabelText + " beginnen"}
+            aria-label={eintrag.title + ": " + amSchauenLabelText + " beginnen"}
+            style={{
+              ...SYMBOL_KNOPF,
+              borderRadius: 6, fontSize: 12,
+              color: "#9A968C", border: "1px solid #33333a",
+              cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1,
+            }}
+          >
+            ▶
+          </button>
+          <button
+            onClick={onEntfernen}
+            disabled={busy}
+            title={entfernenText}
+            aria-label={eintrag.title + " aus " + (merkliste === "Backlog" ? "dem" : "der") + " " + merkliste + " entfernen"}
+            style={{
+              ...SYMBOL_KNOPF,
+              border: "none", color: "#d9736a", fontSize: 18,
+              cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1,
+            }}
+          >
+            ×
+          </button>
         </div>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {typeof eintrag.releaseYear === "number" ? eintrag.releaseYear + " · " : ""}
-          {hinzugefuegtVor(eintrag.createdAt)}
-        </div>
-        {/* Eigene Zeile statt angehaengt: die Zeile darueber ist auf
-            dem Telefon schon voll und schneidet ab, was nicht mehr
-            hineinpasst — die Laufzeit waere unsichtbar geblieben. */}
-        {laufzeit && (
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#77746c", marginTop: 2 }}>
-            {laufzeitKurz(laufzeit)}
-          </div>
-        )}
       </div>
-      {/* Der Einstieg ins "Am Schauen" fuer vorgemerkte Eintraege.
-          Sie haben keine Detailansicht, in der der Schalter sonst
-          steht — und gerade sie sind der Hauptfall: ein Titel, den man
-          von der Watchlist angefangen hat. Bewusst schmal: die Zeile
-          traegt auf dem Telefon schon Titel, Jahr und zwei Knoepfe.
-          Ausgeschaltet wird im eigenen Reiter, hier steht nie ein
-          Eintrag, der bereits am Schauen ist. */}
-      <button
-        onClick={onAmSchauen}
-        disabled={busy}
-        title={amSchauenLabelText + " beginnen"}
-        aria-label={eintrag.title + ": " + amSchauenLabelText + " beginnen"}
-        style={{
-          flexShrink: 0, width: PLUS_EINS_GROESSE, height: PLUS_EINS_GROESSE, padding: 0,
-          borderRadius: 6, fontSize: 12, fontFamily: "inherit",
-          background: "transparent", color: "#9A968C", border: "1px solid #33333a",
-          cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1,
-        }}
-      >
-        ▶
-      </button>
-      <button
-        onClick={onBewerten}
-        disabled={busy}
-        style={{
-          flexShrink: 0, padding: "8px 12px", borderRadius: 6, fontSize: 12.5, cursor: "pointer",
-          background: "transparent", color: "var(--accent, #C9A227)",
-          border: "1px solid var(--accent, #C9A227)", fontWeight: 600, opacity: busy ? 0.5 : 1,
-        }}
-      >
-        ✓ Ansehen
-      </button>
-      <button
-        onClick={onEntfernen}
-        disabled={busy}
-        title={"Aus " + (merkliste === "Backlog" ? "dem" : "der") + " " + merkliste + " entfernen"}
-        aria-label={eintrag.title + " aus " + (merkliste === "Backlog" ? "dem" : "der") + " " + merkliste + " entfernen"}
-        style={{
-          flexShrink: 0, background: "transparent", border: "none", color: "#d9736a",
-          fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1,
-        }}
-      >
-        ×
-      </button>
     </div>
   );
 }
@@ -4994,16 +5074,17 @@ function WatchlistZeile({ eintrag, busy, merkliste, amSchauenLabelText, onAmScha
 /* ============================================================
    AM SCHAUEN — angefangen, noch nicht fertig
 
-   Dieselbe Zeile wie in der Watchlist, nur mit dem Fortschritt statt
-   der Knopfreihe. Der Fortschritt erscheint nur, wo die Episodenzahlen
-   je Staffel vorliegen (siehe fortschrittStand) — bei Filmen, bei
-   Spielen und bei Eintraegen ohne diese Daten steht der Titel einfach
-   ohne Zusatz da.
+   Gleicher Aufbau wie die Watchlist-Zeile — Titel, Meta-Zeile,
+   Knopfreihe —, dazwischen der Fortschritt. Der erscheint nur, wo die
+   Episodenzahlen je Staffel vorliegen (siehe fortschrittStand); bei
+   Filmen, bei Spielen und bei Eintraegen ohne diese Daten stehen
+   Titel und Meta-Zeile einfach ohne Zusatz da.
 
-   Der "+1"-Knopf ist bewusst schmal und rechts statt als breite Zeile
-   darunter: bei 430 px Breite wurde es sonst zu eng.
+   In der Knopfreihe steht links der Bewerten-Knopf (nur an vorgemerkten
+   Zeilen, siehe kannBewerten), rechts "+1" und das Beenden-Kreuz als
+   Symbolknoepfe.
    ============================================================ */
-function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLabel, reihe = 0, vorrang = false }) {
+function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, onBewerten, ausLabel, bewertenLabel, reihe = 0, vorrang = false }) {
   const stand = fortschrittStand(eintrag);
   /* Die Eingabe von Hand — gebraucht, wenn ein Titel mitten in einer
      Staffel aufgenommen wird. Sie oeffnet sich mit einem Druck auf den
@@ -5032,6 +5113,15 @@ function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLa
   // Weiter geht es nur, solange es etwas weiterzuzaehlen gibt.
   const weiterMoeglich = !busy && !!fortschrittWeiter(stand);
   const anteil = stand ? Math.min(1, stand.folge / stand.gesamt) : 0;
+  const meta = zeilenMeta(eintrag);
+
+  /* Der Weg direkt ins Bewertungsformular — bisher fuehrte er nur ueber
+     "Am Schauen beenden", die Watchlist und dort "✓ Ansehen".
+     Er steht ausschliesslich an vorgemerkten Zeilen: ein bereits
+     bewerteter Eintrag hat seine Werte schon, und ein leeres Formular
+     wuerde sie beim Speichern ueberschreiben. Seine Note aendert man
+     wie bisher in der Detailansicht. */
+  const kannBewerten = !!onBewerten && istVorgemerkt(eintrag);
 
   const zahlenfeld = {
     width: 54, boxSizing: "border-box", background: "#141416",
@@ -5040,17 +5130,16 @@ function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLa
   };
 
   return (
-    <div className="listen-eintrag" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326", animationDelay: listenVersatz(reihe) }}>
+    <div className="listen-eintrag" style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 4px", borderBottom: "1px solid #232326", animationDelay: listenVersatz(reihe) }}>
       <Poster url={eintrag.poster} title={eintrag.title} size={34} vorrang={vorrang} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {eintrag.title}
-        </div>
+        <div style={ZEILEN_TITEL}>{eintrag.title}</div>
+        {meta && <div style={ZEILEN_META}>{meta}</div>}
         {stand && !offen && (
           /* Balken und Stand in einer Zeile: der Balken nimmt den
              Platz, der uebrig bleibt, der Text steht in fester Breite
              daneben. */
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
             <div
               style={{ flex: "1 1 auto", minWidth: 0, height: 3, borderRadius: 2, background: "#2A2A2E", overflow: "hidden" }}
               role="progressbar"
@@ -5075,7 +5164,7 @@ function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLa
           </div>
         )}
         {stand && offen && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
             <label style={{ fontSize: 11, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
               S
               <input
@@ -5120,38 +5209,50 @@ function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLa
             </button>
           </div>
         )}
+        {/* Wie in der Watchlist-Zeile: die Knoepfe stehen unter dem
+            Titel, damit ihm die volle Restbreite bleibt. Fehlt der
+            breite Bewerten-Knopf, haelt ein Platzhalter die
+            Symbolknoepfe am rechten Rand. */}
+        <div style={ZEILEN_KNOPFREIHE}>
+          {kannBewerten ? (
+            <button onClick={onBewerten} disabled={busy} style={bewertenKnopfStil(busy)}>
+              {bewertenLabel || "✓ Bewerten"}
+            </button>
+          ) : (
+            <div style={{ flex: "1 1 auto", minWidth: 0 }} />
+          )}
+          {stand && !offen && (
+            <button
+              onClick={onWeiter}
+              disabled={!weiterMoeglich}
+              title="Eine Folge weiter"
+              aria-label={eintrag.title + ": eine Folge weiter"}
+              style={{
+                ...SYMBOL_KNOPF,
+                borderRadius: 6, fontSize: 13, fontWeight: 700,
+                color: weiterMoeglich ? akzent : "#3a3a40",
+                border: "1px solid " + (weiterMoeglich ? akzent : "#232326"),
+                cursor: weiterMoeglich ? "pointer" : "default",
+              }}
+            >
+              +1
+            </button>
+          )}
+          <button
+            onClick={onAus}
+            disabled={busy}
+            title={ausLabel + " beenden"}
+            aria-label={eintrag.title + ": " + ausLabel + " beenden"}
+            style={{
+              ...SYMBOL_KNOPF,
+              border: "none", color: "#9A968C", fontSize: 18,
+              cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
       </div>
-      {stand && !offen && (
-        <button
-          onClick={onWeiter}
-          disabled={!weiterMoeglich}
-          title="Eine Folge weiter"
-          aria-label={eintrag.title + ": eine Folge weiter"}
-          style={{
-            flexShrink: 0, width: PLUS_EINS_GROESSE, height: PLUS_EINS_GROESSE, padding: 0,
-            borderRadius: 6, fontSize: 13, fontWeight: 700, fontFamily: "inherit",
-            background: "transparent",
-            color: weiterMoeglich ? akzent : "#3a3a40",
-            border: "1px solid " + (weiterMoeglich ? akzent : "#232326"),
-            cursor: weiterMoeglich ? "pointer" : "default",
-          }}
-        >
-          +1
-        </button>
-      )}
-      <button
-        onClick={onAus}
-        disabled={busy}
-        title={ausLabel + " beenden"}
-        aria-label={eintrag.title + ": " + ausLabel + " beenden"}
-        style={{
-          flexShrink: 0, background: "transparent", border: "none", color: "#9A968C",
-          fontSize: 18, cursor: busy ? "default" : "pointer", padding: "0 4px", lineHeight: 1,
-          opacity: busy ? 0.5 : 1,
-        }}
-      >
-        ×
-      </button>
     </div>
   );
 }
@@ -11235,7 +11336,17 @@ export default function App() {
 
   /* Aus vorgemerkt wird bewertet: derselbe Eintrag behaelt seine ID,
      verliert das Merkmal und bekommt seine Werte. Damit verschwindet er
-     aus der Watchlist und steht in der Rangliste. */
+     aus der Watchlist und steht in der Rangliste.
+
+     Mit dem Merkmal faellt auch "Am Schauen" weg. Aufgerufen wird diese
+     Funktion nur fuer vorgemerkte Eintraege — aus der Watchlist-Zeile,
+     aus der Zeile im Reiter "Am Schauen" und aus dem Minispiel —, und
+     fuer die gilt: was bewertet ist, ist zu Ende geschaut. Die Regel
+     "Staffel 1 bewertet, Staffel 2 laeuft noch" bleibt davon
+     unberuehrt; sie betrifft bereits bewertete Eintraege, und die
+     kommen hier nie vorbei (siehe updateEntry). Der Stand selbst
+     (staffelNr/folgeNr) bleibt stehen — wie beim Ausschalten des
+     Schalters auch. */
   async function watchlistBewerten(id, { title, poster, values, personal, seasons }) {
     const current = (items[category] || []).find((f) => f.id === id);
     if (!current) return;
@@ -11260,6 +11371,7 @@ export default function App() {
         personal,
         seasons: seasons || [],
         watchlist: false,
+        amSchauen: false,
       });
       setItems((prev) => ({
         ...prev,
@@ -11441,11 +11553,12 @@ export default function App() {
   }
 
   /* ---- Am Schauen ----
-     Das Kennzeichen und der Stand darin. Beides aendert sich
-     ausschliesslich hier: es gibt kein automatisches Setzen und kein
-     automatisches Loeschen. Insbesondere entfernt eine Bewertung das
-     Kennzeichen nicht — bei einer Serie kann Staffel 1 bewertet sein,
-     waehrend Staffel 2 noch laeuft.
+     Das Kennzeichen und der Stand darin. Beides aendert sich hier und
+     beim Bewerten eines vorgemerkten Eintrags (watchlistBewerten);
+     automatisch gesetzt oder geloescht wird es nirgends. Insbesondere
+     entfernt das Bearbeiten einer bestehenden Bewertung das Kennzeichen
+     nicht — bei einer Serie kann Staffel 1 bewertet sein, waehrend
+     Staffel 2 noch laeuft.
 
      Wie beim Zaehler geht alles Uebrige des Eintrags unveraendert mit;
      diese Aufrufe fassen nur die drei Felder an. Sie gelten fuer
@@ -12283,6 +12396,28 @@ export default function App() {
         }
         .tab-leiste::-webkit-scrollbar { display: none; }
 
+        /* Dieselbe Technik eine Ebene tiefer: die Unter-Reiter
+           ("Bewertet / Am Schauen / Watchlist") brachen um, sobald die
+           Zaehler dazukamen — bei 360 px stand "Watchlist 43" allein in
+           einer zweiten Reihe. Statt die Knoepfe zu schrumpfen behalten
+           sie ihre Groesse, und die Leiste wird seitlich wischbar. */
+        .unter-reiter-leiste {
+          display: flex;
+          gap: 6px;
+          overflow-x: auto;
+          scroll-snap-type: x proximity;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+          padding-right: 12px;
+        }
+        .unter-reiter-leiste::-webkit-scrollbar { display: none; }
+
+        .unter-reiter {
+          flex: 0 0 auto;
+          scroll-snap-align: start;
+          white-space: nowrap;
+        }
+
         .tab-btn {
           flex: 0 0 auto;
           scroll-snap-align: start;
@@ -13057,21 +13192,24 @@ export default function App() {
           {mode === "list" && (
             <>
               {/* Unter-Reiter: bewertete Eintraege, was gerade laeuft,
-                  oder die Watchlist. */}
-              <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+                  oder die Watchlist. Seitlich wischbar statt umbrechend,
+                  siehe .unter-reiter-leiste. Der Zaehler haengt ohne
+                  Mittelpunkt am Namen — die zwei Zeichen entschieden
+                  darueber, ob die Leiste noch in eine Reihe passt. */}
+              <div className="unter-reiter-leiste" style={{ marginBottom: 16 }}>
                 {[
                   { key: "bewertet", label: "Bewertet" },
                   {
                     key: "amschauen",
                     label:
                       amSchauenLabel(category) +
-                      (anzeigeAmSchauen.length ? " · " + anzeigeAmSchauen.length : ""),
+                      (anzeigeAmSchauen.length ? " " + anzeigeAmSchauen.length : ""),
                   },
                   {
                     key: "watchlist",
                     label:
                       merklisteLabel(category) +
-                      (anzeigeWatchlist.length ? " · " + anzeigeWatchlist.length : ""),
+                      (anzeigeWatchlist.length ? " " + anzeigeWatchlist.length : ""),
                   },
                 ].map((r) => (
                   <button
@@ -13144,6 +13282,11 @@ export default function App() {
                        darf kein Schreibvorgang entstehen. */
                     busy={busy || zeigtCache}
                     ausLabel={amSchauenLabel(category)}
+                    /* Derselbe Weg wie "✓ Ansehen" in der Watchlist:
+                       dasselbe Formular, dieselbe Speicherfunktion.
+                       Die Zeile blendet den Knopf von sich aus nur an
+                       vorgemerkten Eintraegen ein. */
+                    onBewerten={() => { setBewerteVorgemerkt(f); setMode("watchlist-form"); }}
                     onWeiter={() => {
                       const naechster = fortschrittWeiter(fortschrittStand(f));
                       if (naechster) fortschrittSpeichern(f.id, naechster.staffelNr, naechster.folgeNr);

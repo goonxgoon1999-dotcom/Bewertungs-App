@@ -614,7 +614,9 @@ alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
 
 Jede Kategorie hat drei Unter-Reiter: **Bewertet** (die gewohnte
 Rangliste), **Am Schauen** (siehe unten) und **Watchlist** mit der Zahl
-der Vormerkungen. Vorgemerkt und bewertet bleibt dabei ein
+der Vormerkungen dahinter („Watchlist 43"). Die Leiste bricht nie um:
+Wie die Kategorie-Tabs darüber behalten die Knöpfe ihre Größe, und die
+Reihe wird seitlich wischbar — ohne sichtbaren Rollbalken. Vorgemerkt und bewertet bleibt dabei ein
 Entweder-oder — ein Eintrag ist immer nur eines von beidem; das
 Kennzeichen „Am Schauen" steht unabhängig daneben.
 
@@ -633,10 +635,22 @@ den Treffern mit dem eingegebenen Titel von Hand anlegen.
 
 **Aus der Watchlist heraus bewerten:** „✓ Ansehen" öffnet dasselbe
 Bewertungsformular. Nach dem Speichern behält der Eintrag seine ID,
-verliert die Vormerkung und steht in der Rangliste.
+verliert die Vormerkung und steht in der Rangliste. Derselbe Knopf
+steht als „✓ Bewerten" auch an vorgemerkten Zeilen im Reiter **Am
+Schauen** — von dort führte der Weg vorher nur über das Beenden und
+die Watchlist zurück.
 
 **Entfernen:** das kleine × neben dem Eintrag löscht die Vormerkung
 sofort — es gibt dort nichts zu verlieren außer dem Titel selbst.
+
+**Aufbau einer Zeile.** Links das Poster, rechts daneben untereinander
+der Titel über die volle Restbreite (höchstens zwei Zeilen, dann
+Auslassungspunkte), die Meta-Zeile `Jahr · Laufzeit · vor X Tagen` und
+zuletzt die Knopfreihe: der breite Knopf ins Bewertungsformular, daneben
+Play- und Entfernen-Symbol mit je 44 px Antippfläche. Fehlt ein Wert der
+Meta-Zeile — bei Spielen etwa die Laufzeit —, fällt er samt Trennzeichen
+weg. Nebeneinander in einer einzigen Zeile blieb bei 430 px Breite für
+den Titel zu wenig übrig.
 
 ---
 
@@ -657,10 +671,22 @@ wieder auf, sobald das Kennzeichen ausgeht. Kein Eintrag kann dadurch
 aus allen Reitern fallen.
 
 Gesetzt und gelöscht wird es **ausschließlich von Hand**: über den
-Schalter in der Detailansicht oder über das Play-Symbol an einer
-Watchlist-Zeile. Keine Bewertung, kein Nachladen und kein anderer
-Speichervorgang fasst es an — auch die letzte Folge der letzten Staffel
-schaltet es nicht von selbst aus.
+Schalter in der Detailansicht, über das Play-Symbol an einer
+Watchlist-Zeile oder über das × im Reiter selbst. Kein Nachladen und
+kein beiläufiger Speichervorgang fasst es an — auch die letzte Folge der
+letzten Staffel schaltet es nicht von selbst aus, und das Bearbeiten
+einer bestehenden Bewertung lässt es stehen (Staffel 1 bewertet,
+Staffel 2 läuft noch). Die eine Ausnahme ist der Weg, der aus einem
+vorgemerkten Eintrag einen bewerteten macht: Wer eine vorgemerkte Zeile
+bewertet — aus der Watchlist, aus diesem Reiter oder aus dem Minispiel
+—, hat sie zu Ende geschaut, deshalb geht mit der Vormerkung auch das
+Kennzeichen ab. Der Stand (Staffel/Folge) bleibt dabei erhalten.
+
+**Bewerten aus dem Reiter heraus.** Vorgemerkte Zeilen tragen einen
+breiten „✓ Bewerten"-Knopf, der direkt ins Bewertungsformular führt.
+Bereits bewertete Zeilen haben ihn nicht: ein leeres Formular würde
+ihre Werte beim Speichern überschreiben — ihre Note ändert man wie
+bisher in der Detailansicht.
 
 **Fortschritt.** Wo die Episodenzahlen je Staffel vorliegen, zeigt die
 Zeile den Stand als schmalen Balken mit „S2 · 4/10" daneben. „+1" zählt
