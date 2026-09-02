@@ -199,7 +199,7 @@ export function ensureReady() {
    migrieren.
 
    Die Startseite laedt mehrere Endpunkte parallel (Bewertungen,
-   Kopfbilder, Duelle, Bestwerte, XP). Jeder davon ist eine eigene
+   Kopfbilder, Duelle, Bestwerte). Jeder davon ist eine eigene
    Serverless-Instanz, und jede ruft `ensureReady()` auf. Solange die
    Datenbank auf dem neuesten Stand ist, tun die Migrationen nichts und
    das faellt nicht auf. Direkt nach einer Auslieferung mit neuer
@@ -277,7 +277,6 @@ async function init() {
   await ensureEloWerte();
   await ensureDuellPaare();
   await ensureHighscores();
-  await ensureXp();
   await ensureAmSchauen();
 
   /* Hier endet der Start. Eine frische Datenbank bleibt in allen
@@ -867,46 +866,16 @@ export function rowToHighscore(r) {
 /* ----------------------------------------------------------------
    Aktivitaets-Punkte des Nutzers (XP)
 
-   Die App hat genau einen Nutzer — es gibt also genau eine Zeile,
-   erkennbar an der festen Kennung 'self'. Gespeichert wird nur die
-   Gesamtsumme; die Rangstufe wird daraus abgeleitet und nirgends
-   festgehalten, damit eine spaetere Aenderung der Schwellen nichts
-   umschreiben muss.
+   Hier gibt es nichts mehr zu speichern. Die Punkte werden im
+   Frontend aus dem aktuellen Bestand gerechnet — je bewertetem
+   Eintrag ein fester Betrag, siehe xpAusBestand in src/App.jsx. Ein
+   mitgefuehrter Zaehler koennte gar nicht abbilden, was passiert,
+   wenn ein Titel wieder entfernt wird.
 
-   `once` haelt fest, welche einmaligen Boni schon vergeben wurden —
-   als Pipe-Liste, wie die Genres nebenan. Ohne diese Liste wuerde ein
-   Bonus bei jedem Seitenaufruf erneut gutgeschrieben.
-
-   Wie alle uebrigen Tabellen hier ist sie neu und steht fuer sich:
-   keine bestehende Tabelle und keine bestehende Zeile wird beruehrt.
+   Die frueher dafuer benutzte Tabelle `user_progress` wird nicht mehr
+   angelegt und nicht mehr gelesen. Angefasst wird sie ebenfalls
+   nicht: Wo sie steht, bleibt sie mit ihrem Inhalt stehen.
    ---------------------------------------------------------------- */
-export const XP_ZEILE = "self";
-
-async function ensureXp() {
-  await sql`
-    CREATE TABLE IF NOT EXISTS user_progress (
-      id         TEXT PRIMARY KEY,
-      xp         INTEGER NOT NULL DEFAULT 0,
-      once       TEXT NOT NULL DEFAULT '',
-      updated_at BIGINT NOT NULL
-    )
-  `;
-}
-
-/* Die vergebenen Einmal-Boni stehen — wie die Genres — als eine
-   Zeichenkette in der Spalte, getrennt durch einen senkrechten Strich. */
-const ONCE_TRENNER = "|";
-
-/** "bestand|alle-kategorien" -> ["bestand", "alle-kategorien"] */
-export function onceAus(text) {
-  if (typeof text !== "string" || !text) return [];
-  return text.split(ONCE_TRENNER).map((s) => s.trim()).filter(Boolean);
-}
-
-/** Datenbankzeile -> XP-Stand fuer das Frontend. */
-export function rowToXp(r) {
-  return { xp: Number(r.xp), once: onceAus(r.once) };
-}
 
 /* ----------------------------------------------------------------
    Zusatzdaten zum Werk: Genre, Filmreihe, Studio

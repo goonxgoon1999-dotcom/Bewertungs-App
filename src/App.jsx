@@ -2707,26 +2707,6 @@ const api = {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Bestwert nicht gespeichert");
     return res.json();
   },
-  /* Aktivitaets-Punkte. Wie viel eine Aktion wert ist, entscheidet der
-     Server — hier wird nur gemeldet, was passiert ist. */
-  async loadXp() {
-    const res = await fetch("/api/xp");
-    if (!res.ok) throw new Error("Punktestand konnte nicht geladen werden (" + res.status + ")");
-    const data = await res.json();
-    return {
-      xp: typeof data.xp === "number" ? data.xp : 0,
-      once: Array.isArray(data.once) ? data.once : [],
-    };
-  },
-  async grantXp(source, zusatz) {
-    const res = await fetch("/api/xp", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source, ...(zusatz || {}) }),
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Punkte nicht gespeichert");
-    return res.json();
-  },
 };
 
 /* Farbiger Platzhalter aus dem Titel, falls kein Poster vorhanden ist. */
@@ -7053,7 +7033,7 @@ const MINISPIELE = [
    naechste Duell kommt. Ein Tippen springt jederzeit sofort weiter. */
 const DUELL_PAUSE_MS = 1300;
 
-function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, onXP, onTurnier, fehler }) {
+function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, fehler }) {
   const [spiel, setSpiel] = useState(null);
 
   if (spiel === "head-to-head") {
@@ -7075,7 +7055,6 @@ function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, o
       <Turnier
         ranked={ranked}
         onDuell={onDuell}
-        onFertig={onTurnier}
         fehler={fehler}
         onZurueck={() => setSpiel(null)}
       />
@@ -7083,7 +7062,7 @@ function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, o
   }
 
   if (spiel === "higher-or-lower") {
-    return <HigherOrLower ranked={ranked} onZurueck={() => setSpiel(null)} onXP={onXP} />;
+    return <HigherOrLower ranked={ranked} onZurueck={() => setSpiel(null)} />;
   }
 
   if (spiel === "was-schau-ich") {
@@ -8137,7 +8116,7 @@ function TurnierBracket({ baum, ort, akzent }) {
   );
 }
 
-function Turnier({ ranked, onDuell, onFertig, fehler, onZurueck }) {
+function Turnier({ ranked, onDuell, fehler, onZurueck }) {
   const [kategorie, setKategorie] = useState(null);
   const [baum, setBaum] = useState(null);
   // ID des gewaehlten Titels — solange sie steht, laeuft die Rueckmeldung.
@@ -8193,10 +8172,6 @@ function Turnier({ ranked, onDuell, onFertig, fehler, onZurueck }) {
     const neu = mitTurnierEntscheidung(baum, ort, wahl);
     setGewaehlt(null);
     setBaum(neu);
-
-    /* Punkte gibt es fuer das abgeschlossene Turnier, nicht fuer die
-       einzelne Paarung — die zaehlt bereits als Duell. */
-    if (turnierSieger(neu)) onFertig();
   }
 
   /* Nach kurzer Pause von selbst weiter. Wer nicht warten mag, tippt.
@@ -8549,7 +8524,7 @@ function HoLKarte({ eintrag, verdeckt, rahmen }) {
   );
 }
 
-function HigherOrLower({ ranked, onZurueck, onXP }) {
+function HigherOrLower({ ranked, onZurueck }) {
   const [modus, setModus] = useState(null);
   const [bestwerte, setBestwerte] = useState({});
   const [fehler, setFehler] = useState("");
@@ -8623,8 +8598,6 @@ function HigherOrLower({ ranked, onZurueck, onXP }) {
       const gespeichert = await api.reportHighscore(HOL_SPIEL, modus, erreicht);
       setBestwerte((prev) => ({ ...prev, [modus]: gespeichert.score }));
       setFehler("");
-      // Punkte fuer den neuen persoenlichen Bestwert.
-      if (onXP) onXP();
     } catch (e) {
       setFehler("Bestwert nicht gespeichert: " + e.message);
     }
@@ -9205,8 +9178,12 @@ function WasSchauIch({ watchlist, onBewerten, onZurueck }) {
    der ersten drei Plaetze (siehe rangSchmuck) hat er nichts zu tun —
    die zeichnen eine Rangliste aus, dieser hier den Nutzer.
 
-   Gespeichert wird allein die Gesamtzahl der Punkte (siehe /api/xp);
-   die Stufe wird daraus abgeleitet und nirgends festgehalten.
+   Gespeichert wird nichts davon. Die Punkte werden bei jeder Anzeige
+   aus dem aktuellen Bestand gerechnet (siehe xpAusBestand), die Stufe
+   wiederum aus den Punkten. Das hat zwei Folgen, die genau so gewollt
+   sind: Ein entfernter Titel nimmt seine Punkte von selbst wieder mit,
+   und was man in den Minispielen tut, bringt gar keine Punkte — steigen
+   kann nur, wer wirklich schaut und bewertet.
    ============================================================ */
 const RAENGE = [
   { key: "kupfer", name: "Kupfer", farbe: "#C97D4A", ab: 0 },
@@ -9245,15 +9222,25 @@ function xpText(n) {
   return zahlText(n);
 }
 
+/* Was ein bewerteter Eintrag einbringt. Derselbe Wert, den eine neue
+   Bewertung schon immer gebracht hat. */
+const XP_PRO_BEWERTUNG = 10;
+
 /**
- * Ist in jeder vorhandenen Kategorie mindestens ein Titel bewertet?
+ * Der Punktestand zum aktuellen Bestand.
  *
- * Welche Kategorien es gibt, steht in CATEGORIES — kommt spaeter eine
- * dazu, zaehlt sie hier von selbst mit, ohne dass hier etwas zu
- * aendern waere.
+ * Gezaehlt wird genau eines: bewertete Eintraege. Vorgemerktes hat
+ * keine Note und zaehlt nicht; "Am Schauen" ist ein Kennzeichen neben
+ * der Bewertung und aendert daran nichts; der Sehzaehler zaehlt
+ * Durchlaeufe, keine Eintraege. Welche Kategorien es gibt, steht in
+ * CATEGORIES — kommt spaeter eine dazu, zaehlt sie hier von selbst mit.
  */
-function alleKategorienBewertet(items) {
-  return CATEGORY_KEYS.every((k) => (items[k] || []).some((f) => !istVorgemerkt(f)));
+function xpAusBestand(items) {
+  let bewertet = 0;
+  for (const k of CATEGORY_KEYS) {
+    for (const eintrag of items[k] || []) if (!istVorgemerkt(eintrag)) bewertet++;
+  }
+  return bewertet * XP_PRO_BEWERTUNG;
 }
 
 /* Schild — Zeichen der Stufe Bronze und Rueckfall fuer jede Stufe
@@ -10212,30 +10199,14 @@ export default function App() {
   }
 
   /* ---- Aktivitaets-Rang ----
-     Der Punktestand wird einmal beim Start geholt und danach von jeder
-     Gutschrift aktuell gehalten. Er ist Beiwerk: geht hier etwas
-     schief, laeuft die App unveraendert weiter, nur der Rang-Chip
-     bleibt auf dem letzten bekannten Stand. */
-  const [xpStand, setXpStand] = useState({ xp: 0, once: [] });
-  const [xpGeladen, setXpGeladen] = useState(false);
+     Der Punktestand wird nicht gefuehrt, sondern gerechnet: er ergibt
+     sich allein aus den bewerteten Eintraegen der Sammlung. Damit
+     stimmt er immer mit dem ueberein, was gerade dasteht — auch
+     nachdem ein Titel entfernt wurde. */
+  const xp = useMemo(() => xpAusBestand(items), [items]);
   const [rangOffen, setRangOffen] = useState(false);
-  // Die zuletzt gutgeschriebenen Punkte, solange die Einblendung steht.
+  // Die zuletzt dazugekommenen Punkte, solange die Einblendung steht.
   const [xpHinweis, setXpHinweis] = useState(null);
-
-  useEffect(() => {
-    let abgebrochen = false;
-    (async () => {
-      try {
-        const stand = await api.loadXp();
-        if (!abgebrochen) setXpStand(stand);
-      } catch (e) {
-        // Der Rang ist Beiwerk — ein Fehler hier bleibt still.
-      } finally {
-        if (!abgebrochen) setXpGeladen(true);
-      }
-    })();
-    return () => { abgebrochen = true; };
-  }, []);
 
   /* Die Einblendung verschwindet von selbst. Kommen zwei Gutschriften
      kurz hintereinander, loest die zweite die erste ab. */
@@ -10245,48 +10216,17 @@ export default function App() {
     return () => clearTimeout(zeit);
   }, [xpHinweis]);
 
-  /**
-   * Punkte gutschreiben. Der Server entscheidet ueber die Hoehe und
-   * darueber, ob ein einmaliger Bonus noch aussteht; `granted` sagt,
-   * was wirklich dazugekommen ist.
-   */
-  async function xpGeben(quelle, zusatz) {
-    try {
-      const stand = await api.grantXp(quelle, zusatz);
-      setXpStand({ xp: stand.xp, once: stand.once });
-      if (stand.granted > 0) setXpHinweis({ punkte: stand.granted, id: Date.now() });
-    } catch (e) {
-      // Ohne Punkte laeuft alles Uebrige weiter.
-    }
-  }
-
-  /* Der einmalige Bonus, sobald in jeder Kategorie etwas bewertet ist.
-     Geprueft wird nach jeder neuen Bewertung — und nur, solange der
-     Bonus ueberhaupt noch aussteht. */
-  async function kategorieBonusPruefen(stand) {
-    if (xpStand.once.includes("alle-kategorien")) return;
-    if (!alleKategorienBewertet(stand)) return;
-    await xpGeben("alle-kategorien", { once: "alle-kategorien" });
-  }
-
-  /* Bewertungen, die es schon gab, bevor es Punkte gab: einmalig
-     angerechnet, mit demselben Wert wie eine neue Bewertung. Der
-     Server laesst das genau einmal zu.
-
-     Erst wenn beides steht — Sammlung und Punktestand — und das Laden
-     der Sammlung geklappt hat: sonst wuerde eine leer geladene
-     Sammlung den Bonus mit 0 verbrauchen. */
-  const bestandGemeldet = useRef(false);
+  /* Die Einblendung haengt jetzt am gerechneten Stand: steigt er, ist
+     eine Bewertung dazugekommen. Der erste Stand nach dem Laden ist
+     kein Gewinn — er wird nur gemerkt. Faellt der Stand (ein Eintrag
+     wurde entfernt), gibt es nichts einzublenden. */
+  const xpVorher = useRef(null);
   useEffect(() => {
-    if (!loaded || !xpGeladen || bestandGemeldet.current || saveError) return;
-    bestandGemeldet.current = true;
-    if (xpStand.once.includes("bestand")) return;
-    const anzahl = CATEGORY_KEYS.reduce(
-      (s, k) => s + (items[k] || []).filter((f) => !istVorgemerkt(f)).length,
-      0
-    );
-    xpGeben("bewertung", { once: "bestand", count: anzahl });
-  }, [loaded, xpGeladen, saveError]);
+    if (!loaded) return;
+    const vorher = xpVorher.current;
+    xpVorher.current = xp;
+    if (vorher !== null && xp > vorher) setXpHinweis({ punkte: xp - vorher, id: Date.now() });
+  }, [xp, loaded]);
 
   /* ---- Fortsetzungs-Erinnerung ----
      Einmal die Woche wird abgeglichen, ob es zu einer bewerteten Serie
@@ -10496,11 +10436,6 @@ export default function App() {
       setSaveError("");
       setGewaehlterTreffer(null);
       setMode("list");
-      // Punkte fuer die neue Bewertung — und der Kategorie-Bonus, falls
-      // damit die letzte offene Kategorie belegt ist.
-      const danach = { ...items, [category]: [normalizeEntry(created), ...items[category]] };
-      await xpGeben("bewertung");
-      await kategorieBonusPruefen(danach);
     } catch (e) {
       setSaveError("Nicht gespeichert: " + e.message);
     } finally {
@@ -10587,14 +10522,6 @@ export default function App() {
       // Der Eintrag steht jetzt in der Rangliste — dorthin auch zeigen.
       setUnterReiter("bewertet");
       setMode("list");
-      // Punkte fuer den Uebergang von vorgemerkt zu bewertet — und der
-      // Kategorie-Bonus, falls damit die letzte Kategorie belegt ist.
-      const danach = {
-        ...items,
-        [category]: items[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
-      };
-      await xpGeben("watchlist");
-      await kategorieBonusPruefen(danach);
     } catch (e) {
       setSaveError("Bewertung nicht gespeichert: " + e.message);
     } finally {
@@ -10899,8 +10826,6 @@ export default function App() {
       return null;
     }
 
-    // Punkte fuer das gespielte Duell.
-    await xpGeben("duell");
     return gespielt;
   }
 
@@ -11936,14 +11861,15 @@ export default function App() {
             {/* Der eigene Rang — er gehoert zum Nutzer, nicht zu einer
                 Kategorie, und steht deshalb direkt unter dem Titel.
 
-                Solange der Punktestand nicht geholt ist, steht hier
-                KEIN Abzeichen: 0 XP hiesse "Kupfer", und das waere
-                schlicht falsch. Stattdessen haelt ein gedimmter
-                Platzhalter genau dessen Platz frei, damit beim
-                Eintreffen nichts springt. */}
+                Solange die Sammlung nicht geladen ist, steht hier
+                KEIN Abzeichen: die Punkte kommen aus ihr, 0 XP hiesse
+                also "Kupfer", und das waere schlicht falsch.
+                Stattdessen haelt ein gedimmter Platzhalter genau
+                dessen Platz frei, damit beim Eintreffen nichts
+                springt. */}
             <div>
-              {xpGeladen ? (
-                <RangChip xp={xpStand.xp} onClick={() => setRangOffen(true)} />
+              {loaded ? (
+                <RangChip xp={xp} onClick={() => setRangOffen(true)} />
               ) : (
                 <SkelettFlaeche
                   breite={104}
@@ -12186,8 +12112,6 @@ export default function App() {
           duellZahlen={duellZahlen}
           onDuell={duellAuswerten}
           onBewerten={vorgemerktesBewerten}
-          onXP={() => xpGeben("highscore")}
-          onTurnier={() => xpGeben("turnier")}
           fehler={duellFehler}
         />
         </div>
@@ -12658,10 +12582,10 @@ export default function App() {
         />
       )}
 
-      {rangOffen && <RangOverlay xp={xpStand.xp} onClose={() => setRangOffen(false)} />}
+      {rangOffen && <RangOverlay xp={xp} onClose={() => setRangOffen(false)} />}
 
       {xpHinweis && (
-        <XpHinweis key={xpHinweis.id} punkte={xpHinweis.punkte} farbe={rangFuer(xpStand.xp).rang.farbe} />
+        <XpHinweis key={xpHinweis.id} punkte={xpHinweis.punkte} farbe={rangFuer(xp).rang.farbe} />
       )}
 
       {confirmDelete && (
