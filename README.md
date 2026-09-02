@@ -213,6 +213,58 @@ Kinderserien nicht — die Spalte bleibt dort leer.
 | Sound | 5 % |
 | Wiederspielwert | 5 % |
 
+### Welche Kategorien angezeigt werden (und in welcher Reihenfolge)
+
+Im Daten-Panel (Zahnrad oben rechts) steht ganz oben der Abschnitt
+**Kategorien**. Dort lässt sich jede Kategorie einzeln ein- und
+ausschalten und mit den Pfeilen ▲ ▼ verschieben.
+
+Die Einstellung gilt **pro Gerät** und liegt im `localStorage` unter
+`bewertungsapp.kategorieAnsicht` — nicht in der Datenbank. Am
+Datenmodell ändert sie nichts, der `CHECK` auf `category` in
+`api/_db.js` bleibt wie er ist.
+
+Was die Einstellung tut:
+
+- **Ausblenden ist reine Anzeige.** Es wird nichts gelöscht. Eine
+  wieder eingeschaltete Kategorie bringt alle ihre Einträge
+  unverändert mit.
+- **Sie wirkt überall.** Tab-Leiste, Wischgeste, Anlegen- und
+  Bewertungsformular, Statistik, Jahresrückblick, Zeitaufwand, Top 10,
+  „Bewertung prüfen", Head-to-Head, Turnier, Higher or Lower, „Was
+  schau ich?", Empfehlungen und die Fortsetzungs-Erinnerung folgen
+  derselben Liste — samt Reihenfolge, also auch in Auswahlfeldern und
+  Statistik-Blöcken.
+- **Mindestens eine Kategorie bleibt sichtbar.** Die letzte lässt sich
+  nicht abwählen; ihr Schalter ist gesperrt und sagt beim Berühren,
+  warum.
+- **Ohne gespeicherte Einstellung** sind alle Kategorien sichtbar, in
+  der Reihenfolge aus dem Code. Bestehende Installationen verhalten
+  sich damit unverändert.
+- **Eine neue Kategorie im Code ist immer sichtbar**, auch wenn schon
+  eine ältere Auswahl gespeichert ist: Gespeichert wird, was
+  *versteckt* ist, nicht was sichtbar ist. Sie hängt sich hinten an die
+  gespeicherte Reihenfolge an.
+- **Ein leerer, kaputter oder fremder Speicherstand** fällt still auf
+  die Vorgabe zurück; unbekannte Kategorienamen werden verworfen. Ein
+  Fehler erscheint dabei nicht.
+- **Wird die gerade offene Kategorie ausgeblendet**, wechselt die App
+  auf die erste sichtbare. Steht oben Statistik oder Minispiele, bleibt
+  das so — gewechselt wird dann nur die Kategorie darunter. Läuft
+  gerade ein Minispiel in dieser Kategorie, steht wieder dessen
+  Kategorie-Auswahl da.
+
+Zwei Stellen halten sich ausdrücklich **nicht** daran, und das ist so
+gewollt:
+
+- Der **Aktivitäts-Rang** zählt weiter *alle* bewerteten Einträge, auch
+  die in ausgeblendeten Kategorien — gesehen ist gesehen. Der
+  XP-Stand kann dadurch höher wirken, als die sichtbaren Einträge
+  erklären. Das ist kein Fehler (siehe „Punkte").
+- **Export und Backup** enthalten weiter alles, unabhängig von der
+  Sichtbarkeit. Sie sind die Sicherung, da darf nichts fehlen. Das gilt
+  für „Alles exportieren" als JSON wie als CSV.
+
 ### Staffeln (Serien, Anime, Kinderserien, Adult Animation)
 
 Alle Serienarten lassen sich optional in Staffeln unterteilen. Jede
@@ -1230,6 +1282,11 @@ sondern eine Rechnung auf dem aktuellen Bestand:
 ```
 XP = 10 × Anzahl der bewerteten Einträge (alle Kategorien zusammen)
 ```
+
+„Alle Kategorien" heißt wörtlich alle — auch die, die in den
+Einstellungen ausgeblendet sind (siehe „Welche Kategorien angezeigt
+werden"). Gesehen ist gesehen. Der Stand kann dadurch höher stehen, als
+die sichtbaren Einträge erklären; das ist so gewollt und kein Fehler.
 
 Steigen kann also nur, wer wirklich schaut und bewertet. Und weil
 gerechnet und nicht gezählt wird, nimmt ein **entfernter Titel seine
