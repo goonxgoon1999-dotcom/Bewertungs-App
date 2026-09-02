@@ -252,10 +252,10 @@ Was die Einstellung tut:
   unverändert mit.
 - **Sie wirkt überall.** Tab-Leiste, Wischgeste, Anlegen- und
   Bewertungsformular, Statistik, Jahresrückblick, Zeitaufwand, Top 10,
-  „Bewertung prüfen", Head-to-Head, Turnier, Higher or Lower, „Was
-  schau ich?", Empfehlungen und die Fortsetzungs-Erinnerung folgen
-  derselben Liste — samt Reihenfolge, also auch in Auswahlfeldern und
-  Statistik-Blöcken.
+  „Bewertung prüfen", „Du vs. IMDb", Head-to-Head, Turnier, Higher or
+  Lower, „Was schau ich?", Empfehlungen und die Fortsetzungs-Erinnerung
+  folgen derselben Liste — samt Reihenfolge, also auch in Auswahlfeldern
+  und Statistik-Blöcken.
 - **Mindestens eine Kategorie bleibt sichtbar.** Die letzte lässt sich
   nicht abwählen; ihr Schalter ist gesperrt und sagt beim Berühren,
   warum.

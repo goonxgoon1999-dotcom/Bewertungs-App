@@ -2631,6 +2631,95 @@ function entryWatchCount(entry) {
   return typeof n === "number" && Number.isFinite(n) ? Math.max(WATCH_COUNT_MIN, Math.round(n)) : WATCH_COUNT_MIN;
 }
 
+/* ------------------------------------------------------------
+   Sehzeit — Laufzeit mal Zaehler
+
+   Wie viel Zeit ein bewerteter Eintrag tatsaechlich gekostet hat:
+   seine Laufzeit, so oft genommen, wie er gesehen wurde. Ein Film
+   von 152 Minuten mit Zaehler 6 steht damit fuer 912 Minuten, also
+   15,2 Stunden.
+
+   Der Zaehler kommt aus `entryWatchCount` und ist dort nach unten
+   auf 1 begrenzt: Ein bewerteter Eintrag wurde mindestens einmal
+   gesehen. Ein fehlender oder auf 0 stehender Zaehler laesst einen
+   bewerteten Titel deshalb nicht aus der Summe fallen.
+
+   Aussen vor bleiben Spiele (fuer sie gibt es keine abrufbare
+   Laufzeit) und Eintraege, deren Laufzeit noch nicht bekannt ist.
+   Wie viele Letztere es sind, gibt `sehzeitSumme` mit zurueck — die
+   Summe soll nicht vollstaendiger wirken, als sie ist.
+
+   ACHTUNG, bewusster Unterschied: Die "Gesehene Zeit" im
+   Jahresrueckblick rechnet OHNE den Zaehler, zaehlt also jede
+   Laufzeit genau einmal. Sie beantwortet die Frage "was ist in
+   diesem Jahr dazugekommen?", diese Rechnung hier die Frage "wie
+   viel Zeit steckt insgesamt darin?". Die beiden Zahlen sind
+   deshalb absichtlich nicht dieselbe Rechnung.
+   ------------------------------------------------------------ */
+
+/** Sehzeit eines einzelnen Eintrags in Minuten — oder null. */
+function sehzeitEintrag(entry, category) {
+  if (!unterstuetztLaufzeit(category)) return null;
+  const dauer = eintragLaufzeit(entry);
+  return dauer === null ? null : dauer * entryWatchCount(entry);
+}
+
+/**
+ * Die Sehzeit ueber mehrere Kategorien hinweg.
+ *
+ * `gruppen` ist je Kategorie eine Liste — dieselbe Aufteilung, in
+ * der `ranked` ohnehin vorliegt. Zurueck kommen die Minuten, wie
+ * viele Eintraege eingegangen sind, wie viele mangels Laufzeit
+ * fehlen und ob in der Auswahl ueberhaupt eine Kategorie mit
+ * Laufzeit steckt: Bei "Spiele" allein gibt es keine Sehzeit, und
+ * eine 0 waere dort keine Antwort, sondern ein Missverstaendnis.
+ */
+function sehzeitSumme(gruppen) {
+  let minuten = 0;
+  let gezaehlt = 0;
+  let ohneLaufzeit = 0;
+  let moeglich = false;
+
+  for (const { category, liste } of gruppen) {
+    if (!unterstuetztLaufzeit(category)) continue;
+    moeglich = true;
+    for (const eintrag of liste || []) {
+      const dauer = sehzeitEintrag(eintrag, category);
+      if (dauer === null) {
+        ohneLaufzeit++;
+        continue;
+      }
+      minuten += dauer;
+      gezaehlt++;
+    }
+  }
+
+  return { minuten, gezaehlt, ohneLaufzeit, moeglich };
+}
+
+/* Die beiden Kartenwerte. Auf einer Kennzahl-Karte steht die Einheit
+   schon in der Beschriftung, deshalb hier nur die Zahl.
+
+   Stunden werden auf volle gerundet — Minuten sind bei Summen dieser
+   Groesse ohne Aussage, genau wie in `stundenText`. Tage bekommen
+   eine Nachkommastelle: ganze Tage waeren fuer die Karte zu grob,
+   unter einem Tag stuende sonst nur eine 0. */
+function sehzeitStundenWert(minuten) {
+  return String(Math.round(minuten / 60));
+}
+
+function sehzeitTageWert(minuten) {
+  return (minuten / 1440).toFixed(1);
+}
+
+/* Der Hinweis unter einer Zeitsumme. Er steht wortgleich im
+   Jahresrueckblick und in der Detailauswertung — zwei Formulierungen
+   fuer dieselbe Einschraenkung wuerden sich frueher oder spaeter
+   widersprechen. */
+function ohneLaufzeitHinweis(anzahl) {
+  return anzahl + " Einträge ohne bekannte Laufzeit fehlen in der Summe.";
+}
+
 /**
  * Wie lange ein Eintrag schon vorgemerkt ist, kurz genug fuer die
  * Meta-Zeile einer Listenzeile: "heute", "gestern", "vor 43 Tagen".
@@ -7145,6 +7234,179 @@ function BewertungPruefen({ ranked, onOeffnen }) {
 }
 
 /* ------------------------------------------------------------
+   Du vs. IMDb
+
+   Wo weicht die eigene Endnote am staerksten von der IMDb-Note ab?
+
+   Grundlage ist ausschliesslich, was ohnehin am Eintrag steht:
+   bewertete Eintraege mit eigener Endnote UND gespeicherter
+   IMDb-Note. Abgerufen wird hier nichts — fehlt die IMDb-Note,
+   taucht der Titel schlicht nicht auf. Sie kommt beim Nachladen der
+   Angaben mit (siehe `imdbRating`) oder wird von Hand eingetragen.
+
+   Der Abschnitt zieht alle angezeigten Kategorien heran und ist
+   damit unabhaengig vom Kategorie-Filter der Detailauswertung
+   darueber — dieselbe Trennung wie bei der Top 10, die ihre eigene
+   Auswahl mitbringt.
+
+   Verglichen wird mit der ANGEZEIGTEN Endnote (`anzeigeNote`, auf
+   0–10 begrenzt). Die IMDb-Skala endet bei 10; ein Duell-Zuschlag
+   ueber die 10 hinaus liesse die Abweichung sonst groesser
+   aussehen, als sie auf derselben Skala ist.
+   ------------------------------------------------------------ */
+
+/* Unter drei Vergleichswerten sagen "die groessten Abweichungen"
+   nichts — dann steht statt zweier fast leerer Listen ein Hinweis. */
+const IMDB_VERGLEICH_MIN = 3;
+
+/* Wie viele Titel je Richtung. Dieselbe Laenge wie die Top 10. */
+const IMDB_VERGLEICH_LAENGE = 10;
+
+/** Alle vergleichbaren Eintraege mit ihrer Abweichung. */
+function imdbVergleiche(ranked, kategorien) {
+  const gesammelt = [];
+  for (const cat of kategorien) {
+    for (const eintrag of ranked[cat.key] || []) {
+      if (typeof eintrag.score !== "number") continue;
+      if (typeof eintrag.imdbRating !== "number") continue;
+      const eigene = anzeigeNote(eintrag.score);
+      gesammelt.push({
+        schluessel: cat.key + "|" + eintrag.id,
+        titel: eintrag.title,
+        eigene,
+        imdb: eintrag.imdbRating,
+        // Auf zwei Stellen gerundet wie jeder andere Notenwert auch —
+        // sonst stuende hinter 9.48 − 8.6 ein "+0.8800000000000008".
+        abweichung: Math.round((eigene - eintrag.imdbRating) * 100) / 100,
+      });
+    }
+  }
+  return gesammelt;
+}
+
+/**
+ * Die beiden Listen: nach oben abweichend absteigend, nach unten
+ * abweichend nach Betrag absteigend. Eine Abweichung von exakt 0
+ * gehoert in keine von beiden — dort ist man sich ja einig.
+ */
+function imdbListen(vergleiche) {
+  return {
+    hoeher: vergleiche
+      .filter((v) => v.abweichung > 0)
+      .sort((a, b) => b.abweichung - a.abweichung)
+      .slice(0, IMDB_VERGLEICH_LAENGE),
+    niedriger: vergleiche
+      .filter((v) => v.abweichung < 0)
+      .sort((a, b) => a.abweichung - b.abweichung)
+      .slice(0, IMDB_VERGLEICH_LAENGE),
+  };
+}
+
+function DuVsImdb({ ranked }) {
+  const kategorien = useKategorien();
+  const vergleiche = useMemo(() => imdbVergleiche(ranked, kategorien), [ranked, kategorien]);
+  const listen = useMemo(() => imdbListen(vergleiche), [vergleiche]);
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>
+        Du vs. IMDb
+      </h3>
+
+      {vergleiche.length < IMDB_VERGLEICH_MIN ? (
+        <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
+          Noch zu wenig zum Vergleichen — ab {IMDB_VERGLEICH_MIN} bewerteten
+          Einträgen mit IMDb-Note stehen hier die größten Abweichungen.
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
+            Deine Endnote gegen die IMDb-Note, über alle Kategorien und
+            unabhängig von der Auswahl oben. {vergleiche.length} Einträge
+            haben beide Noten.
+          </div>
+
+          <ImdbListe
+            titel="Du deutlich höher"
+            eintraege={listen.hoeher}
+            leer="Kein Titel liegt über seiner IMDb-Note."
+          />
+          <ImdbListe
+            titel="Du deutlich niedriger"
+            eintraege={listen.niedriger}
+            leer="Kein Titel liegt unter seiner IMDb-Note."
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+/* Eine der beiden Listen. Die Ueberschrift traegt dieselbe kleine
+   Mono-Beschriftung wie die Zeilen im Jahresrueckblick. */
+function ImdbListe({ titel, eintraege, leer }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div
+        style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: 0.5,
+          color: "#9A968C", marginBottom: 4,
+        }}
+      >
+        {titel.toUpperCase()}
+      </div>
+      {eintraege.length === 0 ? (
+        <div style={{ color: "#55524c", fontSize: 13, padding: "8px 0" }}>{leer}</div>
+      ) : (
+        eintraege.map((v) => <ImdbZeile key={v.schluessel} vergleich={v} />)
+      )}
+    </div>
+  );
+}
+
+/* Titel links, beide Noten und die Abweichung rechts. Der Titel
+   bekommt den ganzen Rest der Zeile und wird bei Ueberlaenge
+   abgeschnitten; die Zahlen rechts stehen fest und schrumpfen nie —
+   sie sind der Grund, warum die Zeile ueberhaupt dasteht.
+
+   Die Farben der Abweichung sind beide schon in der App in
+   Gebrauch: das Gruen der richtigen Antwort aus "Higher or Lower"
+   und das Rot, das ueberall die Fehlermeldungen traegt. */
+function ImdbZeile({ vergleich }) {
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10,
+        padding: "8px 0", borderBottom: "1px solid #232326",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 13.5, minWidth: 0,
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        }}
+      >
+        {vergleich.titel}
+      </span>
+      <span style={{ display: "flex", alignItems: "baseline", gap: 10, flexShrink: 0 }}>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5, color: "#9A968C" }}>
+          {vergleich.eigene.toFixed(2)} · {vergleich.imdb.toFixed(1)}
+        </span>
+        <span
+          style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 700,
+            color: vergleich.abweichung > 0 ? TREFFER_GRUEN : "#d9736a",
+            minWidth: 46, textAlign: "right",
+          }}
+        >
+          {zuschlagText(vergleich.abweichung)}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------
    Zeitaufwand Watchlist
 
    Wie lange braucht es, alles Vorgemerkte zu schauen? Gezaehlt wird
@@ -7515,8 +7777,7 @@ function Jahresrueckblick({ ranked }) {
             Gezählt wird nach dem Datum der Bewertung; bei Serien nach der
             zuletzt nachgetragenen Staffel. Spiele haben keine abrufbare
             Laufzeit und gehen in die gesehene Zeit nicht ein.
-            {rueckblick.ohneLaufzeit > 0 &&
-              " " + rueckblick.ohneLaufzeit + " Einträge ohne bekannte Laufzeit fehlen in der Summe."}
+            {rueckblick.ohneLaufzeit > 0 && " " + ohneLaufzeitHinweis(rueckblick.ohneLaufzeit)}
             {daten.ohneDatum > 0 &&
               " " + daten.ohneDatum + " ältere Einträge tragen kein Bewertungsdatum und stehen in keinem Jahr."}
           </div>
@@ -7590,6 +7851,27 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
   }, [ranked, bereich, kategorien]);
 
   const scopedStats = statsFor(scopedList);
+
+  /* Die Sehzeit der Detailauswertung: Laufzeit mal Zaehler, ueber
+     genau dieselbe Auswahl wie die Kennzahlen daneben. Gerechnet wird
+     je Kategorie, weil nur so feststeht, welcher Eintrag ueberhaupt
+     eine Laufzeit haben kann — Spiele haben keine. */
+  const sehzeit = useMemo(() => {
+    const gruppen =
+      bereich === "all"
+        ? kategorien.map((c) => ({ category: c.key, liste: ranked[c.key] }))
+        : [{ category: bereich, liste: ranked[bereich] }];
+    return sehzeitSumme(gruppen);
+  }, [ranked, bereich, kategorien]);
+
+  /* Unter den Karten: was fehlt. Bei einer Auswahl ganz ohne Laufzeit
+     ist das der Grund selbst, sonst die Zahl der Eintraege, deren
+     Laufzeit noch nicht bekannt ist. */
+  const sehzeitHinweis = !sehzeit.moeglich
+    ? "Spiele haben keine abrufbare Laufzeit und ergeben keine Sehzeit."
+    : sehzeit.ohneLaufzeit > 0
+      ? ohneLaufzeitHinweis(sehzeit.ohneLaufzeit)
+      : null;
 
   /* Kriterien-Durchschnitte werden ausschließlich innerhalb einer
      Kategorie gebildet. Bei "Alle" gibt es deshalb einen Block je
@@ -7677,13 +7959,36 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
       {scopedList.length === 0 ? (
         <div style={{ color: "#77746c", padding: 30, textAlign: "center" }}>Noch keine Einträge in diesem Bereich.</div>
       ) : (
-        <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
-          <StatCard label="ANZAHL" value={scopedStats.count} />
-          <StatCard label="Ø ENDNOTE" value={scopedStats.avg.toFixed(2)} color={scoreToColor(scopedStats.avg)} />
-          <StatCard label="HÖCHSTE" value={scopedStats.max.toFixed(2)} color={scoreToColor(scopedStats.max)} />
-          <StatCard label="NIEDRIGSTE" value={scopedStats.min.toFixed(2)} color={scoreToColor(scopedStats.min)} />
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <StatCard label="ANZAHL" value={scopedStats.count} />
+            <StatCard label="Ø ENDNOTE" value={scopedStats.avg.toFixed(2)} color={scoreToColor(scopedStats.avg)} />
+            <StatCard label="HÖCHSTE" value={scopedStats.max.toFixed(2)} color={scoreToColor(scopedStats.max)} />
+            <StatCard label="NIEDRIGSTE" value={scopedStats.min.toFixed(2)} color={scoreToColor(scopedStats.min)} />
+          </div>
+
+          {/* Die gesamte Sehzeit der Auswahl — dieselbe Rechnung wie in
+              `sehzeitSumme` und nirgends sonst. Die beiden Karten haben
+              eine eigene Zeile, damit "Tage" immer neben "Stunden"
+              steht und nicht je nach Breite allein darunter rutscht —
+              dieselbe Aufteilung wie beim Zeitaufwand der Watchlist. */}
+          {sehzeit.moeglich && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+              <StatCard label="STUNDEN" value={sehzeitStundenWert(sehzeit.minuten)} />
+              <StatCard label="TAGE" value={sehzeitTageWert(sehzeit.minuten)} />
+            </div>
+          )}
+          {sehzeitHinweis && (
+            <div style={{ fontSize: 11, color: "#77746c", lineHeight: 1.6, marginTop: 8 }}>
+              {sehzeitHinweis}
+            </div>
+          )}
         </div>
       )}
+
+      {/* Die eigene Note gegen die IMDb-Note. Steht direkt unter der
+          Detailauswertung, folgt deren Kategorie-Filter aber nicht. */}
+      <DuVsImdb ranked={ranked} />
 
       {/* Top 10 steht mit eigenem Filter zwischen Detailauswertung und
           Bewertungsverteilung — unabhaengig von der Auswahl darueber. */}
