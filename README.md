@@ -1,4 +1,4 @@
-# Bewertungs-App — Filme, Serien, Anime, Kinderserien, Adult Animation, Dokus, Spiele
+# Bewertungs-App — Filme, Serien, Anime, Kinderserien, Adult Animation, Dokus, Sitcoms/Comedy, Spiele
 
 Persönliche Bewertungs-App mit gewichteten Kriterien je Kategorie
 (sechs oder sieben, je nach Kategorie) + Bauchgefühl,
@@ -8,7 +8,7 @@ getrennten Rankings, Filtern, Statistik, Postern und echter Datenbank.
 - **Backend:** Vercel Serverless Functions (Ordner `api/`)
 - **Datenbank:** Neon Postgres (kostenloser Plan)
 - **Kategorien:** Filme, Serien, Anime, Kinderserien, Adult Animation,
-  Dokus und Spiele — je mit eigenen Kriterien
+  Dokus, Sitcoms/Comedy und Spiele — je mit eigenen Kriterien
 - **Poster:** automatisch über TMDB / Jikan / TVMaze / iTunes, Spiele über SteamGridDB
 - **Angaben zum Werk:** Erscheinungsjahr und Regie über TMDB, IMDb-Note als
   Vergleichswert über OMDb — überall außer bei Spielen
@@ -185,6 +185,27 @@ Sound in `sound`. Eine neue Spalte braucht die Kategorie damit nicht.
 Einzeldokus und Doku-Serien stehen in **einem** Reiter. Staffeln gibt es
 dort nicht: Auch eine Doku-Serie bekommt genau eine Gesamtnote.
 
+**Sitcoms/Comedy** (eigene Kriterien und eigene Gewichte):
+
+| Kriterium | Gewicht |
+|-----------|---------|
+| Humor / Gag-Dichte | 25 % |
+| Charaktere & Ensemble | 20 % |
+| Dialoge & Timing | 15 % |
+| Wiederschauwert | 15 % |
+| Story / roter Faden | 10 % |
+| Schauspiel | 10 % |
+| Musik & Sound | 5 % |
+
+Wie bei Anime, Kinderserien und Dokus wechselt nur die Beschriftung,
+nicht die Datenspalte: Humor liegt in `unterhaltung`, Ensemble in
+`charaktere`, Dialoge & Timing in `inszenierung`, Wiederschauwert in
+`emotion`, Story in `story`, Schauspiel in `schauspiel` und Musik in
+`sound`. Eine neue Spalte braucht die Kategorie damit nicht.
+
+Comedy-Serien und Comedy-Filme stehen in **einem** Reiter. Staffeln gibt
+es dort nicht: Auch eine Sitcom bekommt genau eine Gesamtnote.
+
 **Kinderserien** (eigene Kriterien, sechs statt sieben):
 
 | Kriterium | Gewicht |
@@ -334,20 +355,22 @@ Quellen, jeweils in dieser Reihenfolge:
 | Kinderserien | TVMaze → TMDB → iTunes |
 | Adult Animation | TVMaze → TMDB → iTunes |
 | Dokus | TMDB (movie) → TMDB (tv) → iTunes |
+| Sitcoms/Comedy | TMDB (movie) → TMDB (tv) → iTunes |
 | Spiele | SteamGridDB |
 
 Kinderserien und Adult Animation laufen über dieselbe Kette wie Serien:
 Für TVMaze und TMDB sind es schlicht Serien, eigene Kategorien sind sie
 nur in dieser App.
 
-Dokus fragen TMDB in **beiden** Bereichen — erst `movie`, dann `tv`.
-Im Doku-Reiter stehen Einzeldokus und Doku-Serien nebeneinander, und
-nur eine Suche über beide Bereiche findet beides. Dasselbe gilt für die
-Titelauswahl beim Hinzufügen (`api/search.js`): Dort werden die beiden
-Trefferlisten abwechselnd zusammengelegt, damit keine der beiden
-Arten verdrängt wird. Die Laufzeit richtet sich danach, was TMDB
-geliefert hat: eine Filmlaufzeit bei der Einzeldoku, Folgenlänge mal
-Folgenzahl bei der Doku-Serie.
+Dokus und Sitcoms/Comedy fragen TMDB in **beiden** Bereichen — erst
+`movie`, dann `tv`. In beiden Reitern stehen Filme und Serien
+nebeneinander (Einzeldokus neben Doku-Serien, Comedy-Filme neben
+Comedy-Serien), und nur eine Suche über beide Bereiche findet beides.
+Dasselbe gilt für die Titelauswahl beim Hinzufügen (`api/search.js`):
+Dort werden die beiden Trefferlisten abwechselnd zusammengelegt, damit
+keine der beiden Arten verdrängt wird. Die Laufzeit richtet sich danach,
+was TMDB geliefert hat: eine Filmlaufzeit beim Einzelwerk, Folgenlänge
+mal Folgenzahl bei der Serie.
 
 TVMaze taucht bei Filmen nicht auf, weil es ausschließlich Serien kennt.
 Für Spiele gibt es nur SteamGridDB — die übrigen Quellen kennen keine
@@ -677,6 +700,7 @@ einzelner Film sagt über den Geschmack nichts aus.
 | Kinderserien | TMDB `/discover/tv` | wie Serien, Profil aus der eigenen Kategorie |
 | Adult Animation | TMDB `/discover/tv` | wie Serien, Profil aus der eigenen Kategorie |
 | Dokus | TMDB `/discover/movie` | Profil aus der eigenen Kategorie |
+| Sitcoms/Comedy | TMDB `/discover/movie` | Profil aus der eigenen Kategorie |
 | Anime | Jikan `/anime` | Genres, Jahrzehnt, nach Note sortiert, Mindestnote 7, zwei Seiten je Abfrage |
 
 Bei Serien gibt es keine Abfrage nach Regie: TMDBs Entdecken-Endpunkt für
@@ -1333,7 +1357,7 @@ Endnote eingeht:
 
 | | |
 | --- | --- |
-| Andere Kategorien | Serien, Anime, Kinderserien, Adult Animation, Dokus, Spiele — keine wird angefasst |
+| Andere Kategorien | Serien, Anime, Kinderserien, Adult Animation, Dokus, Sitcoms/Comedy, Spiele — keine wird angefasst |
 | Staffelbewertungen | bleiben stehen; Filme haben ohnehin keine Staffeln |
 | Bauchgefühl | bleibt Ziffer für Ziffer stehen |
 | Elo, Duelle, Siege, Duell-Zuschlag | bleiben stehen. Anders als die Sammelfunktion setzt diese Aktion `elo` **nicht** zurück — der Zuschlag steht danach unverändert neben der neuen Kriterien-Note |
@@ -1406,6 +1430,14 @@ Kriteriennote = Informationsgehalt×0.25 + Aufbau×0.20
               + Protagonisten×0.15 + Bildsprache×0.15
               + Unterhaltung×0.10 + Glaubwürdigkeit×0.10
               + Sound×0.05
+```
+
+Sitcoms/Comedy:
+
+```
+Kriteriennote = Humor×0.25 + Ensemble×0.20 + Dialoge×0.15
+              + Wiederschauwert×0.15 + Story×0.10 + Schauspiel×0.10
+              + Musik×0.05
 ```
 
 Spiele:

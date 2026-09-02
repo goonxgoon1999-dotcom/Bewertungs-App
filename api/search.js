@@ -11,8 +11,8 @@
  * iTunes), Serien (auch Kinderserien und Adult Animation) -> TVMaze,
  * Anime -> Jikan, Spiele -> SteamGridDB.
  * Findet die erste Quelle nichts, springt bei Serien und Anime TMDB
- * ein. Dokus fragen TMDB in BEIDEN Bereichen (movie und tv), weil im
- * Doku-Reiter Einzeldokus und Doku-Serien nebeneinander stehen.
+ * ein. Dokus und Sitcoms/Comedy fragen TMDB in BEIDEN Bereichen (movie
+ * und tv), weil in ihrem Reiter Filme und Serien nebeneinander stehen.
  * Die Suche laeuft serverseitig, damit die Schluessel auf dem
  * Server bleiben und es keine CORS-Probleme gibt.
  */
@@ -123,10 +123,10 @@ function mitTmdbTiteln(treffer, tmdbTreffer) {
  * Zwei Trefferlisten abwechselnd zusammenlegen — erst der eine, dann
  * der andere, und so fort.
  *
- * Fuer Dokus: Ein blosses Aneinanderhaengen wuerde die Serien
- * verdraengen, sobald der Filmbereich schon acht Treffer liefert. So
- * ist beides in der Auswahl zu sehen, und die Reihenfolge innerhalb
- * einer Quelle bleibt, wie die Quelle sie geliefert hat.
+ * Fuer Dokus und Sitcoms/Comedy: Ein blosses Aneinanderhaengen wuerde
+ * die Serien verdraengen, sobald der Filmbereich schon acht Treffer
+ * liefert. So ist beides in der Auswahl zu sehen, und die Reihenfolge
+ * innerhalb einer Quelle bleibt, wie die Quelle sie geliefert hat.
  */
 function abwechselnd(a, b) {
   const raus = [];
@@ -248,9 +248,13 @@ export default async function handler(req, res) {
     } else if (category === "anime") {
       results = await jikanSuche(title);
       if (!results.length && hasTmdb) results = await tmdbSuche(title, "tv");
-    } else if (category === "doku") {
+    } else if (category === "doku" || category === "comedy") {
       // Beide TMDB-Bereiche, abwechselnd zusammengelegt. Ohne
       // Schluessel bleibt es wie bei Filmen bei iTunes.
+      //
+      // Sitcoms/Comedy laeuft hier mit: Im Comedy-Reiter stehen
+      // Comedy-Serien und Comedy-Filme nebeneinander, genau wie im
+      // Doku-Reiter Doku-Serien neben Einzeldokus.
       if (hasTmdb) {
         const [filme, serien] = await Promise.all([
           tmdbSuche(title, "movie"),

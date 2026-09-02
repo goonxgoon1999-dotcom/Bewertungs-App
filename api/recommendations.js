@@ -1,5 +1,5 @@
 /**
- * GET  /api/recommendations?category=movie|series|anime|kids|adultanim|doku&profil=<JSON>
+ * GET  /api/recommendations?category=movie|series|anime|kids|adultanim|doku|comedy&profil=<JSON>
  * POST /api/recommendations   Body: { category, profil }
  * -> { results: [{ title, year, poster, begruendung, punkte }], gefragt, hinweis }
  *
@@ -42,9 +42,10 @@
  * gibt es deshalb keine Abfrage nach Regie oder Schoepfern. Filmreihe
  * und Studio sind ohnehin nur bei Filmen hinterlegt.
  *
- * Dokus sammeln ueber TMDBs /discover/movie — dort steht der Bestand
- * an Dokumentarfilmen. Das Geschmacksprofil kommt wie bei jeder
- * Kategorie aus den eigenen Bewertungen.
+ * Dokus und Sitcoms/Comedy sammeln ueber TMDBs /discover/movie — dort
+ * steht der Bestand an Dokumentarfilmen und Komoedien. Das
+ * Geschmacksprofil kommt wie bei jeder Kategorie aus den eigenen
+ * Bewertungen.
  *
  * Spiele haben weiterhin keinen Abschnitt: SteamGridDB ist eine
  * Bilddatenbank und kennt weder Genres noch Aehnlichkeiten.
@@ -110,6 +111,7 @@ const NOMEN = {
   kids: "Kinderserien",
   adultanim: "Adult Animation",
   doku: "Dokus",
+  comedy: "Sitcoms/Comedy",
 };
 
 /* ---------------------------------------------------------------- *
@@ -1126,7 +1128,7 @@ export default async function handler(req, res) {
         hinweis: "SteamGridDB ist eine Bilddatenbank und kennt keine Genres.",
       });
     }
-    if (!["movie", "series", "anime", "kids", "adultanim", "doku"].includes(category)) {
+    if (!["movie", "series", "anime", "kids", "adultanim", "doku", "comedy"].includes(category)) {
       return res.status(400).json({ error: "Ungültige Kategorie." });
     }
 
