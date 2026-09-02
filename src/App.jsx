@@ -139,6 +139,36 @@ const DOKU_CRITERIA = [
   { key: "sound", label: "Sound & Sprecher", weight: 0.05, hint: "Musik, Geräuschkulisse, Kommentarstimme" },
 ];
 
+/* Sitcoms/Comedy haben eigene Kriterien und eigene Gewichte: Bei einer
+   Comedy zaehlt zuerst, ob sie zum Lachen bringt — nicht, wie tief die
+   Handlung reicht. Sieben Kriterien, wie bei Film/Serie/Anime.
+
+   Wie bei Anime, Kinderserien und Dokus wechselt nur die Beschriftung,
+   nicht die Datenspalte: gespeichert wird weiterhin in den sieben
+   Feldern von Film, Serie und Anime (siehe COMEDY_KEYS in api/_db.js).
+   Damit braucht auch diese Kategorie keine einzige neue Spalte.
+
+     unterhaltung -> "Humor / Gag-Dichte"
+     charaktere   -> "Charaktere & Ensemble"
+     inszenierung -> "Dialoge & Timing"
+     emotion      -> "Wiederschauwert"
+     story        -> "Story / roter Faden"
+     schauspiel   -> "Schauspiel"
+     sound        -> "Musik & Sound"
+
+   Ein gemeinsamer Reiter fuer Comedy-Serien und Comedy-Filme. Staffeln
+   gibt es hier bewusst nicht: Auch eine Sitcom bekommt genau eine
+   Gesamtnote (siehe SEASON_CATEGORIES). */
+const COMEDY_CRITERIA = [
+  { key: "unterhaltung", label: "Humor / Gag-Dichte", weight: 0.25, hint: "Wie oft und wie gut wird gelacht? Tempo der Pointen" },
+  { key: "charaktere", label: "Charaktere & Ensemble", weight: 0.20, hint: "Figuren, Eigenheiten, Zusammenspiel der Truppe" },
+  { key: "inszenierung", label: "Dialoge & Timing", weight: 0.15, hint: "Wortwitz, Schlagfertigkeit, Rhythmus der Szenen" },
+  { key: "emotion", label: "Wiederschauwert", weight: 0.15, hint: "Läuft es nebenbei immer wieder? Zitierbarkeit" },
+  { key: "story", label: "Story / roter Faden", weight: 0.10, hint: "Handlung und Aufbau über die Folgen hinweg" },
+  { key: "schauspiel", label: "Schauspiel", weight: 0.10, hint: "Leistungen, Chemie, Performance" },
+  { key: "sound", label: "Musik & Sound", weight: 0.05, hint: "Titellied, Musik, Geräuschkulisse" },
+];
+
 const GAME_CRITERIA = [
   { key: "gameplay", label: "Gameplay", weight: 0.25, hint: "Steuerung, Spielmechanik, Spielgefühl" },
   { key: "story", label: "Story", weight: 0.25, hint: "Handlung, Aufbau, Erzählung" },
@@ -158,6 +188,7 @@ const CRITERIA_BY_CATEGORY = {
   // Fragen nach Animationsqualitaet und Synchronstimme sind dieselben.
   adultanim: ANIME_CRITERIA,
   doku: DOKU_CRITERIA,
+  comedy: COMEDY_CRITERIA,
   game: GAME_CRITERIA,
 };
 
@@ -168,10 +199,12 @@ function criteriaFor(category) {
 
 /* Die Reihenfolge hier bestimmt die Reihenfolge ueberall: Tab-Leiste,
    Statistik, Export. Kinderserien und Adult Animation stehen bei den
-   uebrigen Serienarten, Dokus dahinter, Spiele bleiben am Ende.
+   uebrigen Serienarten, Dokus und Sitcoms/Comedy dahinter, Spiele
+   bleiben am Ende.
 
    Dokus sind ein gemeinsamer Reiter fuer Einzeldokus und Doku-Serien
-   — beides bekommt genau eine Gesamtnote. */
+   — beides bekommt genau eine Gesamtnote. Genauso Sitcoms/Comedy: ein
+   Reiter fuer Comedy-Serien und Comedy-Filme, immer eine Gesamtnote. */
 const CATEGORIES = [
   { key: "movie", label: "Filme", singular: "Film" },
   { key: "series", label: "Serien", singular: "Serie" },
@@ -179,6 +212,7 @@ const CATEGORIES = [
   { key: "kids", label: "Kinderserien", singular: "Kinderserie" },
   { key: "adultanim", label: "Adult Animation", singular: "Adult Animation" },
   { key: "doku", label: "Dokus", singular: "Doku" },
+  { key: "comedy", label: "Sitcoms/Comedy", singular: "Sitcom/Comedy" },
   { key: "game", label: "Spiele", singular: "Spiel" },
 ];
 
@@ -341,6 +375,7 @@ const CATEGORY_COLORS = {
   kids: "#C4568C",
   adultanim: "#4A7FC1",
   doku: "#6B9C4F",
+  comedy: "#B5C22E",
   game: "#C4633E",
 };
 
@@ -505,9 +540,9 @@ function computeFinalScore(values, personal, category) {
    Endnote ist der ungewichtete Durchschnitt der Staffelnoten. Jede
    Staffelnote entsteht nach genau derselben Formel wie bisher.
 
-   Dokus stehen bewusst NICHT in der Liste: Auch eine Doku-Serie
-   bekommt genau eine Gesamtnote, die Staffel-Funktion wird dort also
-   gar nicht erst angeboten.
+   Dokus und Sitcoms/Comedy stehen bewusst NICHT in der Liste: Auch
+   eine Doku-Serie und auch eine Sitcom bekommen genau eine Gesamtnote,
+   die Staffel-Funktion wird dort also gar nicht erst angeboten.
    --------------------------------------------------------------- */
 const SEASON_CATEGORIES = ["series", "anime", "kids", "adultanim"];
 
@@ -5485,12 +5520,12 @@ function AmSchauenZeile({ eintrag, busy, akzent, onWeiter, onStand, onAus, ausLa
    Titel suchen — zwei Aufrufe je Titel. Deshalb gehen nur die
    Bestbewerteten als Titel mit. Bei Anime weniger, weil Jikan nur drei
    Anfragen je Sekunde zulaesst. */
-const PROFIL_TITEL = { movie: 12, series: 12, anime: 8, kids: 12, adultanim: 12, doku: 12 };
+const PROFIL_TITEL = { movie: 12, series: 12, anime: 8, kids: 12, adultanim: 12, doku: 12, comedy: 12 };
 
 /* So viele Vorschlaege stehen am Ende in der Liste. Der Server liefert
    deutlich mehr (rund 40) — der Rest ist Vorrat und rueckt nach, sobald
    ein Vorschlag auf der Watchlist landet. */
-const EMPFEHLUNGEN_SICHTBAR = { movie: 15, series: 10, anime: 10, kids: 10, adultanim: 10, doku: 10 };
+const EMPFEHLUNGEN_SICHTBAR = { movie: 15, series: 10, anime: 10, kids: 10, adultanim: 10, doku: 10, comedy: 10 };
 
 /* Vorschlaege werden nur etwa einmal im Monat neu berechnet. Der Cache
    liegt im localStorage und ueberdauert damit auch das Schliessen der
@@ -10592,8 +10627,8 @@ export default function App() {
   anzeigeCacheRef.current = anzeigeCache;
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("movie");
-  // eine der Kategorien (movie, series, anime, kids, adultanim, doku, game),
-  // stats oder minigames
+  // eine der Kategorien (movie, series, anime, kids, adultanim, doku,
+  // comedy, game), stats oder minigames
   const [activeTab, setActiveTab] = useState("movie");
   const [search, setSearch] = useState("");
   // list | suche | form | edit | watchlist-form
