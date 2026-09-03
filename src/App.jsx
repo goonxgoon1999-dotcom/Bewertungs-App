@@ -2737,6 +2737,75 @@ function hinzugefuegtKurz(zeit) {
   return "vor " + tage + " Tagen";
 }
 
+/* Ein Zeitstempel als Datum: "14.03.2024". */
+function datumKurz(zeit) {
+  if (typeof zeit !== "number" || !(zeit > 0)) return "";
+  return new Date(zeit).toLocaleDateString("de-DE", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+  });
+}
+
+/* Derselbe Zeitstempel als Wert fuer <input type="date">:
+   "2024-03-14".
+
+   Bewusst aus den oertlichen Bestandteilen zusammengesetzt statt ueber
+   toISOString: Das rechnet nach UTC um und schoebe ein Datum oestlich
+   von Greenwich um einen Tag zurueck. */
+function datumFeldWert(zeit) {
+  if (typeof zeit !== "number" || !(zeit > 0)) return "";
+  const d = new Date(zeit);
+  const zwei = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + zwei(d.getMonth() + 1) + "-" + zwei(d.getDate());
+}
+
+/* Und zurueck: "2024-03-14" -> Zeitstempel auf 12 Uhr Ortszeit.
+   Mittag statt Mitternacht, damit keine Zeitzonenverschiebung das
+   Datum ueber die Tagesgrenze kippt. Unbrauchbares ergibt null. */
+function feldWertZuZeit(text) {
+  const treffer = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(text || "").trim());
+  if (!treffer) return null;
+  const jahr = Number(treffer[1]);
+  const monat = Number(treffer[2]);
+  const tag = Number(treffer[3]);
+  const d = new Date(jahr, monat - 1, tag, 12, 0, 0, 0);
+  // Ein "2024-02-31" rollt in JavaScript still auf den 2. Maerz weiter
+  // — hier soll es schlicht kein Datum sein.
+  if (d.getFullYear() !== jahr || d.getMonth() !== monat - 1 || d.getDate() !== tag) return null;
+  return d.getTime();
+}
+
+/* ------------------------------------------------------------
+   Erstsichtung — wann wurde der Titel zum ersten Mal gesehen?
+
+   Zwei Quellen, in dieser Reihenfolge:
+
+     1. `firstWatchedAt` — das von Hand eingetragene Datum. Es gibt
+        keinen anderen Weg, auf dem es entsteht: Der Sehzaehler, ein
+        weiterer Durchgang und jedes automatische Nachladen lassen es
+        unberuehrt.
+     2. `ratedAt` — der Tag, an dem aus dem Eintrag ein bewerteter
+        wurde. Der Rueckfallwert.
+
+   `ratedAt` und ausdruecklich NICHT `createdAt`: Letzteres wird auch
+   beim Vormerken gesetzt und stuende bei einem Titel, der zwei Jahre
+   auf der Watchlist lag, um zwei Jahre zu frueh. Auch nicht
+   `bewertetAm` (das den Jahresrueckblick traegt): Dort zaehlt die
+   zuletzt nachgetragene Staffel mit, das Datum wanderte also mit jeder
+   weiteren Staffel nach vorn — genau das soll hier nicht passieren.
+
+   Fehlt beides — Altbestand ohne Bewertungsdatum, Vorgemerktes —,
+   bleibt `zeit` null. Erfunden wird nichts.
+   ------------------------------------------------------------ */
+function erstsichtung(entry) {
+  const eigen =
+    entry && typeof entry.firstWatchedAt === "number" && entry.firstWatchedAt > 0
+      ? entry.firstWatchedAt
+      : null;
+  if (eigen) return { zeit: eigen, eigen: true };
+  const bewertet = entry && typeof entry.ratedAt === "number" && entry.ratedAt > 0 ? entry.ratedAt : null;
+  return { zeit: bewertet, eigen: false };
+}
+
 /**
  * Die Meta-Zeile einer Listenzeile: "1968 · 2 Std. 29 Min. · vor 12
  * Tagen".
@@ -3108,6 +3177,25 @@ const api = {
     return {
       results: Array.isArray(data.results) ? data.results : [],
       hinweis: typeof data.hinweis === "string" ? data.hinweis : "",
+    };
+  },
+  /* Wo laufen die Titel gerade im Abo? Wie bei den Fortsetzungen geht
+     die Liste im Rumpf mit, und was ein Aufruf nicht mehr geschafft
+     hat, steht in `offen`. Die Region entscheidet, welche Anbieter
+     zurueckkommen. */
+  async holeStreaming(region, eintraege) {
+    const res = await fetch("/api/streaming", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ region, eintraege }),
+    });
+    if (!res.ok) {
+      throw new Error((await res.json().catch(() => ({}))).error || "Verfügbarkeit fehlgeschlagen");
+    }
+    const data = await res.json();
+    return {
+      treffer: data && typeof data.treffer === "object" && data.treffer ? data.treffer : {},
+      offen: Array.isArray(data && data.offen) ? data.offen : [],
     };
   },
   /* Gibt es zu bewerteten Serien eine neue Staffel? Die Liste kann lang
@@ -5100,9 +5188,434 @@ function bewertenKnopfStil(busy) {
 }
 
 /* ============================================================
+   STREAMING-VERFÜGBARKEIT
+
+   Wo laeuft ein Titel gerade im Abo? Die Antwort kommt von TMDBs
+   Watch-Providers ueber denselben Schluessel, den die Postersuche
+   schon nutzt (api/streaming.js) — es kommt kein neuer Dienst dazu.
+
+   Gezeigt werden ausschliesslich Abo-Anbieter (flatrate). Leihen und
+   Kaufen bleiben draussen: "Jetzt verfuegbar" soll heissen "ohne
+   weiteres Geld anschaltbar".
+
+   Spiele sind ausgenommen — TMDB kennt sie nicht.
+
+   Der Abruf laeuft in einem EIGENEN Effekt, getrennt vom
+   automatischen Nachladen von Poster, Jahr, Regie und IMDb-Note. Er
+   fasst weder dessen Zaehler noch `items` an; die Nachlade-Schleife
+   laeuft dadurch unveraendert weiter und wird von hier weder gebremst
+   noch abgebrochen.
+   ============================================================ */
+
+/* Die Regionen, die die App kennt. Mehr waeren leicht zu ergaenzen,
+   aber jede zusaetzliche ist ein weiterer Satz Abfragen. */
+const STREAMING_REGIONEN = ["DE", "IT"];
+
+/* Faellt die Automatik auf nichts Bekanntes, gilt Deutschland. */
+const STREAMING_REGION_STANDARD = "DE";
+
+const STREAMING_REGION_SCHLUESSEL = "bewertungsapp.streamingRegion";
+
+/* Die drei Moeglichkeiten der Einstellung. "auto" ist die Vorgabe. */
+const STREAMING_REGION_WAHL = [
+  { key: "auto", label: "Automatisch" },
+  { key: "DE", label: "Deutschland" },
+  { key: "IT", label: "Italien" },
+];
+
+/* Zeitzonen, aus denen sich das Land eindeutig ergibt. Die Liste ist
+   bewusst kurz: Sie muss nur DE und IT erkennen, alles Uebrige faellt
+   ohnehin auf den Standard. */
+const STREAMING_ZONEN = {
+  "Europe/Berlin": "DE",
+  "Europe/Busingen": "DE",
+  "Europe/Rome": "IT",
+  "Europe/Vatican": "IT",
+  "Europe/San_Marino": "IT",
+};
+
+/**
+ * Die Region, die die Automatik ermittelt.
+ *
+ * Erst die Spracheinstellungen des Geraets mit Landeskennung
+ * ("de-DE", "it-IT"), dann die Zeitzone, zuletzt die reine Sprache
+ * ("de", "it"). Ergibt keines davon DE oder IT, gilt Deutschland.
+ */
+function automatischeRegion() {
+  try {
+    const sprachen = [];
+    if (typeof navigator !== "undefined") {
+      if (Array.isArray(navigator.languages)) sprachen.push(...navigator.languages);
+      if (navigator.language) sprachen.push(navigator.language);
+    }
+
+    for (const eintrag of sprachen) {
+      const treffer = /[-_]([A-Za-z]{2})$/.exec(String(eintrag || ""));
+      const land = treffer ? treffer[1].toUpperCase() : "";
+      if (STREAMING_REGIONEN.includes(land)) return land;
+    }
+
+    const zone =
+      typeof Intl !== "undefined" && Intl.DateTimeFormat
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : "";
+    if (STREAMING_ZONEN[zone]) return STREAMING_ZONEN[zone];
+
+    for (const eintrag of sprachen) {
+      const sprache = String(eintrag || "").slice(0, 2).toUpperCase();
+      if (STREAMING_REGIONEN.includes(sprache)) return sprache;
+    }
+  } catch (e) {
+    // Ein Geraet ohne Intl oder navigator: dann eben der Standard.
+  }
+  return STREAMING_REGION_STANDARD;
+}
+
+/** Die gespeicherte Einstellung: "auto", "DE" oder "IT". */
+function ladeRegionEinstellung() {
+  try {
+    const roh = window.localStorage.getItem(STREAMING_REGION_SCHLUESSEL);
+    return STREAMING_REGION_WAHL.some((w) => w.key === roh) ? roh : "auto";
+  } catch (e) {
+    return "auto";
+  }
+}
+
+function speichereRegionEinstellung(wahl) {
+  try {
+    window.localStorage.setItem(STREAMING_REGION_SCHLUESSEL, wahl);
+  } catch (e) {
+    // Ohne localStorage gilt die Einstellung nur fuer diesen Besuch.
+  }
+}
+
+/** Einstellung -> tatsaechliche Region. */
+function regionAus(einstellung) {
+  return STREAMING_REGIONEN.includes(einstellung) ? einstellung : automatischeRegion();
+}
+
+/* ------------------------------------------------------------
+   Der Zwischenspeicher
+
+   Aufbau:
+     { fassung, stand: { [id]: { quellArt, quellId,
+                                 regionen: { DE: {...}, IT: {...} } } } }
+
+   Je Eintrag UND Region ein eigener Zeitstempel. Damit bleibt beim
+   Wechsel der Region die andere erhalten und wird nicht neu geholt.
+   ------------------------------------------------------------ */
+const STREAMING_SPEICHER = "bewertungsapp.streaming";
+const STREAMING_FASSUNG = 1;
+
+/* Ein Ergebnis haelt eine Woche. */
+const STREAMING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/* Ein gescheiterter Abruf nur einen Tag — sonst wirkte eine Stoerung
+   eine Woche lang nach. */
+const STREAMING_TTL_FEHLER_MS = 24 * 60 * 60 * 1000;
+
+/* So oft fragt die App hoechstens nach. Ein Aufruf schafft, was in
+   seine Frist passt; der Rest kommt in weiteren Runden. */
+const STREAMING_RUNDEN = 12;
+
+function ladeStreaming() {
+  try {
+    const roh = window.localStorage.getItem(STREAMING_SPEICHER);
+    const eintrag = roh ? JSON.parse(roh) : null;
+    if (!eintrag || eintrag.fassung !== STREAMING_FASSUNG || !eintrag.stand) return null;
+    return eintrag;
+  } catch (e) {
+    return null;
+  }
+}
+
+function speichereStreaming(eintrag) {
+  try {
+    window.localStorage.setItem(STREAMING_SPEICHER, JSON.stringify(eintrag));
+  } catch (e) {
+    // Ohne localStorage laeuft alles weiter, nur ohne Wochengedaechtnis.
+  }
+}
+
+/** Der gespeicherte Stand eines Eintrags in einer Region — oder null. */
+function streamingStand(streaming, id, region) {
+  const eintrag = streaming && streaming.stand ? streaming.stand[id] : null;
+  const fuerRegion = eintrag && eintrag.regionen ? eintrag.regionen[region] : null;
+  return fuerRegion && typeof fuerRegion.zeit === "number" ? fuerRegion : null;
+}
+
+/** Ist der gespeicherte Stand noch brauchbar? */
+function streamingFrisch(stand) {
+  if (!stand) return false;
+  const frist = Array.isArray(stand.anbieter) ? STREAMING_TTL_MS : STREAMING_TTL_FEHLER_MS;
+  return Date.now() - stand.zeit < frist;
+}
+
+/**
+ * Die Anbieter eines Eintrags fuer die Anzeige.
+ *
+ *   null  — noch nicht bekannt. Die Stelle bleibt leer, statt
+ *           umzuspringen (Abfrage laeuft, oder sie ist gescheitert).
+ *   []    — kein Abo-Anbieter. Dafuer steht der Chip "nicht im Abo".
+ *   [...] — die gefundenen Anbieter.
+ */
+function anbieterFuer(streaming, id, region) {
+  const stand = streamingStand(streaming, id, region);
+  return stand && Array.isArray(stand.anbieter) ? stand.anbieter : null;
+}
+
+/**
+ * Die Anfrage an den Endpunkt: alles, was in einer sichtbaren
+ * Kategorie steht, noch keinen frischen Stand hat und nicht zu den
+ * Spielen gehoert. Bewertetes und Vorgemerktes gleichermassen — beide
+ * zeigen die Anbieter an.
+ */
+function streamingAnfrage(items, streaming, region, sichtbar = CATEGORY_KEYS) {
+  const bekannt = (streaming && streaming.stand) || {};
+  const raus = [];
+
+  for (const key of sichtbar) {
+    // Spiele bleiben draussen: TMDB kennt sie nicht.
+    if (key === "game") continue;
+    for (const eintrag of items[key] || []) {
+      if (streamingFrisch(streamingStand(streaming, eintrag.id, region))) continue;
+      const frueher = bekannt[eintrag.id];
+      raus.push({
+        id: eintrag.id,
+        category: key,
+        title: eintrag.title,
+        // Die Kennung aus einem frueheren Durchgang spart die Suche.
+        // Sie haengt nicht an der Region und gilt deshalb fuer beide.
+        quellArt: (frueher && frueher.quellArt) || null,
+        quellId: (frueher && frueher.quellId) || null,
+      });
+    }
+  }
+  return raus;
+}
+
+/**
+ * Die Antwort in den Zwischenspeicher einarbeiten.
+ *
+ * Geschrieben wird ausschliesslich die abgefragte Region; was zur
+ * anderen gespeichert ist, bleibt unangetastet.
+ */
+function streamingEinarbeiten(alt, region, treffer) {
+  const stand = { ...((alt && alt.stand) || {}) };
+  const jetzt = Date.now();
+
+  for (const id of Object.keys(treffer || {})) {
+    const e = treffer[id] || {};
+    const vorher = stand[id] || {};
+    /* Drei Faelle:
+         gefunden                       -> die Liste (auch die leere)
+         nicht gefunden, keine Kennung  -> TMDB kennt den Titel nicht;
+                                           als "nicht im Abo" gueltig
+         nicht gefunden, mit Kennung    -> der Abruf ist gescheitert;
+                                           kein Ergebnis, kurze Frist */
+    const anbieter = e.gefunden
+      ? Array.isArray(e.anbieter)
+        ? e.anbieter
+        : []
+      : e.quellId
+        ? null
+        : [];
+
+    stand[id] = {
+      quellArt: e.quellArt || vorher.quellArt || null,
+      quellId: e.quellId || vorher.quellId || null,
+      regionen: { ...(vorher.regionen || {}), [region]: { zeit: jetzt, anbieter } },
+    };
+  }
+
+  return { fassung: STREAMING_FASSUNG, stand };
+}
+
+/* ------------------------------------------------------------
+   Anzeige
+   ------------------------------------------------------------ */
+
+/* Ein Anbieter-Chip im vorhandenen Chip-Stil (vgl. FilterChip):
+   abgerundet, gedaempfte Schrift, duenner Rahmen. Das Logo steht als
+   kleines Quadrat davor; fehlt es, bleibt nur der Name. */
+function AnbieterChip({ anbieter, klein = false }) {
+  return (
+    <span
+      title={anbieter.name}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: klein ? 4 : 6,
+        padding: klein ? "3px 7px" : "6px 10px",
+        borderRadius: 6,
+        fontSize: klein ? 10.5 : 12.5,
+        background: "transparent",
+        color: "#9A968C",
+        border: "1px solid #33333a",
+        maxWidth: "100%",
+      }}
+    >
+      {anbieter.logo && (
+        <img
+          src={anbieter.logo}
+          alt=""
+          loading="lazy"
+          style={{
+            width: klein ? 12 : 16, height: klein ? 12 : 16,
+            borderRadius: 3, flexShrink: 0, objectFit: "cover",
+          }}
+        />
+      )}
+      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {anbieter.name}
+      </span>
+    </span>
+  );
+}
+
+/* Kein Abo-Anbieter gefunden: ein einzelner, gedaempfter Chip. Er ist
+   eine Aussage — "hier laeuft gerade nichts" — und deshalb nicht
+   dasselbe wie eine leere Stelle. */
+function KeinAboChip({ klein = false }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex", alignItems: "center",
+        padding: klein ? "3px 7px" : "6px 10px",
+        borderRadius: 6,
+        fontSize: klein ? 10.5 : 12.5,
+        background: "transparent",
+        color: "#55524c",
+        border: "1px dashed #2A2A2E",
+      }}
+    >
+      nicht im Abo
+    </span>
+  );
+}
+
+/* Wie viele Chips eine Listenzeile hoechstens traegt. Was darueber
+   hinausgeht, steht als "+N" dahinter. */
+const ANBIETER_IN_ZEILE = 3;
+
+/**
+ * Die Anbieter unter der Meta-Zeile einer Listenzeile.
+ *
+ * `anbieter === null` heisst "noch nicht bekannt" — dann bleibt die
+ * Stelle leer, statt beim Eintreffen der Antwort umzuspringen.
+ */
+function AnbieterZeile({ anbieter }) {
+  if (!Array.isArray(anbieter)) return null;
+  const gezeigt = anbieter.slice(0, ANBIETER_IN_ZEILE);
+  const rest = anbieter.length - gezeigt.length;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap", marginTop: 6 }}>
+      {gezeigt.length === 0 ? (
+        <KeinAboChip klein />
+      ) : (
+        gezeigt.map((a) => <AnbieterChip key={a.id} anbieter={a} klein />)
+      )}
+      {rest > 0 && (
+        <span
+          title={anbieter.slice(ANBIETER_IN_ZEILE).map((a) => a.name).join(", ")}
+          style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 10.5, color: "#77746c", padding: "3px 2px",
+          }}
+        >
+          +{rest}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Die Karte in der Detailansicht: Beschriftung, Regionskuerzel,
+ * darunter die Anbieter als Chips.
+ *
+ * Solange nichts bekannt ist, gibt es die Karte gar nicht — die Stelle
+ * bleibt leer, statt einen Platzhalter zu zeigen, der gleich wieder
+ * verschwindet.
+ */
+function VerfuegbarKarte({ anbieter, region }) {
+  if (!Array.isArray(anbieter)) return null;
+
+  return (
+    <div
+      style={{
+        background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12,
+        padding: 16, marginBottom: 20,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)",
+          fontFamily: "'JetBrains Mono', monospace", marginBottom: 10,
+        }}
+      >
+        JETZT VERFÜGBAR{" "}
+        <span style={{ color: "#77746c" }}>{region}</span>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {anbieter.length === 0 ? (
+          <KeinAboChip />
+        ) : (
+          anbieter.map((a) => <AnbieterChip key={a.id} anbieter={a} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------
+   Die Einstellung im Daten-Panel.
+   ------------------------------------------------------------ */
+function RegionEinstellung({ wahl, erkannt, onAendern }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: "#77746c", marginBottom: 12, lineHeight: 1.5 }}>
+        Für welches Land die Streaming-Verfügbarkeit gilt. Angezeigt werden
+        nur Abo-Anbieter, nicht Leihen oder Kaufen. Die Einstellung gilt
+        nur auf diesem Gerät und ändert nichts an der Sammlung.
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {STREAMING_REGION_WAHL.map((w) => {
+          const aktiv = wahl === w.key;
+          return (
+            <button
+              key={w.key}
+              type="button"
+              aria-pressed={aktiv}
+              onClick={() => onAendern(w.key)}
+              style={{
+                flex: "1 1 90px", padding: "10px", borderRadius: 6, fontSize: 13,
+                cursor: "pointer", fontWeight: aktiv ? 700 : 400,
+                background: aktiv ? "var(--accent, #C9A227)" : "transparent",
+                color: aktiv ? "#17171A" : "#9A968C",
+                border: "1px solid " + (aktiv ? "var(--accent, #C9A227)" : "#33333a"),
+              }}
+            >
+              {w.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ fontSize: 11, color: "#77746c", marginTop: 10, lineHeight: 1.5 }}>
+        {wahl === "auto"
+          ? "Aus Spracheinstellung bzw. Zeitzone dieses Geräts erkannt: " + erkannt +
+            ". Wird weder DE noch IT erkannt, gilt Deutschland."
+          : "Fest auf " + erkannt + " gestellt."}
+        {" Die Anbieter werden je Eintrag und Region höchstens einmal pro Woche neu geholt."}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
    WATCHLIST — vorgemerkt, noch ohne Note
    ============================================================ */
-function WatchlistZeile({ eintrag, busy, merkliste, amSchauenLabelText, onAmSchauen, onBewerten, onEntfernen, reihe = 0, vorrang = false }) {
+function WatchlistZeile({ eintrag, busy, merkliste, amSchauenLabelText, anbieter = null, onAmSchauen, onBewerten, onEntfernen, reihe = 0, vorrang = false }) {
   /* Jahr, Laufzeit und Vormerkdatum in einer Zeile. Was nicht bekannt
      ist — bei Spielen etwa die Laufzeit —, faellt samt Trennzeichen
      weg. */
@@ -5114,6 +5627,10 @@ function WatchlistZeile({ eintrag, busy, merkliste, amSchauenLabelText, onAmScha
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={ZEILEN_TITEL}>{eintrag.title}</div>
         {meta && <div style={ZEILEN_META}>{meta}</div>}
+        {/* Wo der Titel gerade im Abo laeuft — hoechstens drei Chips,
+            der Rest als "+N". Solange nichts bekannt ist, steht hier
+            gar nichts (siehe AnbieterZeile). */}
+        <AnbieterZeile anbieter={anbieter} />
         {/* Die Bedienelemente stehen unter dem Titel statt neben ihm:
             nebeneinander blieb bei 430 px weder fuer den Titel noch
             fuer das Hinzufuegedatum genug Platz. */}
@@ -6597,6 +7114,143 @@ function AngabenEditor({ entry, regieLabel, busy, onSave, onCancel }) {
   );
 }
 
+/* ------------------------------------------------------------
+   ERSTMALS GESCHAUT — die Karte in der Detailansicht.
+
+   Sie hat zwei Zustaende, und der Unterschied ist der ganze Punkt:
+
+     - Ein eigenes Datum steht am Eintrag: normale Textfarbe, kein
+       Zusatz.
+     - Keines eingetragen: das Bewertungsdatum in gedaempfter Farbe,
+       dahinter klein "(Bewertungsdatum)" — damit sichtbar bleibt,
+       dass es ein Rueckfall ist und keine Angabe.
+
+   Fehlt beides — Altbestand ohne Bewertungsdatum —, laedt die Karte
+   zum Eintragen ein, statt ein Datum zu erfinden.
+
+   Aufbau und Masse wie die IMDb-Karte daneben, samt Stiftknopf
+   rechts.
+   ------------------------------------------------------------ */
+function ErstsichtungKarte({ zeit, eigen, onBearbeiten }) {
+  return (
+    <span
+      title={
+        eigen
+          ? "Wann du den Titel zum ersten Mal gesehen hast"
+          : "Kein eigenes Datum eingetragen — es gilt das Bewertungsdatum"
+      }
+      style={{
+        display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap",
+        background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 8,
+        padding: "6px 12px", maxWidth: "100%",
+      }}
+    >
+      {/* Die Beschriftung bleibt in einer Zeile; wird es eng, rutscht
+          lieber der Zusatz dahinter um — ein umgebrochenes
+          "ERSTMALS / GESCHAUT" liest sich schlechter. */}
+      <span
+        style={{
+          fontSize: 11, letterSpacing: 1, color: "#9A968C",
+          fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap",
+        }}
+      >
+        ERSTMALS GESCHAUT
+      </span>
+      {zeit ? (
+        <>
+          <span
+            style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 14, fontWeight: 700,
+              color: eigen ? "#EDEAE3" : "#77746c",
+            }}
+          >
+            {datumKurz(zeit)}
+          </span>
+          {!eigen && (
+            <span style={{ fontSize: 10.5, color: "#77746c" }}>(Bewertungsdatum)</span>
+          )}
+        </>
+      ) : (
+        <span style={{ fontSize: 12.5, color: "#77746c" }}>eintragen</span>
+      )}
+      <StiftKnopf title="Erstsichtung bearbeiten" onClick={onBearbeiten} />
+    </span>
+  );
+}
+
+/* ------------------------------------------------------------
+   Das Datumsfeld dazu.
+
+   "Speichern" schreibt den Wert, "Leeren" setzt auf den
+   Rueckfallwert zurueck — es loescht ausschliesslich dieses eine
+   Feld und fasst weder die Bewertung noch das Bewertungsdatum an.
+   ------------------------------------------------------------ */
+function ErstsichtungEditor({ zeit, eigen, busy, onSave, onCancel }) {
+  const [wert, setWert] = useState(eigen ? datumFeldWert(zeit) : "");
+
+  function speichern() {
+    // Ein leeres Feld heisst dasselbe wie "Leeren".
+    onSave(wert.trim() ? feldWertZuZeit(wert) : null);
+  }
+
+  return (
+    <div style={{ background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12, padding: 16, marginBottom: 20 }}>
+      <div style={{ ...angabenLabel, marginBottom: 12 }}>ERSTMALS GESCHAUT</div>
+
+      <label style={angabenLabel} htmlFor="erstsichtung-datum">DATUM</label>
+      <input
+        id="erstsichtung-datum"
+        type="date"
+        value={wert}
+        onChange={(e) => setWert(e.target.value)}
+        style={{ ...angabenFeld, fontFamily: "'JetBrains Mono', monospace", marginBottom: 4 }}
+      />
+
+      <div style={{ fontSize: 11.5, color: "#77746c", lineHeight: 1.5, marginTop: 10 }}>
+        Ohne eigenes Datum zeigt die App das Bewertungsdatum. Der Sehzähler
+        und weitere Durchgänge ändern diesen Wert nicht — festgehalten wird
+        die Erstsichtung.
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+        <button
+          onClick={speichern}
+          disabled={busy}
+          style={{
+            flex: "1 1 120px", padding: "13px", background: "var(--accent, #C9A227)", color: "#17171A",
+            border: "none", borderRadius: 8, fontWeight: 700, fontSize: 15, cursor: "pointer",
+            opacity: busy ? 0.5 : 1,
+          }}
+        >
+          Speichern
+        </button>
+        <button
+          onClick={() => onSave(null)}
+          disabled={busy || !eigen}
+          title={eigen ? "Eigenes Datum entfernen" : "Es ist kein eigenes Datum eingetragen"}
+          style={{
+            padding: "13px 18px", background: "transparent", color: "#9A968C",
+            border: "1px solid #33333a", borderRadius: 8,
+            cursor: busy || !eigen ? "default" : "pointer", fontSize: 15,
+            opacity: busy || !eigen ? 0.5 : 1,
+          }}
+        >
+          Leeren
+        </button>
+        <button
+          onClick={onCancel}
+          style={{
+            padding: "13px 18px", background: "transparent", color: "#9A968C",
+            border: "1px solid #33333a", borderRadius: 8, cursor: "pointer", fontSize: 15,
+          }}
+        >
+          Abbrechen
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Der Schalter "Am Schauen" (bei Spielen "Am Spielen").
  *
@@ -6691,11 +7345,16 @@ function ZaehlerFeld({ label, wert, busy, onChange }) {
   );
 }
 
-function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete, onSaveAngaben, onSaveWatchCount, onAmSchauen, onEloZuruecksetzen, onVerrechnen }) {
+function DetailView({ entry, category, singular, busy, anbieter, region, onBack, onEdit, onDelete, onSaveAngaben, onSaveErstsichtung, onSaveWatchCount, onAmSchauen, onEloZuruecksetzen, onVerrechnen }) {
   const criteria = criteriaFor(category);
   const criteriaScore = entryCriteriaScore(entry, category);
   const staffeln = hasSeasons(entry) ? entry.seasons : null;
   const [angabenOffen, setAngabenOffen] = useState(false);
+  const [erstsichtungOffen, setErstsichtungOffen] = useState(false);
+
+  /* Wann zum ersten Mal geschaut — eigenes Datum, sonst der Rueckfall
+     auf das Bewertungsdatum (siehe erstsichtung). */
+  const ersteSicht = erstsichtung(entry);
 
   /* Die Seite bringt ihre Bewegung selbst mit statt in einer Huelle zu
      stecken: sie liegt mit position: fixed ueber der Liste, und eine
@@ -6825,7 +7484,32 @@ function DetailView({ entry, category, singular, busy, onBack, onEdit, onDelete,
               <span style={{ fontSize: 12.5, color: "#77746c" }}>eingeben</span>
             </button>
           ))}
+
+          {/* Wann der Titel zum ersten Mal gesehen wurde. Steht neben
+              der IMDb-Karte und ist genauso gebaut: Beschriftung,
+              Wert, Stiftknopf. Bei Spielen ebenso — auch dort gibt es
+              ein erstes Mal. */}
+          <ErstsichtungKarte
+            zeit={ersteSicht.zeit}
+            eigen={ersteSicht.eigen}
+            onBearbeiten={() => setErstsichtungOffen(true)}
+          />
         </div>
+
+        {erstsichtungOffen && (
+          <ErstsichtungEditor
+            zeit={ersteSicht.zeit}
+            eigen={ersteSicht.eigen}
+            busy={busy}
+            onSave={(wert) => { onSaveErstsichtung(wert); setErstsichtungOffen(false); }}
+            onCancel={() => setErstsichtungOffen(false)}
+          />
+        )}
+
+        {/* Wo der Titel gerade im Abo laeuft. Die Karte erscheint erst,
+            wenn eine Antwort da ist — solange bleibt die Stelle leer,
+            statt umzuspringen. Bei Spielen gibt es sie nie. */}
+        <VerfuegbarKarte anbieter={anbieter} region={region} />
 
         <div style={{ display: "flex", gap: 20, marginBottom: 20, fontSize: 14, color: "#9A968C", flexWrap: "wrap" }}>
           <div>
@@ -10904,6 +11588,11 @@ export default function App() {
          mitwandert. null heisst "nicht bekannt": bei Vorgemerktem und
          bei Altbestand aus der Zeit vor dieser Spalte. */
       ratedAt: typeof e.ratedAt === "number" && e.ratedAt > 0 ? e.ratedAt : null,
+      /* Wann der Titel zum ersten Mal gesehen wurde. Nur von Hand
+         gesetzt; null heisst "nicht angegeben" und laesst die Anzeige
+         auf das Bewertungsdatum zurueckfallen. */
+      firstWatchedAt:
+        typeof e.firstWatchedAt === "number" && e.firstWatchedAt > 0 ? e.firstWatchedAt : null,
     };
   }
 
@@ -11173,6 +11862,13 @@ export default function App() {
               ...job.entry,
               seasons: job.entry.seasons || [],
               category: job.catKey,
+              /* Das Erstsichtungsdatum geht hier bewusst NICHT mit.
+                 `job.entry` ist ein Abzug vom Beginn des Durchgangs;
+                 wer waehrenddessen ein Datum eintraegt, saehe es sonst
+                 vom Nachtrag wieder ueberschrieben. Ohne das Feld
+                 laesst der Server die Spalte stehen (siehe
+                 erstsichtungColumns in api/items.js). */
+              firstWatchedAt: undefined,
               ...aenderung,
             });
             if (nachladeEnde.current) return;
@@ -11437,6 +12133,80 @@ export default function App() {
       abgebrochen = true;
     };
   }, [loaded]);
+
+
+  /* ---- Streaming-Verfügbarkeit ----
+
+     Ein EIGENER Durchgang, getrennt von der Nachlade-Schleife fuer
+     Poster, Jahr, Regie und IMDb-Note. Er fasst weder deren Zaehler
+     noch `items` an und schreibt nichts in die Datenbank — die
+     Anbieter stehen ausschliesslich im localStorage. Damit kann er die
+     Schleife weder ausbremsen noch abbrechen, und umgekehrt.
+
+     Geholt wird je Eintrag und Region hoechstens einmal die Woche
+     (siehe streamingFrisch). Ein Wechsel der Region startet einen
+     neuen Durchgang fuer die neue Region; die Werte der anderen
+     bleiben stehen.
+
+     Wie bei den Fortsetzungen darf das hier ruhig scheitern: Es ist
+     eine Zusatzangabe, keine Funktion, an der etwas haengt. Fehler
+     werden deshalb still abgefangen. */
+  const [regionWahl, setRegionWahl] = useState(() => ladeRegionEinstellung());
+  const region = useMemo(() => regionAus(regionWahl), [regionWahl]);
+  const [streaming, setStreaming] = useState(() => ladeStreaming());
+
+  /* Fuer welche Region in diesem Besuch schon ein Durchgang lief.
+     Ohne diese Sperre startete jeder gespeicherte Eintrag — und davon
+     gibt es waehrend des Nachladens viele — einen neuen. */
+  const streamingGeholt = useRef("");
+
+  function aendereRegion(wahl) {
+    if (wahl === regionWahl) return;
+    speichereRegionEinstellung(wahl);
+    setRegionWahl(wahl);
+  }
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (streamingGeholt.current === region) return;
+    streamingGeholt.current = region;
+
+    const anfrage = streamingAnfrage(items, ladeStreaming(), region, sichtbareKeys);
+    if (!anfrage.length) return;
+
+    let abgebrochen = false;
+    (async () => {
+      let offen = anfrage;
+
+      for (let runde = 0; runde < STREAMING_RUNDEN && offen.length; runde++) {
+        const antwort = await api.holeStreaming(region, offen);
+        if (abgebrochen) return;
+
+        /* Jede Runde wird sofort gespeichert und angezeigt: Ein
+           Abbruch mittendrin — geschlossene Seite, Netzfehler in der
+           naechsten Runde — soll nicht alles Geholte verlieren. */
+        const eintrag = streamingEinarbeiten(ladeStreaming(), region, antwort.treffer);
+        speichereStreaming(eintrag);
+        setStreaming(eintrag);
+
+        const offeneIds = new Set(antwort.offen);
+        const rest = offen.filter((e) => offeneIds.has(e.id));
+        // Kommt eine Runde ohne Fortschritt zurueck, bringt die
+        // naechste auch keinen.
+        if (rest.length >= offen.length) break;
+        offen = rest;
+      }
+    })().catch(() => {
+      /* Gescheitert — es bleibt bei dem, was schon im Speicher steht.
+         Angezeigt wird davon nichts: Wo keine Antwort vorliegt, bleibt
+         die Stelle leer. Beim naechsten Seitenaufruf wird es erneut
+         versucht. */
+    });
+
+    return () => {
+      abgebrochen = true;
+    };
+  }, [loaded, region]);
 
   /* Zu welchen Eintraegen gehoert ein Hinweis? Die Auswertung haengt am
      gespeicherten Stand UND an der Sammlung: Wer die neue Staffel
@@ -11822,6 +12592,39 @@ export default function App() {
       }
     } catch (e) {
       setSaveError("Angaben nicht gespeichert: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* Das Erstsichtungsdatum setzen oder leeren.
+
+     Wie beim Speichern der Angaben geht alles Uebrige des Eintrags
+     unveraendert mit; dieser Aufruf fasst genau ein Feld an. `null`
+     leert es — die Anzeige faellt dann wieder auf das Bewertungsdatum
+     zurueck. Am Bewertungsdatum selbst aendert das nichts: Der Server
+     laesst `rated_at` stehen, sobald es einmal gesetzt ist. */
+  async function erstsichtungSpeichern(id, wert) {
+    const current = (items[category] || []).find((f) => f.id === id);
+    if (!current) return;
+
+    setBusy(true);
+    try {
+      const saved = await api.update(id, {
+        ...current,
+        seasons: current.seasons || [],
+        category,
+        // Ausdruecklich `null` statt `undefined`: nur so wird das Feld
+        // ueberhaupt mitgeschickt und damit geleert.
+        firstWatchedAt: typeof wert === "number" && wert > 0 ? wert : null,
+      });
+      setItems((prev) => ({
+        ...prev,
+        [category]: prev[category].map((f) => (f.id === id ? normalizeEntry(saved) : f)),
+      }));
+      setSaveError("");
+    } catch (e) {
+      setSaveError("Erstsichtung nicht gespeichert: " + e.message);
     } finally {
       setBusy(false);
     }
@@ -12370,6 +13173,15 @@ export default function App() {
                    damit hinueber. Aeltere Sicherungen haben das Feld
                    nicht; dann setzt der Server das heutige Datum. */
                 ratedAt: typeof entry.ratedAt === "number" && entry.ratedAt > 0 ? entry.ratedAt : undefined,
+                /* Das Erstsichtungsdatum aus der Sicherung. Aeltere
+                   Sicherungen haben das Feld nicht — dann bleibt es
+                   leer, und die Anzeige faellt auf das
+                   Bewertungsdatum zurueck. `undefined` heisst fuer den
+                   Server "nicht mitgeschickt". */
+                firstWatchedAt:
+                  typeof entry.firstWatchedAt === "number" && entry.firstWatchedAt > 0
+                    ? entry.firstWatchedAt
+                    : undefined,
                 /* Am Schauen und der Stand darin. Ein aelteres Backup
                    kennt die drei Felder nicht — dann gelten die
                    Standardwerte: nicht am Schauen, kein Stand. Die
@@ -13215,6 +14027,16 @@ export default function App() {
             />
           </div>
 
+          {/* Wie die Kategorie-Ansicht eine reine Anzeige-Einstellung
+              dieses Geraets: Sie entscheidet nur, fuer welches Land die
+              Verfuegbarkeit gilt. */}
+          <div style={{ background: "#141416", border: "1px solid #2A2A2E", borderRadius: 8, padding: 16, marginBottom: 18 }}>
+            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
+              STREAMING-REGION
+            </div>
+            <RegionEinstellung wahl={regionWahl} erkannt={region} onAendern={aendereRegion} />
+          </div>
+
           <div style={{ background: "#141416", border: "1px solid var(--accent, #C9A227)", borderRadius: 8, padding: 16, marginBottom: 18 }}>
             <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
               EXPORT & BACKUP
@@ -13327,7 +14149,9 @@ export default function App() {
                 <a href="https://www.omdbapi.com" target="_blank" rel="noreferrer" style={quellenLink}>OMDb</a>
                 {" ("}
                 <a href="https://www.imdb.com" target="_blank" rel="noreferrer" style={quellenLink}>IMDb</a>
-                {")."}
+                {"). Streaming-Verfügbarkeit über TMDB von "}
+                <a href="https://www.justwatch.com" target="_blank" rel="noreferrer" style={quellenLink}>JustWatch</a>
+                {" — angezeigt werden nur Abo-Anbieter."}
               </div>
             </div>
 
@@ -13649,6 +14473,7 @@ export default function App() {
                     busy={busy || zeigtCache}
                     merkliste={merklisteLabel(category)}
                     amSchauenLabelText={amSchauenLabel(category)}
+                    anbieter={category === "game" ? null : anbieterFuer(streaming, f.id, region)}
                     onAmSchauen={() => amSchauenSchalten(f.id, true)}
                     onBewerten={() => { setBewerteVorgemerkt(f); setMode("watchlist-form"); }}
                     onEntfernen={() => watchlistEntfernen(f.id)}
@@ -13866,10 +14691,15 @@ export default function App() {
           category={category}
           singular={catInfo.singular}
           busy={busy}
+          /* Wo der Titel gerade im Abo laeuft. Bei Spielen gibt es das
+             nicht — dort bleibt es bei null und die Karte entfaellt. */
+          anbieter={category === "game" ? null : anbieterFuer(streaming, selectedEntry.id, region)}
+          region={region}
           onBack={() => setSelectedId(null)}
           onEdit={() => { setVerrechnenHinweis(""); setMode("edit"); }}
           onDelete={() => setConfirmDelete(selectedEntry.id)}
           onSaveAngaben={(werte) => angabenSpeichern(selectedEntry.id, werte)}
+          onSaveErstsichtung={(wert) => erstsichtungSpeichern(selectedEntry.id, wert)}
           onSaveWatchCount={(n) => zaehlerSpeichern(selectedEntry.id, n)}
           onAmSchauen={(an) => amSchauenSchalten(selectedEntry.id, an)}
           onEloZuruecksetzen={() => eloZuruecksetzen(category, selectedEntry.id)}

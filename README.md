@@ -569,6 +569,129 @@ wurde.
 
 ---
 
+## Erstmals geschaut
+
+Wann wurde ein Titel zum **ersten Mal** gesehen? Das beantwortet
+`rated_at` gerade nicht: Diese Spalte hält den Tag fest, an dem aus dem
+Eintrag ein bewerteter wurde. Wer einen Film 2011 gesehen und erst 2026
+hier eingetragen hat, hat ihn nicht 2026 zum ersten Mal geschaut.
+
+Dafür gibt es eine eigene, rein optionale Spalte `first_watched_at`
+(BIGINT, NULL-bar). Sie wird **ausschließlich von Hand** gesetzt — es
+gibt keinen Backfill, keine automatische Ermittlung und keine Stelle,
+an der sie nebenbei entsteht. Bestehende Einträge bleiben leer.
+
+**In der Detailansicht** steht sie als eigene Karte neben der IMDb-Note,
+mit der Beschriftung `ERSTMALS GESCHAUT` und einem Stiftknopf rechts —
+genau wie bei Jahr, Regie und IMDb-Note. Zwei Zustände:
+
+| Zustand | Anzeige |
+|---------|---------|
+| Eigenes Datum eingetragen | Datum in normaler Textfarbe, ohne Zusatz |
+| Kein eigenes Datum | das Bewertungsdatum (`ratedAt`) gedämpft, dahinter klein `(Bewertungsdatum)` |
+
+Fehlt auch das Bewertungsdatum — Altbestand aus der Zeit vor jener
+Spalte —, steht dort die Einladung „eintragen". Ein Datum wird nicht
+erfunden.
+
+Der Stiftknopf öffnet ein Datumsfeld. **Speichern** schreibt den Wert,
+**Leeren** entfernt ihn wieder; danach gilt erneut das Bewertungsdatum.
+
+**Was das Datum ausdrücklich nicht verschiebt:** der Sehzähler, weitere
+Durchgänge, das Bearbeiten der Bewertung, das automatische Nachladen von
+Poster, Genres und Laufzeit. Technisch steht dahinter dieselbe Regel wie
+bei „Am Schauen": Fehlt das Feld in der Anfrage, bleibt der gespeicherte
+Wert stehen (`erstsichtungColumns` in `api/items.js`). Die Nachlade-
+Schleife im Frontend schickt es bewusst gar nicht erst mit.
+
+Der **Rückfallwert ist `ratedAt` und nicht `createdAt`**: Letzteres wird
+auch beim Vormerken gesetzt und stünde bei einem Titel, der zwei Jahre
+auf der Watchlist lag, um zwei Jahre zu früh. Auch nicht `bewertetAm()`
+(das den Jahresrückblick trägt) — dort zählt die zuletzt nachgetragene
+Staffel mit, das Datum wanderte also mit jeder weiteren Staffel nach
+vorn.
+
+Export und Backup nehmen das Feld als `firstWatchedAt` mit; ältere
+Sicherungen ohne das Feld lassen sich unverändert einspielen.
+
+---
+
+## Streaming-Verfügbarkeit
+
+Wo läuft ein Titel gerade **im Abo**? Die Antwort kommt von TMDBs
+Watch-Providers über denselben `TMDB_API_KEY`, den die Postersuche schon
+nutzt (`api/streaming.js`) — es kommt kein neuer Dienst dazu. TMDB
+bezieht die Daten von [JustWatch](https://www.justwatch.com); der
+Hinweis darauf steht im Daten-Panel bei den übrigen Quellen.
+
+Angezeigt werden **ausschließlich Abo-Anbieter** (`flatrate`). Leihen
+(`rent`) und Kaufen (`buy`) bleiben draußen: „Jetzt verfügbar" soll
+heißen „ohne weiteres Geld anschaltbar".
+
+Betroffen sind alle Kategorien **außer Spielen** — TMDB kennt sie nicht.
+
+**Die Titelzuordnung ist keine neue.** Der Endpunkt nimmt
+`tmdbKennungFuer()` aus `api/poster.js`, also genau die Zuordnung, aus
+der auch Jahr, Regie und die IMDb-Kennung stammen — mit derselben
+Kandidatenauswahl und derselben Ähnlichkeitsschwelle. Das gilt
+insbesondere für **Anime**: Dort führt sonst Jikan, aber der
+TMDB-Serientreffer ist auch bisher schon die Quelle der Angaben. Die
+gefundene Kennung (`quellArt` + `quellId`) geht mit der Antwort zurück
+und wird mitgespeichert; der erste Lauf kostet so zwei Aufrufe je
+Eintrag, jeder weitere einen.
+
+### Region
+
+Im Daten-Panel unter **STREAMING-REGION** stehen drei Möglichkeiten:
+**Automatisch** (Vorgabe), **Deutschland**, **Italien**. Die Automatik
+liest zuerst die Spracheinstellungen des Geräts mit Landeskennung
+(`de-DE`, `it-IT`), dann die Zeitzone, zuletzt die reine Sprache
+(`de`, `it`). Wird weder DE noch IT erkannt, gilt Deutschland. Die
+Einstellung liegt wie die Kategorie-Ansicht im `localStorage`
+(`bewertungsapp.streamingRegion`) und gilt nur auf diesem Gerät.
+
+### Zwischenspeicher
+
+Die Anbieter stehen **nicht** in der Datenbank, sondern im
+`localStorage` (`bewertungsapp.streaming`) — je Eintrag **und Region**
+mit eigenem Zeitstempel:
+
+```
+{ fassung, stand: { <id>: { quellArt, quellId,
+                            regionen: { DE: { zeit, anbieter }, IT: {…} } } } }
+```
+
+Neu geholt wird höchstens **einmal pro Woche**; ein gescheiterter Abruf
+hält nur einen Tag, damit eine Störung nicht eine Woche nachwirkt. Beim
+Wechsel der Region wird nur für die neue geholt — die Werte der anderen
+bleiben stehen.
+
+### Anzeige
+
+- **Detailansicht:** eine Karte `JETZT VERFÜGBAR` mit dem
+  Regionskürzel dahinter, darunter die Anbieter als Chips.
+- **Watchlist-Zeilen:** dieselben Chips klein unter der Meta-Zeile,
+  höchstens drei, danach `+N`.
+- **Kein Abo-Anbieter gefunden:** ein einzelner gedämpfter Chip
+  `nicht im Abo`.
+- **Solange die Abfrage läuft:** gar nichts. Die Stelle bleibt leer,
+  statt beim Eintreffen der Antwort umzuspringen.
+
+### Warum das die Nachlade-Schleife nicht ausbremst
+
+Der Abruf läuft in einem **eigenen** Effekt, getrennt von der Schleife
+für Poster, Jahr, Regie und IMDb-Note. Er fasst weder deren Zähler
+(`nachladeZaehler`, `zusatzZaehler`) noch `items` an und schreibt nichts
+in die Datenbank. Damit kann er die Schleife weder bremsen noch
+abbrechen — und umgekehrt. Pro Runde ist genau eine zusätzliche Anfrage
+unterwegs; abgearbeitet wird sie serverseitig gebündelt.
+
+Ohne `TMDB_API_KEY` liefert der Endpunkt ein leeres Ergebnis statt eines
+Fehlers: Die Stelle bleibt dann einfach leer, genau wie bei fehlender
+IMDb-Note.
+
+---
+
 ## Lokal entwickeln (optional)
 
 ```bash
@@ -594,6 +717,7 @@ vercel dev          # startet Frontend + API zusammen
 | GET | `/api/recommendations?category=…&profil=…` | Vorschläge zum mitgeschickten Geschmacksprofil (Profil als JSON) |
 | POST | `/api/recommendations` | Dasselbe, Profil im Rumpf (`{ category, profil }`) |
 | POST | `/api/fortsetzungen` | Prüft zu bewerteten Serien, ob es inzwischen eine Staffel bzw. Fortsetzung mehr gibt (`{ eintraege: [{ id, category, title, year, staffeln, quelle, quellId }] }`) — meldet nur (`{ treffer, offen }`), trägt nichts ein. Was in die Frist eines Aufrufs nicht passt, steht in `offen` und wird nachgefragt |
+| POST | `/api/streaming` | Streaming-Verfügbarkeit im Abo (`{ region, eintraege: [{ id, category, title, quellArt, quellId }] }`) — meldet je Eintrag die Abo-Anbieter (`{ treffer, offen }`), trägt nichts ein. Wie bei den Fortsetzungen steht in `offen`, was in die Frist eines Aufrufs nicht passte |
 | POST | `/api/reset-posters` | Automatisch gefundene Poster leeren (Neusuche) |
 | GET | `/api/header-images` | Bilder des Kopfbereichs auflisten |
 | POST | `/api/header-images` | Bild-Adresse hinzufügen |
@@ -645,8 +769,9 @@ sofort — es gibt dort nichts zu verlieren außer dem Titel selbst.
 
 **Aufbau einer Zeile.** Links das Poster, rechts daneben untereinander
 der Titel über die volle Restbreite (höchstens zwei Zeilen, dann
-Auslassungspunkte), die Meta-Zeile `Jahr · Laufzeit · vor X Tagen` und
-zuletzt die Knopfreihe: der breite Knopf ins Bewertungsformular, daneben
+Auslassungspunkte), die Meta-Zeile `Jahr · Laufzeit · vor X Tagen`,
+darunter die Streaming-Anbieter als kleine Chips (höchstens drei, danach
+`+N` — siehe „Streaming-Verfügbarkeit") und zuletzt die Knopfreihe: der breite Knopf ins Bewertungsformular, daneben
 Play- und Entfernen-Symbol mit je 44 px Antippfläche. Fehlt ein Wert der
 Meta-Zeile — bei Spielen etwa die Laufzeit —, fällt er samt Trennzeichen
 weg. Nebeneinander in einer einzigen Zeile blieb bei 430 px Breite für

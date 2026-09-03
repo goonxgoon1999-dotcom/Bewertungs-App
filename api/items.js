@@ -281,6 +281,33 @@ function amSchauenColumns(body) {
   };
 }
 
+/**
+ * Das Erstsichtungsdatum in Spaltenform.
+ *
+ * Es verhaelt sich wie "Am Schauen": Fehlt das Feld in der Anfrage
+ * ganz, bleibt der gespeicherte Wert stehen. Das ist hier
+ * ausschlaggebend — sonst wuerde jedes automatische Nachladen eines
+ * Posters und jedes Speichern aus einem aelteren Client ein von Hand
+ * eingetragenes Datum stillschweigend loeschen.
+ *
+ * COALESCE taugt dafuer nicht: `null` ist ein echter Wert. Genau
+ * damit leert der Nutzer das Feld wieder ("Leeren" in der
+ * Detailansicht), und die Anzeige faellt auf das Bewertungsdatum
+ * zurueck.
+ *
+ * Anders als `rated_at` wird das Datum NICHT vom Sehzaehler, von
+ * weiteren Durchgaengen oder vom Zurueckwandern auf die Watchlist
+ * angefasst: Festgehalten wird die Erstsichtung, sonst nichts.
+ */
+function erstsichtungColumns(body) {
+  const wert = body.firstWatchedAt;
+  return {
+    mitgeschickt: wert !== undefined,
+    firstWatchedAt:
+      typeof wert === "number" && Number.isFinite(wert) && wert > 0 ? Math.round(wert) : null,
+  };
+}
+
 export default async function handler(req, res) {
   try {
     await ensureReady();
@@ -324,6 +351,7 @@ async function create(req, res) {
   const a = angabenColumns(body.category, body);
   const l = laufzeitColumns(body.category, body);
   const sch = amSchauenColumns(body);
+  const erst = erstsichtungColumns(body);
 
   // Eintrag und Staffeln gehen gemeinsam in einer Transaktion in die
   // Datenbank — entweder alles oder nichts.
@@ -336,7 +364,7 @@ async function create(req, res) {
          runtime_minutes, episode_runtime, episode_count, episodes_per_season,
          watchlist, watch_count, elo, duels, siege,
          am_schauen, staffel_nr, folge_nr,
-         created_at, updated_at, rated_at)
+         created_at, updated_at, rated_at, first_watched_at)
       VALUES
         (${id}, ${body.category}, ${body.title.trim()}, ${body.poster || ""}, ${body.posterSource || null},
          ${body.backdrop || ""},
@@ -370,7 +398,11 @@ async function create(req, res) {
          -- kommt erst, wenn daraus ein bewerteter Eintrag wird (siehe
          -- update). Ein ratedAt aus der Anfrage gibt es nur beim
          -- Einspielen eines Backups.
-         ${merkliste ? null : bewertetAm(body) || now})
+         ${merkliste ? null : bewertetAm(body) || now},
+         -- Die Erstsichtung wird von Hand eingetragen und entsteht
+         -- deshalb NICHT beim Anlegen. Sie kommt nur mit, wenn sie in
+         -- der Anfrage steht — beim Einspielen einer Sicherung.
+         ${erst.firstWatchedAt})
       RETURNING *
     `,
     ...seasonQueries(id, body.category, body.seasons, []),
@@ -404,6 +436,7 @@ async function update(req, res) {
   const a = angabenColumns(body.category, body);
   const l = laufzeitColumns(body.category, body);
   const sch = amSchauenColumns(body);
+  const erst = erstsichtungColumns(body);
   const ergebnis = await sql.transaction([
     sql`
       UPDATE media_items SET
@@ -473,6 +506,15 @@ async function update(req, res) {
                             WHEN ${merkliste}::boolean THEN NULL
                             ELSE COALESCE(rated_at, ${bewertetAm(body)}::bigint, ${Date.now()}::bigint)
                           END,
+        -- Die Erstsichtung: geschrieben wird nur, wenn das Feld in der
+        -- Anfrage ueberhaupt vorkam (siehe erstsichtungColumns). Ohne
+        -- diese Regel wuerde jedes Nachladen eines Posters sie
+        -- loeschen. Sie bleibt auch dann stehen, wenn ein Eintrag
+        -- zurueck auf die Watchlist wandert — gesehen ist gesehen.
+        first_watched_at = CASE
+                             WHEN ${erst.mitgeschickt}::boolean THEN ${erst.firstWatchedAt}::bigint
+                             ELSE first_watched_at
+                           END,
         updated_at      = ${Date.now()}
       WHERE id = ${id}
       RETURNING *
