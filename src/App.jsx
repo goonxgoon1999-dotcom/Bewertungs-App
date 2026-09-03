@@ -7979,11 +7979,20 @@ function IconPfeilAuf({ offen }) {
 }
 
 /**
- * Ein Abschnitt des Statistik-Tabs.
+ * Ein einklappbarer Abschnitt — im Statistik-Tab wie im Daten-Panel.
  *
- * `gross` unterscheidet die beiden Ueberschriftgroessen, die der Tab
- * schon vorher hatte (20px und 17px) — daran aendert sich nichts,
- * sie sitzen nur jetzt in einem Knopf.
+ * Beide Seiten sind lang, beide werden auf dieselbe Weise
+ * durchsucht; deshalb tragen sie dieselbe Kopfzeile, dieselbe
+ * Ueberschrift und dieselbe Trennlinie. Was sie unterscheidet, steht
+ * nicht hier, sondern bei den Aufrufern: der Statistik-Tab merkt sich
+ * den Auf- und Zuklapp-Stand und laesst zwei Abschnitte offen, das
+ * Panel startet jedes Mal komplett zugeklappt.
+ *
+ * `gross` unterscheidet die beiden Ueberschriftgroessen, die der
+ * Statistik-Tab schon vorher hatte (20px und 17px) — daran aendert
+ * sich nichts, sie sitzen nur jetzt in einem Knopf. Die Abschnitte
+ * des Panels stehen alle gleichrangig nebeneinander und nehmen
+ * deshalb durchgehend die kleinere.
  *
  * Abgegrenzt werden die Abschnitte durch dieselbe duenne Linie, die
  * die App in allen Listen zieht (#232326) — keine Karte, kein Rahmen,
@@ -8047,6 +8056,61 @@ function StatsAbschnitt({ titel, gross = false, zusammenfassung, offen, onUmscha
       {offen && <div style={{ paddingBottom: 16 }}>{children}</div>}
     </div>
   );
+}
+
+/* ------------------------------------------------------------
+   Die Zusammenfassungen der Einstellungs-Abschnitte
+
+   Das Daten-Panel benutzt dieselben Kopfzeilen wie der Statistik-Tab
+   (StatsAbschnitt). Was zugeklappt unter dem Titel steht, kommt aus
+   diesen vier Funktionen — jede liest ausschliesslich den
+   tatsaechlichen Zustand ihres Abschnitts, geschaetzt wird nichts.
+   ------------------------------------------------------------ */
+
+/** "6 von 8 sichtbar" — wie viele Kategorien die Liste zeigt. */
+function einstellungKategorienText(ansicht) {
+  return sichtbareKategorien(ansicht).length + " von " + CATEGORIES.length + " sichtbar";
+}
+
+/**
+ * Die eingestellte Streaming-Region.
+ *
+ * Bei "Automatisch" steht dahinter, was die Automatik gerade erkannt
+ * hat — sonst saehe man der Kopfzeile nicht an, fuer welches Land die
+ * Verfuegbarkeit tatsaechlich gilt.
+ */
+function einstellungRegionText(wahl, region) {
+  const gewaehlt = STREAMING_REGION_WAHL.find((w) => w.key === wahl);
+  if (!gewaehlt || gewaehlt.key === "auto") {
+    return STREAMING_REGION_WAHL[0].label + " · " + region;
+  }
+  return gewaehlt.label;
+}
+
+/** Das gewaehlte Ausgabeformat und die Zahl der Bilder im Kopfbereich. */
+function einstellungExportText(format, bilder) {
+  const formatText = format === "csv" ? "CSV (Tabelle)" : "JSON (Backup)";
+  const anzahl = bilder || 0;
+  const bilderText = anzahl === 1 ? "1 Bild im Kopfbereich" : anzahl + " Bilder im Kopfbereich";
+  return formatText + " · " + bilderText;
+}
+
+/**
+ * Wie viele Eintraege einen Duell-Zuschlag haben, der sich verrechnen
+ * liesse — dieselbe Bedingung, nach der auch die Vorschau zaehlt
+ * (verrechnenAngeboten, siehe sammelVerrechnungsPlan).
+ */
+function einstellungZuschlaegeText(items) {
+  let anzahl = 0;
+  for (const key of CATEGORY_KEYS) {
+    for (const entry of (items && items[key]) || []) {
+      if (verrechnenAngeboten(entry)) anzahl++;
+    }
+  }
+  if (!anzahl) return "Kein Eintrag mit offenem Zuschlag";
+  return anzahl === 1
+    ? "1 Eintrag mit offenem Zuschlag"
+    : anzahl + " Einträge mit offenem Zuschlag";
 }
 
 /* Eine Zeile der Rangliste — dasselbe Format wie ueberall:
@@ -11804,6 +11868,16 @@ export default function App() {
   /* Der Bilder-Abschnitt im Daten-Panel startet bei jedem Oeffnen
      zugeklappt — gemerkt wird der Zustand bewusst nicht. */
   const [zeigeKopfbilder, setZeigeKopfbilder] = useState(false);
+  /* Welche Abschnitte des Daten-Panels offen stehen — { key: true }.
+     Anders als im Statistik-Tab wird hier nichts gemerkt und nichts
+     vorgegeben: Beim Oeffnen ist alles zu, weil man in den
+     Einstellungen gezielt eine einzelne Sache sucht. Das leere Objekt
+     ist genau dieser Zustand. */
+  const [panelAbschnitte, setPanelAbschnitte] = useState({});
+  const panelKlapper = (key) => ({
+    offen: !!panelAbschnitte[key],
+    onUmschalten: () => setPanelAbschnitte((stand) => ({ ...stand, [key]: !stand[key] })),
+  });
   const [showFilter, setShowFilter] = useState(false);
   const [exportFormat, setExportFormat] = useState("json");
   const [importPreview, setImportPreview] = useState(null);
@@ -13940,20 +14014,31 @@ export default function App() {
            Listenfarbe (#232326); auf ihr sitzt der Balken auf, und sie
            trennt zugleich den Kopfbereich vom Inhalt darunter.
 
+           Die Reihe nimmt die volle Breite ein: jeder Reiter bekommt
+           genau ein Drittel (flex: 1 1 0), die Beschriftung steht darin
+           mittig. Damit schliesst sie links und rechts buendig mit dem
+           Knopf "+ Neu hinzufuegen" und dem Suchfeld darunter ab, statt
+           wie vorher linksbuendig zu stehen und rechts Platz frei zu
+           lassen.
+
            Die Reihe bricht unter keinen Umstaenden um: weder die Leiste
            (flex-wrap: nowrap) noch die Beschriftungen selbst
            (white-space: nowrap, word-break: keep-all). Reicht der Platz
            einmal nicht, wird sie seitlich wischbar, wie die
            Kategorie-Reiter es frueher waren; der Rollbalken bleibt dabei
-           ausgeblendet.
+           ausgeblendet — die Drittel weichen dann zugunsten des Textes,
+           umbrochen wird trotzdem nicht.
 
-           Der schlimmste Fall sind dreistellige Zaehler in beiden
-           Reitern: "Bewertet / Am Schauen 999 / Watchlist 999" misst
-           mit 10px Innenabstand 311px und passt damit bei 390px Breite
-           (350px Inhalt) in eine Zeile — auch auf einem 360px breiten
-           Geraet (320px Inhalt) reicht es. Der Innenabstand war
-           urspruenglich 13px; die 3px weniger je Seite sind genau die
-           Reserve dafuer. Die Schriftgroesse blieb bei 13px. */
+           Der schlimmste Fall sind dreistellige Zaehler in allen drei
+           Reitern: "Bewertet 999 / Am Schauen 999 / Watchlist 999".
+           Der breiteste davon ("Am Schauen 999") misst mit 12px Schrift
+           99px, mit dem Innenabstand von 6px je Seite 111px — und
+           bleibt damit unter dem Drittel, das bei 390px Fensterbreite
+           (350px Inhalt) zur Verfuegung steht: 117px. Die
+           Schriftgroesse ist dafuer um einen Schritt von 13px auf 12px
+           gesunken: bei 13px braeuchte derselbe Reiter 120px und
+           sprengte das Drittel. Ein Drittel laesst eben weniger Platz
+           als der bisherige, am Text gemessene Knopf. */
         .unter-reiter-leiste {
           display: flex;
           flex-wrap: nowrap;
@@ -13970,19 +14055,27 @@ export default function App() {
            Antippflaeche, auch wenn die Schrift kleiner wirkt als der
            bisherige Knopf. Die Schriftstaerke ist bei allen dreien
            gleich: waere der aktive fett, sprangen die Nachbarn beim
-           Umschalten um die Differenz zur Seite. */
+           Umschalten um die Differenz zur Seite.
+
+           flex: 1 1 0 teilt die Reihe in drei gleiche Drittel — ohne
+           feste Breiten, damit es bei jeder Fensterbreite aufgeht. Die
+           Grundbreite 0 ist dabei der Punkt: mit "auto" bekaeme der
+           laengste Reiter mehr als die anderen. Was der Text nicht
+           fuellt, bleibt links und rechts von ihm stehen; text-align
+           setzt ihn in die Mitte seines Drittels. */
         .unter-reiter {
           position: relative;
-          flex: 0 0 auto;
+          flex: 1 1 0;
           min-height: 44px;
-          padding: 0 10px;
+          padding: 0 6px;
           background: transparent;
           border: none;
           border-radius: 0;
           font-family: inherit;
-          font-size: 13px;
+          font-size: 12px;
           font-weight: 600;
           line-height: 1;
+          text-align: center;
           white-space: nowrap;
           word-break: keep-all;
           cursor: pointer;
@@ -14001,13 +14094,16 @@ export default function App() {
           background: #232326;
         }
 
-        /* Der Balken des aktiven Reiters — genau so breit wie sein Text
-           und aufsitzend auf der Linie unter der Reihe. */
+        /* Der Balken des aktiven Reiters — genau so breit wie dessen
+           Drittel und aufsitzend auf der Linie unter der Reihe. Er lief
+           frueher nur unter dem Text (10px Einzug je Seite); seit die
+           Reiter die Breite unter sich aufteilen, markiert er das ganze
+           Drittel. */
         .unter-reiter[aria-pressed="true"]::after {
           content: "";
           position: absolute;
-          left: 10px;
-          right: 10px;
+          left: 0;
+          right: 0;
           bottom: 0;
           height: 2px;
           background: var(--accent, #C9A227);
@@ -14392,6 +14488,9 @@ export default function App() {
               onClick={() => {
                 setShowExport((v) => !v);
                 setZeigeKopfbilder(false);
+                /* Jedes Oeffnen faengt mit lauter zugeklappten
+                   Abschnitten an — gemerkt wird der Stand nicht. */
+                setPanelAbschnitte({});
                 /* Eine offene Vorschau gilt nur, solange das Panel
                    offen ist — sonst stuende beim naechsten Aufschlagen
                    eine Rechnung auf altem Stand da. */
@@ -14487,31 +14586,33 @@ export default function App() {
           {/* Die Anzeige-Einstellung steht vorn: sie aendert nur, was
               zu sehen ist, waehrend alles darunter an den Daten
               arbeitet. */}
-          <div style={{ background: "#141416", border: "1px solid #2A2A2E", borderRadius: 8, padding: 16, marginBottom: 18 }}>
-            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
-              KATEGORIEN
-            </div>
+          <StatsAbschnitt
+            titel="Kategorien"
+            zusammenfassung={einstellungKategorienText(kategorieAnsicht)}
+            {...panelKlapper("kategorien")}
+          >
             <KategorieAnsichtEinstellung
               ansicht={kategorieAnsicht}
               onAendern={aendereKategorieAnsicht}
             />
-          </div>
+          </StatsAbschnitt>
 
           {/* Wie die Kategorie-Ansicht eine reine Anzeige-Einstellung
               dieses Geraets: Sie entscheidet nur, fuer welches Land die
               Verfuegbarkeit gilt. */}
-          <div style={{ background: "#141416", border: "1px solid #2A2A2E", borderRadius: 8, padding: 16, marginBottom: 18 }}>
-            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
-              STREAMING-REGION
-            </div>
+          <StatsAbschnitt
+            titel="Streaming-Region"
+            zusammenfassung={einstellungRegionText(regionWahl, region)}
+            {...panelKlapper("region")}
+          >
             <RegionEinstellung wahl={regionWahl} erkannt={region} onAendern={aendereRegion} />
-          </div>
+          </StatsAbschnitt>
 
-          <div style={{ background: "#141416", border: "1px solid var(--accent, #C9A227)", borderRadius: 8, padding: 16, marginBottom: 18 }}>
-            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
-              EXPORT & BACKUP
-            </div>
-
+          <StatsAbschnitt
+            titel="Export & Backup"
+            zusammenfassung={einstellungExportText(exportFormat, headerImages.length)}
+            {...panelKlapper("export")}
+          >
             <div style={{ borderBottom: "1px solid #2A2A2E", paddingBottom: 14, marginBottom: 14 }}>
               <button
                 onClick={resetPosters}
@@ -14660,15 +14761,16 @@ export default function App() {
               </button>
               {importError && <div style={{ color: "#d9736a", fontSize: 12.5, marginTop: 8 }}>{importError}</div>}
             </div>
-          </div>
+          </StatsAbschnitt>
 
-          {/* Die Sammelfunktion steht bewusst in einem eigenen Kasten:
+          {/* Die Sammelfunktion steht bewusst als eigener Abschnitt:
               Sie aendert Bewertungen, waehrend darueber nur gelesen und
               gesichert wird. */}
-          <div style={{ background: "#141416", border: "1px solid #2A2A2E", borderRadius: 8, padding: 16, marginBottom: 18 }}>
-            <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 12 }}>
-              DUELL-ZUSCHLÄGE
-            </div>
+          <StatsAbschnitt
+            titel="Duell-Zuschläge"
+            zusammenfassung={einstellungZuschlaegeText(items)}
+            {...panelKlapper("zuschlaege")}
+          >
             <SammelVerrechnen
               plan={sammelPlan}
               busy={busy}
@@ -14677,7 +14779,7 @@ export default function App() {
               onVerrechnen={sammelVerrechnen}
               onAbbrechen={sammelAbbrechen}
             />
-          </div>
+          </StatsAbschnitt>
         </div>
       </Seite>
 
@@ -14798,9 +14900,12 @@ export default function App() {
               {/* Unter-Reiter: bewertete Eintraege, was gerade laeuft,
                   oder die Watchlist. Reiner Text im Unterstrich-Stil,
                   einzeilig und niemals umbrechend, siehe
-                  .unter-reiter-leiste. Der Zaehler haengt ohne
-                  Mittelpunkt am Namen — die zwei Zeichen entschieden
-                  darueber, ob die Leiste noch in eine Reihe passt. */}
+                  .unter-reiter-leiste. Die drei teilen sich die volle
+                  Breite in gleiche Drittel und schliessen damit
+                  buendig mit dem Knopf und dem Suchfeld darunter ab.
+                  Der Zaehler haengt ohne Mittelpunkt am Namen — die
+                  zwei Zeichen entschieden darueber, ob die Leiste noch
+                  in eine Reihe passt. */}
               <div className="unter-reiter-leiste" style={{ marginBottom: 16 }}>
                 {[
                   { key: "bewertet", label: "Bewertet" },

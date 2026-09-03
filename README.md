@@ -677,7 +677,7 @@ Eintrag, jeder weitere einen.
 
 ### Region
 
-Im Daten-Panel unter **STREAMING-REGION** stehen drei Möglichkeiten:
+Im Daten-Panel unter **Streaming-Region** stehen drei Möglichkeiten:
 **Automatisch** (Vorgabe), **Deutschland**, **Italien**. Die Automatik
 liest zuerst die Spracheinstellungen des Geräts mit Landeskennung
 (`de-DE`, `it-IT`), dann die Zeitzone, zuletzt die reine Sprache
@@ -778,7 +778,7 @@ der Vormerkungen dahinter („Watchlist 43").
 Die Reihe steht im **Unterstrich-Stil** und hebt sich damit von den
 Kategorie-Tabs darüber ab: kein gefüllter oder umrandeter Knopf mehr,
 sondern reiner Text nebeneinander. Der aktive Reiter steht in der
-Kategoriefarbe und trägt einen kurzen Balken direkt unter sich, die
+Kategoriefarbe und trägt einen Balken direkt unter sich, die
 übrigen in der gedämpften Textfarbe. Unter der ganzen Reihe läuft eine
 durchgehende dünne Linie, auf der der Balken aufsitzt und die zugleich
 den Kopfbereich vom Inhalt trennt; zwischen den Reitern steht je ein
@@ -787,9 +787,23 @@ endet. Jeder Reiter behält eine Antippfläche von mindestens 44 px, und
 die Schriftstärke ist bei allen dreien gleich — beim Umschalten
 verrutscht deshalb nichts.
 
+**Die drei teilen sich die volle Breite** zu gleichen Dritteln, die
+Beschriftung steht mittig in ihrem Drittel. Die Reihe ist damit genauso
+breit wie „+ Neu hinzufügen" und das Suchfeld darunter und schließt
+links und rechts bündig mit ihnen ab; die senkrechten Striche sitzen an
+der Dritteltrennung, der Balken des aktiven Reiters ist so breit wie
+dessen Drittel. Früher stand die Reihe linksbündig und maß nur so viel,
+wie ihr Text brauchte.
+
 **Die Reihe bricht nie um**, auch nicht mit dreistelligen Zählern in
-beiden Reitern. Reicht der Platz einmal nicht, wird sie seitlich
-wischbar — ohne sichtbaren Rollbalken. Vorgemerkt und bewertet bleibt
+allen drei Reitern. Der breiteste Fall („Am Schauen 999") misst mit
+12 px Schrift und 6 px Innenabstand 111 px und passt damit bei 390 px
+Fensterbreite in das Drittel von 117 px — die Schriftgröße ist dafür um
+einen Schritt von 13 px auf 12 px gesunken, weil ein Drittel weniger
+Platz lässt als der frühere, am Text gemessene Knopf. Reicht der Platz
+einmal doch nicht, weichen die Drittel zugunsten des Textes und die
+Reihe wird seitlich wischbar — ohne sichtbaren Rollbalken, und
+umbrochen wird trotzdem nicht. Vorgemerkt und bewertet bleibt
 dabei ein Entweder-oder — ein Eintrag ist immer nur eines von beidem;
 das Kennzeichen „Am Schauen" steht unabhängig daneben.
 
@@ -973,6 +987,50 @@ Beim Filter **Filmreihe** stehen echte TMDB-Collections und Studios
 gemeinsam zur Wahl; Studios sind mit „(Studio)" gekennzeichnet und die
 Näherung für Franchises ohne eigene Collection. Reihen mit nur einem
 Eintrag werden ausgelassen — eine Reihe aus einem Film ist keine Reihe.
+
+---
+
+## Einstellungen (Daten-Panel)
+
+Das Zahnrad oben rechts öffnet die Einstellungen. Sie enthalten vier
+Abschnitte, in dieser Reihenfolge: **Kategorien**, **Streaming-Region**,
+**Export & Backup** und **Duell-Zuschläge**. Was in ihnen steht, ist
+jeweils an der Stelle beschrieben, an der es hingehört — welche
+Kategorien angezeigt werden, für welches Land die Verfügbarkeit gilt,
+Export und Import samt den Bildern im Kopfbereich, und die Sammelfunktion
+für die Duell-Zuschläge.
+
+**Jeder Abschnitt ist einklappbar** — dieselbe Kopfzeile wie im
+Statistik-Tab: ein Knopf mit Pfeil, mindestens 44 px hoch, mit der
+Überschrift in derselben Schrift. Getrennt werden die Abschnitte durch
+die dünne waagerechte Linie der Listen (`#232326`); die Kästen, die
+früher um jeden Abschnitt standen, sind weg, und mit ihnen der große
+Abstand dazwischen.
+
+**Beim Öffnen ist alles zugeklappt.** Anders als im Statistik-Tab bleibt
+hier kein Abschnitt offen: In den Einstellungen sucht man gezielt eine
+einzelne Sache. Welcher Abschnitt zuletzt offen war, wird bewusst
+**nicht** gemerkt — weder im `localStorage` noch über das Schließen
+hinweg; jedes erneute Öffnen fängt wieder bei zugeklappt an.
+
+**Zugeklappt steht unter dem Titel eine kurze Zusammenfassung** in der
+gedämpften Monospace-Schrift, damit man beim Scrollen sieht, was
+eingestellt ist:
+
+| Abschnitt | Zusammenfassung |
+| --- | --- |
+| Kategorien | wie viele von wie vielen sichtbar sind („6 von 8 sichtbar") |
+| Streaming-Region | die gewählte Region; bei „Automatisch" dahinter das erkannte Land („Automatisch · DE") |
+| Export & Backup | das gewählte Ausgabeformat und die Zahl der Bilder im Kopfbereich („JSON (Backup) · 2 Bilder im Kopfbereich") |
+| Duell-Zuschläge | wie viele Einträge einen offenen Zuschlag haben — dieselbe Bedingung, nach der auch die Vorschau zählt |
+
+Jede Zusammenfassung wird aus dem tatsächlichen Zustand gerechnet;
+geschätzt wird nichts. Aufgeklappt entfällt sie, dort sagt der Inhalt
+selbst, was gilt.
+
+Der aufklappbare Bereich **„Bilder im Kopfbereich"** sitzt weiterhin
+innerhalb von *Export & Backup* und verhält sich unverändert: Er startet
+bei jedem Öffnen zugeklappt und trägt die Zahl der Bilder im Titel.
 
 ---
 
