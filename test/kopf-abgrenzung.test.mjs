@@ -402,15 +402,27 @@ test("Der aktive Reiter steht in der Kategoriefarbe, die uebrigen gedaempft", ()
   assert.match(block, /color: unterReiter === r\.key \? "var\(--accent, #C9A227\)" : "#9A968C"/);
 });
 
-test("Unter dem aktiven Reiter sitzt ein kurzer Balken auf der Linie auf", () => {
+test("Unter dem aktiven Reiter sitzt ein Balken auf der Linie auf", () => {
   const balken = regel('.unter-reiter[aria-pressed="true"]::after');
   assert.match(balken, /content:\s*""/);
   assert.match(balken, /bottom:\s*0/, "der Balken sitzt auf der Linie auf");
   assert.match(balken, /height:\s*2px/);
   assert.match(balken, /background:\s*var\(--accent, #C9A227\)/);
-  // Kurz heisst: so breit wie der Text, nicht wie der ganze Knopf.
-  assert.match(balken, /left:\s*10px/);
-  assert.match(balken, /right:\s*10px/);
+  /* So breit wie das Drittel des Reiters: seit die drei sich die volle
+     Breite teilen, markiert der Balken das ganze Drittel und nicht
+     mehr nur den Text darin (frueher 10px Einzug je Seite). */
+  assert.match(balken, /left:\s*0/);
+  assert.match(balken, /right:\s*0/);
+});
+
+test("Die drei Unter-Reiter teilen die volle Breite in gleiche Drittel", () => {
+  /* flex: 1 1 0 — die Grundbreite 0 ist der Punkt: mit "auto" bekaeme
+     der laengste Reiter mehr Platz als die anderen. Die Beschriftung
+     steht mittig in ihrem Drittel. */
+  const reiter = regel(".unter-reiter");
+  assert.match(reiter, /flex:\s*1 1 0/);
+  assert.match(reiter, /text-align:\s*center/);
+  assert.doesNotMatch(reiter, /flex:\s*0 0 auto/, "kein Reiter misst mehr nach seinem Text");
 });
 
 test("Zwischen den Reitern steht ein kurzer senkrechter Trennstrich", () => {

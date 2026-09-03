@@ -244,10 +244,13 @@ test("Die Reiterleiste ist seitlich wischbar statt umbrechend", () => {
   // Kein sichtbarer Rollbalken — wie bei der Kategorie-Tab-Leiste.
   assert.match(regel[0], /scrollbar-width: none/);
   assert.match(quelle, /\.unter-reiter-leiste::-webkit-scrollbar \{ display: none; \}/);
-  // Die Knoepfe behalten ihre Groesse und umbrechen nie.
+  /* Die Knoepfe teilen sich die Breite zu gleichen Dritteln und
+     umbrechen nie. Reicht der Platz einmal nicht, weichen die Drittel
+     zugunsten des Textes und die Leiste wird wischbar — umbrochen wird
+     trotzdem nicht. */
   const knopfRegel = quelle.match(/\n        \.unter-reiter \{[^}]*\}/);
   assert.ok(knopfRegel, "Die Regel .unter-reiter fehlt");
-  assert.match(knopfRegel[0], /flex: 0 0 auto/);
+  assert.match(knopfRegel[0], /flex: 1 1 0/);
   assert.match(knopfRegel[0], /white-space: nowrap/);
 });
 
