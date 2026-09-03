@@ -13911,9 +13911,27 @@ export default function App() {
           white-space: nowrap;
         }
 
-        /* Fester 16:9-Ausschnitt ueber die volle Breite. Der Inhalt sitzt
-           unten; reicht er einmal tiefer als 16:9 hergeben, waechst der
-           Bereich mit, damit nichts abgeschnitten wird. */
+        /* 16:9-Ausschnitt ueber die volle Breite als Untergrenze, nicht
+           als feste Hoehe: der Inhalt sitzt unten, und reicht er einmal
+           tiefer als 16:9 hergeben, waechst der Bereich mit, damit
+           nichts abgeschnitten wird.
+
+           Genau das leistete das frueher hier stehende
+           "aspect-ratio: 16 / 9" nicht. Ein Seitenverhaeltnis leitet
+           auch die inhaltsbezogenen Mindestmasse aus der Breite ab —
+           die Hoehe stand damit fest, und was nicht hineinpasste, fiel
+           unter "overflow: hidden" weg. Weil der Inhalt am unteren Rand
+           haengt (justify-content: flex-end), fiel es oben ab: seit die
+           Reiterleiste umbricht und auf dem Telefon drei Zeilen statt
+           einer belegt, stand der Titel ueber der Oberkante und war nur
+           noch mit den Unterlaengen zu sehen; das Bild dahinter endete
+           an derselben starren Kante mitten in den Reiterzeilen.
+
+           min-height mit 56.25vw (= 9/16 der Breite) ergibt dieselbe
+           Hoehe, solange der Inhalt hineinpasst — der Kopfbereich laeuft
+           ueber die volle Fensterbreite, die vw also mit seiner eigenen
+           gleich. Darueber hinaus waechst er einfach mit, und das Bild
+           (inset: 0) deckt die groessere Flaeche vollstaendig ab. */
         /* Luft ueber dem Titel. Der Inhalt haengt am unteren Rand des
            Kopfbereichs (justify-content: flex-end) — ein groesserer
            Innenabstand am Inhalt selbst haette den Titel deshalb nicht
@@ -13934,11 +13952,8 @@ export default function App() {
            dahinter (inset: 0), das den groesseren Ausschnitt einfach
            mitfuellt. */
         .kopfbereich {
-          aspect-ratio: 16 / 9;
+          min-height: 56.25vw;
           padding-top: calc(env(safe-area-inset-top, 0px) + 28px);
-        }
-        @supports not (aspect-ratio: 16 / 9) {
-          .kopfbereich { min-height: calc(56.25vw + env(safe-area-inset-top, 0px) + 28px); }
         }
 
         /* ----------------------------------------------------------
@@ -14131,15 +14146,8 @@ export default function App() {
              damit ueber dem angepeilten Bereich. Am Handy bleibt es
              beim bisherigen content-box: dort gilt diese Regel nicht. */
           .kopfbereich {
-            aspect-ratio: auto;
             box-sizing: border-box;
             min-height: 360px;
-          }
-          /* Hebt die Ersatzregel aus dem @supports-Block oben auf —
-             sie rechnet ebenfalls mit 56.25vw und stuende hier sonst
-             mit 1080px dagegen. */
-          @supports not (aspect-ratio: 16 / 9) {
-            .kopfbereich { min-height: 360px; }
           }
 
           /* --- 3. Tab-Leiste ----------------------------------------
