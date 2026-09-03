@@ -245,8 +245,9 @@ test("Die Sammelliste laesst den Dauersieger aus", () => {
   });
   assert.deepEqual(app.auffaelligeTitel(ranked).map((e) => e.eintrag.id), ["gemischt"]);
 
+  /* Der Abschnitt ist einklappbar; aufgeklappt steht die Liste da. */
   const markup = renderToStaticMarkup(
-    createElement(app.BewertungPruefen, { ranked, onOeffnen: () => {} })
+    createElement(app.BewertungPruefen, { ranked, onOeffnen: () => {}, offen: true })
   );
   assert.match(markup, /Gemischt/);
   assert.ok(!/Immer/.test(markup), "der Dauersieger steht in der Sammelliste");
@@ -288,7 +289,7 @@ test("Der Abschnitt zeigt Titel, Kategorie, Duellzahl und Zuschlag", () => {
     movie: [eintrag({ id: "a", title: "Ein Film", elo: eloFuerZuschlag(0.21), duels: 7, siege: 5 })],
   });
   const markup = renderToStaticMarkup(
-    createElement(app.BewertungPruefen, { ranked, onOeffnen: () => {} })
+    createElement(app.BewertungPruefen, { ranked, onOeffnen: () => {}, offen: true })
   );
   assert.match(markup, /Bewertung prüfen/);
   assert.match(markup, /Ein Film/);

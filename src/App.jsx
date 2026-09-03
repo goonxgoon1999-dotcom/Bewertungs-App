@@ -7734,6 +7734,250 @@ function statsBereiche(kategorien) {
   return [{ key: "all", label: "Alle" }, ...kategorien.map((c) => ({ key: c.key, label: c.label }))];
 }
 
+/* ============================================================
+   EINE AUSWAHL FUER DEN GANZEN TAB
+
+   Der Tab hatte vier Kategorie-Auswahlen: bei der Gesamtstatistik,
+   im Zeitaufwand, in der Detailauswertung und bei der Top 10. Wer
+   eine davon umstellte, sah die anderen Abschnitte weiter auf einem
+   anderen Stand — und musste, um eine Kategorie durchgehend zu
+   betrachten, viermal dasselbe tippen.
+
+   Es gibt deshalb nur noch eine Auswahl, ganz oben und beim Scrollen
+   sichtbar. Sie kann mehrere Kategorien tragen (das konnte bisher
+   nur die Top 10) und kennt weiterhin "Alle".
+
+   Der Zustand ist bewusst schlicht: `null` heisst "Alle", sonst
+   steht dort eine Menge von Kategorie-Schluesseln. Leer wird die
+   Menge nie — wer die letzte Kategorie abwaehlt, landet wieder bei
+   "Alle". Ein Tab, der ueber nichts rechnet, waere nur eine Wand aus
+   leeren Abschnitten.
+
+   NICHT dabei sind zwei Abschnitte, und das ist so gewollt:
+   "Bewertung pruefen" und der Jahresrueckblick rechnen wie bisher
+   ueber alle sichtbaren Kategorien. Der eine sammelt ein, was
+   irgendwo nachzusehen waere, der andere zaehlt ein ganzes Jahr —
+   beide waeren mit einem Kategorie-Filter etwas anderes als das,
+   wofuer sie da sind.
+   ============================================================ */
+
+/** Aus dem Auswahlzustand die Kategorien machen, ueber die gerechnet wird. */
+function statsAuswahlKategorien(auswahl, kategorien) {
+  if (!auswahl) return kategorien;
+  const gewaehlt = kategorien.filter((c) => auswahl.has(c.key));
+  /* Eine Auswahl kann Kategorien enthalten, die inzwischen
+     ausgeblendet sind. Bleibt dadurch nichts uebrig, gilt wieder
+     "Alle" — genauso, wie es die Abschnitte bisher einzeln taten. */
+  return gewaehlt.length ? gewaehlt : kategorien;
+}
+
+/**
+ * Steht die Auswahl auf "Alle"?
+ *
+ * Nur der Knopf "Alle" fuehrt dahin — wer alle Kategorien einzeln
+ * antippt, hat sie einzeln gewaehlt, und ein Tippen soll immer nur
+ * den einen Knopf umschalten, den es trifft. Die eine Ausnahme:
+ * bleibt von der Auswahl nichts Sichtbares uebrig, gilt wieder
+ * "Alle" — dieselbe Rueckfallregel wie in statsAuswahlKategorien.
+ */
+function statsIstAlle(auswahl, kategorien) {
+  return !auswahl || !kategorien.some((c) => auswahl.has(c.key));
+}
+
+/**
+ * Ein Tippen auf einen Knopf der Auswahl.
+ *
+ * "Alle" setzt zurueck. Eine Kategorie aus "Alle" heraus waehlt genau
+ * diese eine; danach kommen weitere dazu oder fallen weg. Faellt die
+ * letzte weg, ist wieder "Alle" an der Reihe.
+ */
+function statsAuswahlUmschalten(auswahl, key) {
+  if (key === "all") return null;
+  if (!auswahl) return new Set([key]);
+  const neu = new Set(auswahl);
+  if (neu.has(key)) neu.delete(key);
+  else neu.add(key);
+  return neu.size ? neu : null;
+}
+
+/* Die Auswahlleiste selbst. Sie bleibt beim Scrollen am oberen Rand
+   stehen, damit immer dasteht, worauf sich die Zahlen darunter
+   beziehen. Der Hintergrund ist der der Seite — sonst schoebe sich
+   der Inhalt sichtbar unter den Knoepfen durch. */
+function StatsKategorieAuswahl({ kategorien, auswahl, onUmschalten }) {
+  const bereiche = statsBereiche(kategorien);
+  const alle = statsIstAlle(auswahl, kategorien);
+
+  return (
+    <div
+      style={{
+        position: "sticky", top: 0, zIndex: 5,
+        background: "#17171A", borderBottom: "1px solid #232326",
+        padding: "12px 0 10px", marginBottom: 18,
+      }}
+    >
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {bereiche.map((b) => {
+          const aktiv = b.key === "all" ? alle : !alle && auswahl.has(b.key);
+          const farbe = b.key === "all" ? "#C9A227" : accentFor(b.key);
+          return (
+            <button
+              key={b.key}
+              onClick={() => onUmschalten(b.key)}
+              aria-pressed={aktiv}
+              style={{
+                padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
+                background: aktiv ? farbe : "transparent",
+                color: aktiv ? "#17171A" : "#9A968C",
+                border: "1px solid " + (aktiv ? farbe : "#33333a"),
+                fontWeight: aktiv ? 700 : 400,
+                fontFamily: "inherit",
+              }}
+            >
+              {b.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   EINKLAPPBARE ABSCHNITTE
+
+   Der Tab ist lang. Jeder Abschnitt bekommt deshalb eine antippbare
+   Kopfzeile; zugeklappt steht unter dem Titel eine kurze
+   Zusammenfassung aus denselben Daten, die aufgeklappt ausfuehrlich
+   dastuenden — nichts davon ist geschaetzt oder erfunden.
+
+   Welche Abschnitte offen sind, merkt sich das Geraet im
+   localStorage, so wie die Kategorie-Ansicht auch. Gespeichert wird
+   nur, was von der Vorgabe abweicht: kommt spaeter ein Abschnitt
+   dazu, gilt fuer ihn die Vorgabe und nicht der Stand von gestern.
+   ============================================================ */
+const STATISTIK_ABSCHNITTE_SCHLUESSEL = "bewertungsapp.statistikAbschnitte";
+
+/* Beim Oeffnen des Tabs stehen Gesamtstatistik und Top 10 offen —
+   die eine sagt, was da ist, die andere, was oben steht. Alles
+   Weitere ist zum Nachsehen da und wartet zugeklappt. */
+const STATISTIK_ABSCHNITTE_VORGABE = {
+  gesamt: true,
+  jahr: false,
+  zeit: false,
+  detail: false,
+  imdb: false,
+  top10: true,
+  pruefen: false,
+  verteilung: false,
+  kriterien: false,
+};
+
+function normalisiereStatistikAbschnitte(roh) {
+  const rein = { ...STATISTIK_ABSCHNITTE_VORGABE };
+  if (roh && typeof roh === "object") {
+    for (const key of Object.keys(STATISTIK_ABSCHNITTE_VORGABE)) {
+      if (typeof roh[key] === "boolean") rein[key] = roh[key];
+    }
+  }
+  return rein;
+}
+
+function ladeStatistikAbschnitte() {
+  try {
+    const roh = window.localStorage.getItem(STATISTIK_ABSCHNITTE_SCHLUESSEL);
+    return normalisiereStatistikAbschnitte(roh ? JSON.parse(roh) : null);
+  } catch (e) {
+    // Kein localStorage, kaputter Eintrag: still zurueck zur Vorgabe.
+    return normalisiereStatistikAbschnitte(null);
+  }
+}
+
+function speichereStatistikAbschnitte(stand) {
+  try {
+    window.localStorage.setItem(
+      STATISTIK_ABSCHNITTE_SCHLUESSEL,
+      JSON.stringify(normalisiereStatistikAbschnitte(stand))
+    );
+  } catch (e) {
+    // Ohne localStorage gilt die Einstellung nur fuer diesen Besuch.
+  }
+}
+
+/* Pfeil der Kopfzeile: zugeklappt zeigt er nach unten ("hier ist
+   mehr"), aufgeklappt nach oben. Gedreht wird das eine Symbol, damit
+   die Bewegung sichtbar zur selben Kopfzeile gehoert. */
+function IconPfeilAuf({ offen }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      style={{
+        ...symbolBasis, width: 16, height: 16, flexShrink: 0,
+        transform: offen ? "rotate(180deg)" : "none",
+        transition: "transform var(--bewegung-rein)",
+      }}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+/**
+ * Ein Abschnitt des Statistik-Tabs.
+ *
+ * `gross` unterscheidet die beiden Ueberschriftgroessen, die der Tab
+ * schon vorher hatte (20px und 17px) — daran aendert sich nichts,
+ * sie sitzen nur jetzt in einem Knopf.
+ */
+function StatsAbschnitt({ titel, gross = false, zusammenfassung, offen, onUmschalten, children }) {
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <button
+        onClick={onUmschalten}
+        aria-expanded={offen}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          width: "100%", textAlign: "left", padding: "6px 0",
+          background: "transparent", border: "none", color: "#EDEAE3",
+          cursor: "pointer", fontFamily: "inherit",
+          marginBottom: offen ? 14 : 0,
+        }}
+      >
+        <span style={{ minWidth: 0 }}>
+          <span
+            style={{
+              display: "block",
+              fontFamily: "'Playfair Display', serif",
+              fontSize: gross ? 20 : 17,
+              fontWeight: 700,
+            }}
+          >
+            {titel}
+          </span>
+          {!offen && zusammenfassung && (
+            <span
+              style={{
+                display: "block", marginTop: 4,
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5,
+                color: "#77746c", overflow: "hidden", textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {zusammenfassung}
+            </span>
+          )}
+        </span>
+        <span style={{ display: "flex", color: "#77746c" }}>
+          <IconPfeilAuf offen={offen} />
+        </span>
+      </button>
+      {offen && children}
+    </div>
+  );
+}
+
 /* Eine Zeile der Rangliste — dasselbe Format wie ueberall:
    Rang, Poster, Titel, Endnote. */
 function RanglistenZeile({ platz, eintrag }) {
@@ -7753,84 +7997,36 @@ function RanglistenZeile({ platz, eintrag }) {
 }
 
 /* ------------------------------------------------------------
-   Top 10 — eine Liste ueber frei kombinierbare Kategorien.
+   Top 10 — die besten Titel der gewaehlten Kategorien.
 
-   Die Knoepfe sind einzeln an- und abschaltbar; ein aktiver traegt
-   die Farbe seiner Kategorie. Die Auswahl ist unabhaengig von der
-   Detailauswertung darueber und aendert an keiner Berechnung etwas:
+   Die eigene Knopfreihe ist entfallen: der Abschnitt folgt der einen
+   Auswahl ganz oben im Tab. An der Berechnung aendert das nichts —
    sortiert wird wie in jeder Rangliste nach der Endnote.
    ------------------------------------------------------------ */
-function TopTen({ ranked }) {
-  const kategorien = useKategorien();
-  const [gewaehlt, setGewaehlt] = useState(() => new Set(CATEGORY_KEYS));
-
-  function umschalten(key) {
-    setGewaehlt((alt) => {
-      const neu = new Set(alt);
-      if (neu.has(key)) neu.delete(key);
-      else neu.add(key);
-      return neu;
-    });
-  }
-
-  /* Die Auswahl kann Kategorien enthalten, die inzwischen
-     ausgeblendet sind — gezaehlt wird nur, was auch angezeigt wird. */
-  const auswahl = kategorien.filter((c) => gewaehlt.has(c.key));
-
+function TopTen({ ranked, kategorien, offen, onUmschalten }) {
   const { liste, gesamt } = useMemo(() => {
-    const alle = kategorien.filter((c) => gewaehlt.has(c.key)).flatMap((c) => ranked[c.key]);
+    const alle = kategorien.flatMap((c) => ranked[c.key] || []);
     return {
       liste: [...alle].sort((a, b) => sortWert(b.score) - sortWert(a.score)).slice(0, 10),
       gesamt: alle.length,
     };
-  }, [ranked, gewaehlt, kategorien]);
+  }, [ranked, kategorien]);
 
   return (
-    <div style={{ marginBottom: 28 }}>
-      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>Top 10</h3>
-
-      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-        {kategorien.map((c) => {
-          const aktiv = gewaehlt.has(c.key);
-          const farbe = accentFor(c.key);
-          return (
-            <button
-              key={c.key}
-              onClick={() => umschalten(c.key)}
-              aria-pressed={aktiv}
-              style={{
-                padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
-                background: aktiv ? farbe : "transparent",
-                color: aktiv ? "#17171A" : "#9A968C",
-                border: "1px solid " + (aktiv ? farbe : "#33333a"),
-                fontWeight: aktiv ? 700 : 400,
-              }}
-            >
-              {c.label}
-            </button>
-          );
-        })}
-      </div>
-
+    <StatsAbschnitt titel="Top 10" offen={offen} onUmschalten={onUmschalten}>
       <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
-        {auswahl.length === 0
-          ? "Keine Kategorie ausgewählt"
-          : auswahl.map((c) => c.label).join(", ") +
-            " · " +
-            gesamt +
-            (gesamt === 1 ? " Eintrag" : " Einträge")}
+        {kategorien.map((c) => c.label).join(", ")}
+        {" · "}
+        {gesamt}
+        {gesamt === 1 ? " Eintrag" : " Einträge"}
       </div>
 
-      {auswahl.length === 0 ? (
-        <div style={{ color: "#55524c", fontSize: 13, padding: "8px 0" }}>
-          Wähle oben mindestens eine Kategorie aus.
-        </div>
-      ) : liste.length === 0 ? (
+      {liste.length === 0 ? (
         <div style={{ color: "#55524c", fontSize: 13, padding: "8px 0" }}>Keine Einträge.</div>
       ) : (
         liste.map((f, i) => <RanglistenZeile key={f.id} platz={i + 1} eintrag={f} />)
       )}
-    </div>
+    </StatsAbschnitt>
   );
 }
 
@@ -7862,16 +8058,13 @@ function auffaelligeTitel(ranked, kategorien = CATEGORIES) {
   return gesammelt.sort((a, b) => Math.abs(b.zuschlag) - Math.abs(a.zuschlag));
 }
 
-function BewertungPruefen({ ranked, onOeffnen }) {
+function BewertungPruefen({ ranked, onOeffnen, offen, onUmschalten }) {
   const kategorien = useKategorien();
   const liste = useMemo(() => auffaelligeTitel(ranked, kategorien), [ranked, kategorien]);
   if (!liste.length) return null;
 
   return (
-    <div style={{ marginBottom: 28 }}>
-      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>
-        Bewertung prüfen
-      </h3>
+    <StatsAbschnitt titel="Bewertung prüfen" offen={offen} onUmschalten={onUmschalten}>
       <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
         Diese Titel schneiden im Duell dauerhaft anders ab, als ihre Kriterien
         hergeben — ab {AUFFAELLIG_ZUSCHLAG.toFixed(2).replace(".", ",")} Zuschlag
@@ -7913,7 +8106,7 @@ function BewertungPruefen({ ranked, onOeffnen }) {
           </span>
         </button>
       ))}
-    </div>
+    </StatsAbschnitt>
   );
 }
 
@@ -7928,10 +8121,9 @@ function BewertungPruefen({ ranked, onOeffnen }) {
    taucht der Titel schlicht nicht auf. Sie kommt beim Nachladen der
    Angaben mit (siehe `imdbRating`) oder wird von Hand eingetragen.
 
-   Der Abschnitt zieht alle angezeigten Kategorien heran und ist
-   damit unabhaengig vom Kategorie-Filter der Detailauswertung
-   darueber — dieselbe Trennung wie bei der Top 10, die ihre eigene
-   Auswahl mitbringt.
+   Der Abschnitt folgt der einen Kategorie-Auswahl ganz oben im Tab.
+   Gerechnet wird dabei unveraendert: Es aendert sich nur, welche
+   Eintraege ueberhaupt in den Vergleich gehen.
 
    Verglichen wird mit der ANGEZEIGTEN Endnote (`anzeigeNote`, auf
    0–10 begrenzt). Die IMDb-Skala endet bei 10; ein Duell-Zuschlag
@@ -7986,17 +8178,34 @@ function imdbListen(vergleiche) {
   };
 }
 
-function DuVsImdb({ ranked }) {
-  const kategorien = useKategorien();
+/**
+ * Die groesste Abweichung der Auswahl, mit Vorzeichen — die
+ * Zusammenfassung der zugeklappten Kopfzeile. Gemessen wird der
+ * Betrag; zurueck kommt der Wert selbst, damit sein Vorzeichen
+ * erhalten bleibt. Ohne Vergleichswerte gibt es nichts zu sagen.
+ */
+function groessteImdbAbweichung(vergleiche) {
+  let groesste = null;
+  for (const v of vergleiche) {
+    if (groesste === null || Math.abs(v.abweichung) > Math.abs(groesste)) groesste = v.abweichung;
+  }
+  return groesste;
+}
+
+function DuVsImdb({ ranked, kategorien, offen, onUmschalten }) {
   const vergleiche = useMemo(() => imdbVergleiche(ranked, kategorien), [ranked, kategorien]);
   const listen = useMemo(() => imdbListen(vergleiche), [vergleiche]);
+  const groesste = groessteImdbAbweichung(vergleiche);
 
   return (
-    <div style={{ marginBottom: 28 }}>
-      <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 12px" }}>
-        Du vs. IMDb
-      </h3>
-
+    <StatsAbschnitt
+      titel="Du vs. IMDb"
+      offen={offen}
+      onUmschalten={onUmschalten}
+      zusammenfassung={
+        groesste === null ? null : "GRÖSSTE ABWEICHUNG " + zuschlagText(groesste)
+      }
+    >
       {vergleiche.length < IMDB_VERGLEICH_MIN ? (
         <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
           Noch zu wenig zum Vergleichen — ab {IMDB_VERGLEICH_MIN} bewerteten
@@ -8005,9 +8214,8 @@ function DuVsImdb({ ranked }) {
       ) : (
         <>
           <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
-            Deine Endnote gegen die IMDb-Note, über alle Kategorien und
-            unabhängig von der Auswahl oben. {vergleiche.length} Einträge
-            haben beide Noten.
+            Deine Endnote gegen die IMDb-Note, über die Auswahl oben.
+            {" "}{vergleiche.length} Einträge haben beide Noten.
           </div>
 
           <ImdbListe
@@ -8022,7 +8230,7 @@ function DuVsImdb({ ranked }) {
           />
         </>
       )}
-    </div>
+    </StatsAbschnitt>
   );
 }
 
@@ -8091,7 +8299,7 @@ function ImdbZeile({ vergleich }) {
 }
 
 /* ------------------------------------------------------------
-   Zeitaufwand Watchlist
+   Zeit — gesehene Zeit und Zeitaufwand Watchlist
 
    Wie lange braucht es, alles Vorgemerkte zu schauen? Gezaehlt wird
    jede Kategorie mit Laufzeit — Spiele haben keine abrufbare und
@@ -8101,11 +8309,9 @@ function ImdbZeile({ vergleich }) {
    mit. Ihre Anzahl steht als Hinweis darunter, damit die Summe nicht
    vollstaendiger wirkt, als sie ist.
 
-   Ueber die Auswahl darueber laesst sich der Abschnitt auf eine
-   einzelne Kategorie einschraenken — dieselben Bereiche und dieselbe
-   Bedienung wie in der Detailauswertung weiter unten, nur eben mit der
-   Watchlist statt den Noten. Spiele stehen mit in der Auswahl und
-   erklaeren beim Anklicken, warum es fuer sie keine Zahl gibt.
+   Der Abschnitt folgt der einen Kategorie-Auswahl ganz oben im Tab.
+   Spiele stehen mit in dieser Auswahl und erklaeren, warum es fuer
+   sie keine Zahl gibt.
    ------------------------------------------------------------ */
 /* Welche der angezeigten Kategorien ueberhaupt eine Laufzeit haben.
    Spiele fallen hier heraus — sie stehen zwar in der Auswahl, bringen
@@ -8114,9 +8320,7 @@ function zeitaufwandKategorien(kategorien) {
   return kategorien.filter((c) => unterstuetztLaufzeit(c.key));
 }
 
-/* Knopf der Bereichsauswahl. Baugleich zu den Knoepfen der
-   Detailauswertung — dort steht das Markup weiterhin an Ort und
-   Stelle, damit dieser Abschnitt nichts Bestehendes anfasst. */
+/* Knopf der Jahresauswahl im Rueckblick. */
 function ZeitaufwandBereich({ label, aktiv, onClick }) {
   return (
     <button
@@ -8135,29 +8339,49 @@ function ZeitaufwandBereich({ label, aktiv, onClick }) {
   );
 }
 
-function ZeitaufwandWatchlist({ watchlist }) {
-  const kategorien = useKategorien();
-  const bereiche = statsBereiche(kategorien);
-  const [scope, setScope] = useState("all");
-  /* Wird die gewaehlte Kategorie ausgeblendet, faellt der Abschnitt
-     auf "Alle" zurueck statt auf einen Bereich, den es nicht gibt. */
-  const bereich = bereiche.some((b) => b.key === scope) ? scope : "all";
+/**
+ * Der Abschnitt "Zeit" — zwei Zahlen, die beide Stunden sind.
+ *
+ * Zusammengelegt aus "Gesehene Zeit" (bis dahin zwei Kennzahl-Karten
+ * unter der Detailauswertung) und "Zeitaufwand Watchlist". Beide
+ * rechnen unveraendert weiter, sie stehen jetzt nur beieinander:
+ * einmal, was hinter einem liegt, einmal, was noch vor einem liegt.
+ *
+ * Beide Haelften folgen der einen Kategorie-Auswahl oben.
+ */
+function ZeitAbschnitt({ ranked, watchlist, kategorien, offen, onUmschalten }) {
+  /* Die gesehene Zeit: Laufzeit mal Sehzaehler. Gerechnet wird je
+     Kategorie, weil nur so feststeht, welcher Eintrag ueberhaupt eine
+     Laufzeit haben kann — Spiele haben keine. */
+  const sehzeit = useMemo(
+    () => sehzeitSumme(kategorien.map((c) => ({ category: c.key, liste: ranked[c.key] || [] }))),
+    [ranked, kategorien]
+  );
 
-  const daten = useMemo(() => {
+  /* Was fehlt: bei einer Auswahl ganz ohne Laufzeit der Grund selbst,
+     sonst die Zahl der Eintraege, deren Laufzeit noch nicht bekannt
+     ist. */
+  const sehzeitHinweis = !sehzeit.moeglich
+    ? "Spiele haben keine abrufbare Laufzeit und ergeben keine Sehzeit."
+    : sehzeit.ohneLaufzeit > 0
+      ? ohneLaufzeitHinweis(sehzeit.ohneLaufzeit)
+      : null;
+
+  const watch = useMemo(() => {
     const jeKategorie = zeitaufwandKategorien(kategorien).map((cat) => {
       let minuten = 0;
       let gezaehlt = 0;
-      let offen = 0;
+      let offenZahl = 0;
       for (const eintrag of watchlist[cat.key] || []) {
         const dauer = eintragLaufzeit(eintrag);
         if (dauer === null) {
-          offen++;
+          offenZahl++;
           continue;
         }
         minuten += dauer;
         gezaehlt++;
       }
-      return { key: cat.key, label: cat.label, minuten, gezaehlt, offen };
+      return { key: cat.key, label: cat.label, minuten, gezaehlt, offen: offenZahl };
     });
 
     const gesamt = jeKategorie.reduce(
@@ -8172,75 +8396,106 @@ function ZeitaufwandWatchlist({ watchlist }) {
     return { jeKategorie, gesamt };
   }, [watchlist, kategorien]);
 
-  /* Spiele haben keine Laufzeit und deshalb auch keine Zahlen — die
-     Auswahl fuehrt sie trotzdem, damit die Frage "und meine Spiele?"
-     eine Antwort bekommt statt einfach zu fehlen. */
-  const gewaehlt =
-    bereich === "all" ? daten.gesamt : daten.jeKategorie.find((k) => k.key === bereich) || null;
-
-  const inTagen = gewaehlt ? tageText(gewaehlt.minuten) : null;
+  /* Spiele haben keine Laufzeit und deshalb auch keine Zahlen —
+     stehen in der Auswahl nur Spiele, sagt der Abschnitt das, statt
+     einfach leer zu bleiben. */
+  const hatWatchlistZahlen = watch.jeKategorie.length > 0;
+  const inTagen = tageText(watch.gesamt.minuten);
 
   /* Eine Zeile fuer beides: die Tagesangabe (ab einem Tag sagt die
-     Stundenzahl allein wenig) und — nur bei "Alle" — die
-     Aufschluesselung nach Kategorie. Bei einer einzelnen Kategorie
-     waere sie bloss die Wiederholung der Zahl darueber. */
+     Stundenzahl allein wenig) und — nur bei mehreren Kategorien — die
+     Aufschluesselung. Bei einer einzelnen waere sie bloss die
+     Wiederholung der Zahl darueber. */
   const nebenzeile = [];
-  if (gewaehlt && gewaehlt.gezaehlt > 0) {
+  if (watch.gesamt.gezaehlt > 0) {
     if (inTagen) nebenzeile.push("das sind " + inTagen);
-    if (bereich === "all") {
-      for (const k of daten.jeKategorie) nebenzeile.push(k.label + ": " + stundenKurz(k.minuten));
+    if (watch.jeKategorie.length > 1) {
+      for (const k of watch.jeKategorie) nebenzeile.push(k.label + ": " + stundenKurz(k.minuten));
     }
   }
 
+  /* Zugeklappt steht die gesehene Zeit in der Kopfzeile: Stunden und,
+     ab einem Tag, dieselbe Dauer noch einmal in Tagen. Ohne Laufzeit
+     in der Auswahl gibt es keine Zahl und damit auch keine Zeile. */
+  const gesehenTage = tageText(sehzeit.minuten);
+  const zusammenfassung =
+    sehzeit.moeglich && sehzeit.minuten > 0
+      ? "GESEHEN " + stundenText(sehzeit.minuten) + (gesehenTage ? " · " + gesehenTage : "")
+      : null;
+
   return (
-    <div style={{ marginBottom: 28 }}>
-      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>
-        Zeitaufwand Watchlist
-      </h2>
-
-      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {bereiche.map((s) => (
-          <ZeitaufwandBereich
-            key={s.key}
-            label={s.label}
-            aktiv={bereich === s.key}
-            onClick={() => setScope(s.key)}
-          />
-        ))}
-      </div>
-
-      {!gewaehlt ? (
-        <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
-          Keine Laufzeit-Daten für Spiele.
+    <StatsAbschnitt
+      titel="Zeit"
+      gross
+      offen={offen}
+      onUmschalten={onUmschalten}
+      zusammenfassung={zusammenfassung}
+    >
+      {/* ---- Was hinter einem liegt ---- */}
+      <ZeitUeberschrift>Gesehene Zeit</ZeitUeberschrift>
+      {sehzeit.moeglich ? (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <StatCard label="STUNDEN" value={sehzeitStundenWert(sehzeit.minuten)} />
+          <StatCard label="TAGE" value={sehzeitTageWert(sehzeit.minuten)} />
         </div>
-      ) : gewaehlt.gezaehlt === 0 && gewaehlt.offen === 0 ? (
-        <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
-          {bereich === "all"
-            ? "Nichts vorgemerkt — Spiele zählen hier nicht mit."
-            : "Keine " + gewaehlt.label + " vorgemerkt."}
+      ) : null}
+      {sehzeitHinweis && (
+        <div style={{ fontSize: 11, color: "#77746c", lineHeight: 1.6, marginTop: 8 }}>
+          {sehzeitHinweis}
         </div>
-      ) : (
-        <>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-            <StatCard label="GESAMT" value={stundenText(gewaehlt.minuten)} />
-            <StatCard label="MIT LAUFZEIT" value={gewaehlt.gezaehlt} />
-          </div>
-
-          {nebenzeile.length > 0 && (
-            <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
-              {nebenzeile.join(" · ")}
-            </div>
-          )}
-
-          {gewaehlt.offen > 0 && (
-            <div style={{ fontSize: 12, color: "#55524c", marginTop: 6, lineHeight: 1.5 }}>
-              {gewaehlt.offen}{" "}
-              {gewaehlt.offen === 1 ? "Eintrag ohne bekannte Laufzeit" : "Einträge ohne bekannte Laufzeit"},
-              noch nicht mitgerechnet
-            </div>
-          )}
-        </>
       )}
+
+      {/* ---- Was noch vor einem liegt ---- */}
+      <div style={{ marginTop: 22 }}>
+        <ZeitUeberschrift>Zeitaufwand Watchlist</ZeitUeberschrift>
+        {!hatWatchlistZahlen ? (
+          <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
+            Keine Laufzeit-Daten für Spiele.
+          </div>
+        ) : watch.gesamt.gezaehlt === 0 && watch.gesamt.offen === 0 ? (
+          <div style={{ color: "#77746c", fontSize: 13, padding: "8px 0" }}>
+            Nichts vorgemerkt — Spiele zählen hier nicht mit.
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+              <StatCard label="GESAMT" value={stundenText(watch.gesamt.minuten)} />
+              <StatCard label="MIT LAUFZEIT" value={watch.gesamt.gezaehlt} />
+            </div>
+
+            {nebenzeile.length > 0 && (
+              <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.5 }}>
+                {nebenzeile.join(" · ")}
+              </div>
+            )}
+
+            {watch.gesamt.offen > 0 && (
+              <div style={{ fontSize: 12, color: "#55524c", marginTop: 6, lineHeight: 1.5 }}>
+                {watch.gesamt.offen}{" "}
+                {watch.gesamt.offen === 1
+                  ? "Eintrag ohne bekannte Laufzeit"
+                  : "Einträge ohne bekannte Laufzeit"},
+                noch nicht mitgerechnet
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </StatsAbschnitt>
+  );
+}
+
+/* Die kleine Mono-Beschriftung ueber den beiden Haelften des
+   Abschnitts — dieselbe wie ueber den Listen bei "Du vs. IMDb". */
+function ZeitUeberschrift({ children }) {
+  return (
+    <div
+      style={{
+        fontFamily: "'JetBrains Mono', monospace", fontSize: 11, letterSpacing: 0.5,
+        color: "#9A968C", marginBottom: 8,
+      }}
+    >
+      {String(children).toUpperCase()}
     </div>
   );
 }
@@ -8280,7 +8535,7 @@ function jahrDerBewertung(entry) {
   return zeit ? new Date(zeit).getFullYear() : null;
 }
 
-function Jahresrueckblick({ ranked }) {
+function Jahresrueckblick({ ranked, offen, onUmschalten }) {
   const kategorien = useKategorien();
   const [gewaehlt, setGewaehlt] = useState(() => new Date().getFullYear());
 
@@ -8363,26 +8618,26 @@ function Jahresrueckblick({ ranked }) {
 
   if (!daten.jahre.length) {
     return (
-      <div style={{ marginBottom: 28 }}>
-        <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>
-          Jahresrückblick
-        </h2>
+      <StatsAbschnitt titel="Jahresrückblick" gross offen={offen} onUmschalten={onUmschalten}>
         <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.6 }}>
           Noch nichts zu zeigen. Sobald du etwas bewertest, sammelt sich
           hier das Jahr — der Bestand aus der Zeit davor trägt kein
           Bewertungsdatum und bleibt deshalb außen vor.
         </div>
-      </div>
+      </StatsAbschnitt>
     );
   }
 
   return (
-    <div style={{ marginBottom: 28 }}>
-      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>
-        Jahresrückblick
-      </h2>
-
-      {/* Jahresauswahl — dieselben Knoepfe wie beim Zeitaufwand. */}
+    <StatsAbschnitt
+      titel="Jahresrückblick"
+      gross
+      offen={offen}
+      onUmschalten={onUmschalten}
+      zusammenfassung={jahr === null ? null : String(jahr)}
+    >
+      {/* Jahresauswahl — eigene Knoepfe, sie waehlen ja kein Jahr aus
+          Kategorien, sondern aus Jahren. */}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
         {daten.jahre.map((j) => (
           <ZeitaufwandBereich
@@ -8467,7 +8722,7 @@ function Jahresrueckblick({ ranked }) {
           </div>
         </>
       )}
-    </div>
+    </StatsAbschnitt>
   );
 }
 
@@ -8514,61 +8769,49 @@ function RueckblickZeile({ label, wert, zusatz, zusatzFarbe, letzte }) {
 
 function StatsPage({ ranked, watchlist, onOeffnen }) {
   const kategorien = useKategorien();
-  const bereiche = statsBereiche(kategorien);
-  const [scope, setScope] = useState("all");
-  /* Wird die gewaehlte Kategorie ausgeblendet, gilt wieder "Alle" —
-     sonst stuende die Detailauswertung vor einem leeren Bereich. */
-  const bereich = bereiche.some((b) => b.key === scope) ? scope : "all";
 
-  const overall = useMemo(() => {
-    const all = kategorien.flatMap((c) => ranked[c.key]);
-    return {
-      counts: Object.fromEntries(kategorien.map((c) => [c.key, ranked[c.key].length])),
-      countTotal: all.length,
-      ...statsFor(all),
-    };
-  }, [ranked, kategorien]);
+  /* Die eine Auswahl fuer den ganzen Tab: null heisst "Alle". Die
+     Liste dahinter bleibt gemerkt, damit die Abschnitte darunter
+     nicht bei jedem Rendern neu rechnen. */
+  const [auswahl, setAuswahl] = useState(null);
+  const aktive = useMemo(() => statsAuswahlKategorien(auswahl, kategorien), [auswahl, kategorien]);
+  const istAlle = statsIstAlle(auswahl, kategorien);
 
-  const scopedList = useMemo(() => {
-    if (bereich === "all") return kategorien.flatMap((c) => ranked[c.key]);
-    return ranked[bereich];
-  }, [ranked, bereich, kategorien]);
+  /* Welche Abschnitte offen sind — je Geraet gemerkt, wie die
+     Kategorie-Ansicht auch. */
+  const [abschnitte, setAbschnitte] = useState(ladeStatistikAbschnitte);
+  function umschalten(key) {
+    setAbschnitte((alt) => {
+      const neu = { ...alt, [key]: !alt[key] };
+      speichereStatistikAbschnitte(neu);
+      return neu;
+    });
+  }
+  const klapper = (key) => ({ offen: !!abschnitte[key], onUmschalten: () => umschalten(key) });
 
+  /* Die Liste, ueber die alles rechnet, was der Auswahl folgt. */
+  const scopedList = useMemo(
+    () => aktive.flatMap((c) => ranked[c.key] || []),
+    [ranked, aktive]
+  );
   const scopedStats = statsFor(scopedList);
 
-  /* Die Sehzeit der Detailauswertung: Laufzeit mal Zaehler, ueber
-     genau dieselbe Auswahl wie die Kennzahlen daneben. Gerechnet wird
-     je Kategorie, weil nur so feststeht, welcher Eintrag ueberhaupt
-     eine Laufzeit haben kann — Spiele haben keine. */
-  const sehzeit = useMemo(() => {
-    const gruppen =
-      bereich === "all"
-        ? kategorien.map((c) => ({ category: c.key, liste: ranked[c.key] }))
-        : [{ category: bereich, liste: ranked[bereich] }];
-    return sehzeitSumme(gruppen);
-  }, [ranked, bereich, kategorien]);
-
-  /* Unter den Karten: was fehlt. Bei einer Auswahl ganz ohne Laufzeit
-     ist das der Grund selbst, sonst die Zahl der Eintraege, deren
-     Laufzeit noch nicht bekannt ist. */
-  const sehzeitHinweis = !sehzeit.moeglich
-    ? "Spiele haben keine abrufbare Laufzeit und ergeben keine Sehzeit."
-    : sehzeit.ohneLaufzeit > 0
-      ? ohneLaufzeitHinweis(sehzeit.ohneLaufzeit)
-      : null;
+  /* Die Kacheln je Kategorie stehen nur bei "Alle". Ist eine einzelne
+     Kategorie gewaehlt, steht ihre Anzahl schon in "Gesamt" — dieselbe
+     Zahl zweimal untereinander sagt nichts dazu. */
+  const kacheln = useMemo(
+    () => kategorien.map((c) => ({ key: c.key, label: c.label, anzahl: (ranked[c.key] || []).length })),
+    [ranked, kategorien]
+  );
 
   /* Kriterien-Durchschnitte werden ausschließlich innerhalb einer
-     Kategorie gebildet. Bei "Alle" gibt es deshalb einen Block je
-     Kategorie statt eines gemeinsamen — die Kriterien von Spielen
-     und Filmen sind schlicht nicht dieselben und dürfen nicht in
-     einen Topf. */
+     Kategorie gebildet: die Kriterien von Spielen und Filmen sind
+     schlicht nicht dieselben und dürfen nicht in einen Topf. Bei
+     mehreren gewählten Kategorien gibt es deshalb je einen Block. */
   const criteriaGroups = useMemo(() => {
-    const base =
-      bereich === "all"
-        ? kategorien.map((c) => ({ key: c.key, label: c.label, list: ranked[c.key] }))
-        : [{ key: bereich, label: null, list: ranked[bereich] }];
-
-    return base
+    const mehrere = aktive.length > 1;
+    return aktive
+      .map((c) => ({ key: c.key, label: mehrere ? c.label : null, list: ranked[c.key] || [] }))
       .filter((g) => g.list.length > 0)
       .map((g) => ({
         ...g,
@@ -8584,7 +8827,7 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
           return werte.length ? werte.reduce((a, b) => a + b, 0) / werte.length : 0;
         })(),
       }));
-  }, [ranked, bereich, kategorien]);
+  }, [ranked, aktive]);
 
   const bands = DISTRIBUTION_BANDS.map((b) => ({
     ...b,
@@ -8597,95 +8840,101 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
   }));
   const maxBandCount = Math.max(1, ...bands.map((b) => b.count));
 
+  /* Die staerkste Notenspanne fuer die zugeklappte Kopfzeile. Bei
+     Gleichstand gewinnt die hoehere Spanne — sie steht in der Liste
+     zuerst. Ohne bewertete Eintraege gibt es keine. */
+  const staerksteSpanne = bands.reduce(
+    (beste, b) => (b.count > 0 && (!beste || b.count > beste.count) ? b : beste),
+    null
+  );
+
   return (
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
-      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>Gesamtstatistik</h2>
-      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-        {kategorien.map((c) => (
-          <StatCard key={c.key} label={c.label.toUpperCase()} value={overall.counts[c.key]} />
-        ))}
-        <StatCard label="GESAMT" value={overall.countTotal} />
-      </div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
-        <StatCard label="Ø ENDNOTE" value={overall.avg.toFixed(2)} color={scoreToColor(overall.avg)} />
-        <StatCard label="HÖCHSTE" value={overall.max.toFixed(2)} color={scoreToColor(overall.max)} />
-        <StatCard label="NIEDRIGSTE" value={overall.min.toFixed(2)} color={scoreToColor(overall.min)} />
-      </div>
+      {/* Die eine Auswahl fuer alles, was darunter steht. */}
+      <StatsKategorieAuswahl
+        kategorien={kategorien}
+        auswahl={auswahl}
+        onUmschalten={(key) => setAuswahl((alt) => statsAuswahlUmschalten(alt, key))}
+      />
+
+      <StatsAbschnitt titel="Gesamtstatistik" gross {...klapper("gesamt")}>
+        {istAlle && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+            {kacheln.map((k) => (
+              <StatCard key={k.key} label={k.label.toUpperCase()} value={k.anzahl} />
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <StatCard label="GESAMT" value={scopedStats.count} />
+          <StatCard label="Ø ENDNOTE" value={scopedStats.avg.toFixed(2)} color={scoreToColor(scopedStats.avg)} />
+          <StatCard label="HÖCHSTE" value={scopedStats.max.toFixed(2)} color={scoreToColor(scopedStats.max)} />
+          <StatCard label="NIEDRIGSTE" value={scopedStats.min.toFixed(2)} color={scoreToColor(scopedStats.min)} />
+        </div>
+      </StatsAbschnitt>
 
       {/* Was in einem Jahr zusammenkam. Steht vor der Watchlist, weil
-          es zurueckblickt, wo diese nach vorn schaut. */}
-      <Jahresrueckblick ranked={ranked} />
+          es zurueckblickt, wo diese nach vorn schaut. Der Rueckblick
+          zaehlt bewusst ueber alle Kategorien — ein Jahr ist ein Jahr. */}
+      <Jahresrueckblick ranked={ranked} {...klapper("jahr")} />
 
-      {/* Was noch vor einem liegt — die Watchlist in Stunden. Sie hat
-          mit den Noten darueber nichts zu tun und steht deshalb als
-          eigener Abschnitt dazwischen. */}
-      <ZeitaufwandWatchlist watchlist={watchlist} />
+      {/* Gesehene Zeit und Watchlist in einem Abschnitt: beides sind
+          Stunden, das eine hinter einem, das andere vor einem. */}
+      <ZeitAbschnitt
+        ranked={ranked}
+        watchlist={watchlist}
+        kategorien={aktive}
+        {...klapper("zeit")}
+      />
 
-      <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 14px" }}>Detailauswertung</h2>
-      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
-        {bereiche.map((s) => (
-          <button
-            key={s.key}
-            onClick={() => setScope(s.key)}
-            style={{
-              padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
-              background: bereich === s.key ? "#C9A227" : "transparent",
-              color: bereich === s.key ? "#17171A" : "#9A968C",
-              border: "1px solid " + (bereich === s.key ? "#C9A227" : "#33333a"),
-              fontWeight: bereich === s.key ? 700 : 400,
-            }}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      {scopedList.length === 0 ? (
-        <div style={{ color: "#77746c", padding: 30, textAlign: "center" }}>Noch keine Einträge in diesem Bereich.</div>
-      ) : (
-        <div style={{ marginBottom: 28 }}>
+      <StatsAbschnitt
+        titel="Detailauswertung"
+        gross
+        zusammenfassung={
+          scopedStats.count === 0
+            ? null
+            : scopedStats.count +
+              (scopedStats.count === 1 ? " EINTRAG" : " EINTRÄGE") +
+              " · Ø " +
+              scopedStats.avg.toFixed(2)
+        }
+        {...klapper("detail")}
+      >
+        {scopedList.length === 0 ? (
+          <div style={{ color: "#77746c", padding: 30, textAlign: "center" }}>Noch keine Einträge in diesem Bereich.</div>
+        ) : (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <StatCard label="ANZAHL" value={scopedStats.count} />
             <StatCard label="Ø ENDNOTE" value={scopedStats.avg.toFixed(2)} color={scoreToColor(scopedStats.avg)} />
             <StatCard label="HÖCHSTE" value={scopedStats.max.toFixed(2)} color={scoreToColor(scopedStats.max)} />
             <StatCard label="NIEDRIGSTE" value={scopedStats.min.toFixed(2)} color={scoreToColor(scopedStats.min)} />
           </div>
+        )}
+      </StatsAbschnitt>
 
-          {/* Die gesamte Sehzeit der Auswahl — dieselbe Rechnung wie in
-              `sehzeitSumme` und nirgends sonst. Die beiden Karten haben
-              eine eigene Zeile, damit "Tage" immer neben "Stunden"
-              steht und nicht je nach Breite allein darunter rutscht —
-              dieselbe Aufteilung wie beim Zeitaufwand der Watchlist. */}
-          {sehzeit.moeglich && (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-              <StatCard label="STUNDEN" value={sehzeitStundenWert(sehzeit.minuten)} />
-              <StatCard label="TAGE" value={sehzeitTageWert(sehzeit.minuten)} />
-            </div>
-          )}
-          {sehzeitHinweis && (
-            <div style={{ fontSize: 11, color: "#77746c", lineHeight: 1.6, marginTop: 8 }}>
-              {sehzeitHinweis}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Die eigene Note gegen die IMDb-Note — folgt der Auswahl oben. */}
+      <DuVsImdb ranked={ranked} kategorien={aktive} {...klapper("imdb")} />
 
-      {/* Die eigene Note gegen die IMDb-Note. Steht direkt unter der
-          Detailauswertung, folgt deren Kategorie-Filter aber nicht. */}
-      <DuVsImdb ranked={ranked} />
-
-      {/* Top 10 steht mit eigenem Filter zwischen Detailauswertung und
-          Bewertungsverteilung — unabhaengig von der Auswahl darueber. */}
-      <TopTen ranked={ranked} />
+      <TopTen ranked={ranked} kategorien={aktive} {...klapper("top10")} />
 
       {/* Die auffaelligen Titel ueber alle Kategorien. Der Abschnitt
           zeigt sich nur, wenn es welche gibt. */}
-      <BewertungPruefen ranked={ranked} onOeffnen={onOeffnen} />
+      <BewertungPruefen ranked={ranked} onOeffnen={onOeffnen} {...klapper("pruefen")} />
 
       {scopedList.length > 0 && (
         <>
-          <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 14px" }}>Bewertungsverteilung</h3>
-          <div style={{ marginBottom: 28 }}>
+          <StatsAbschnitt
+            titel="Bewertungsverteilung"
+            zusammenfassung={
+              staerksteSpanne
+                ? staerksteSpanne.label +
+                  " · " +
+                  staerksteSpanne.count +
+                  (staerksteSpanne.count === 1 ? " EINTRAG" : " EINTRÄGE")
+                : null
+            }
+            {...klapper("verteilung")}
+          >
             {bands.map((b) => (
               <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                 <div style={{ width: 62, fontSize: 12, color: "#9A968C", flexShrink: 0 }}>{b.label}</div>
@@ -8695,44 +8944,51 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
                 <div style={{ width: 26, textAlign: "right", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, flexShrink: 0 }}>{b.count}</div>
               </div>
             ))}
-          </div>
+          </StatsAbschnitt>
 
-          <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 17, margin: "0 0 14px" }}>Ø je Kriterium</h3>
-          {bereich === "all" && (
-            <div style={{ fontSize: 12, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
-              Getrennt nach Kategorie — die Kriterien unterscheiden sich je Kategorie
-              und werden deshalb nicht zusammengerechnet.
-            </div>
-          )}
-          {criteriaGroups.map((group) => (
-            <div key={group.key} style={{ marginBottom: 18 }}>
-              {group.label && (
-                <div style={{ fontSize: 12, letterSpacing: 1, color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
-                  {group.label.toUpperCase()}
-                </div>
-              )}
-              {group.criteria.map((c) => (
-                <div key={c.key} style={{ marginBottom: 12 }}>
+          <StatsAbschnitt
+            titel="Ø je Kriterium"
+            zusammenfassung={
+              istAlle ? "ALLE" : aktive.map((c) => c.label).join(", ").toUpperCase()
+            }
+            {...klapper("kriterien")}
+          >
+            {aktive.length > 1 && (
+              <div style={{ fontSize: 12, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
+                Getrennt nach Kategorie — die Kriterien unterscheiden sich je Kategorie
+                und werden deshalb nicht zusammengerechnet.
+              </div>
+            )}
+            {criteriaGroups.map((group) => (
+              <div key={group.key} style={{ marginBottom: 18 }}>
+                {group.label && (
+                  <div style={{ fontSize: 12, letterSpacing: 1, color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", marginBottom: 10 }}>
+                    {group.label.toUpperCase()}
+                  </div>
+                )}
+                {group.criteria.map((c) => (
+                  <div key={c.key} style={{ marginBottom: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                      <span>{c.label} <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>{Math.round(c.weight * 100)}%</span></span>
+                      <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{c.avg.toFixed(2)}</span>
+                    </div>
+                    <div style={{ height: 8, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
+                      <div style={{ width: `${(c.avg / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
+                    </div>
+                  </div>
+                ))}
+                <div style={{ marginBottom: 12 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-                    <span>{c.label} <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>{Math.round(c.weight * 100)}%</span></span>
-                    <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{c.avg.toFixed(2)}</span>
+                    <span>Bauchgefühl <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>25% der Endnote</span></span>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{group.avgPersonal.toFixed(2)}</span>
                   </div>
                   <div style={{ height: 8, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
-                    <div style={{ width: `${(c.avg / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
+                    <div style={{ width: `${(group.avgPersonal / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
                   </div>
                 </div>
-              ))}
-              <div style={{ marginBottom: 12 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-                  <span>Bauchgefühl <span style={{ color: "#C9A227", fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>25% der Endnote</span></span>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#C9A227" }}>{group.avgPersonal.toFixed(2)}</span>
-                </div>
-                <div style={{ height: 8, background: "#232326", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ width: `${(group.avgPersonal / 10) * 100}%`, height: "100%", background: "#C9A227" }} />
-                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </StatsAbschnitt>
         </>
       )}
     </div>
@@ -8865,7 +9121,19 @@ function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, f
 }
 
 /* Eine Seite des Duells. Bewusst ohne Note: die Wahl soll aus dem
-   Titel selbst kommen, nicht aus der Zahl daneben. */
+   Titel selbst kommen, nicht aus der Zahl daneben.
+
+   Beide Karten sind gleich hoch, egal wie lang die Titel sind: Der
+   Titelbereich ist auf zwei Zeilen festgelegt (DUELL_TITEL_ZEILEN),
+   laengere Titel enden mit Auslassungspunkten. Vorher wuchs die Karte
+   mit ihrem Titel — "Inception" brauchte eine Zeile, "Charlie and the
+   Chocolate Factory" drei, und Poster, Titel und Jahr standen links
+   und rechts auf verschiedenen Hoehen. Der volle Titel bleibt ueber
+   das title-Attribut lesbar, damit beim Abschneiden nichts
+   verlorengeht. */
+const DUELL_TITEL_ZEILEN = 2;
+const DUELL_TITEL_ZEILENHOEHE = 1.3;
+
 function DuellKarte({ eintrag, zustand, onClick }) {
   const gewaehlt = zustand === "gewaehlt";
   const unterlegen = zustand === "unterlegen";
@@ -8876,6 +9144,9 @@ function DuellKarte({ eintrag, zustand, onClick }) {
       onClick={onClick}
       style={{
         flex: "1 1 0", minWidth: 0, cursor: "pointer", fontFamily: "inherit",
+        /* alignSelf: stretch holt sich die Hoehe der hoeheren Karte,
+           auch wenn die Reihe daneben (das "vs") mittig sitzt. */
+        alignSelf: "stretch",
         display: "flex", flexDirection: "column", alignItems: "center", gap: 9,
         background: "#1D1D21",
         border: "1px solid " + (gewaehlt ? "var(--accent, #C9A227)" : "#2A2A2E"),
@@ -8890,9 +9161,20 @@ function DuellKarte({ eintrag, zustand, onClick }) {
     >
       <Poster url={eintrag.poster} title={eintrag.title} size={100} />
       <div
+        title={eintrag.title}
         style={{
-          fontSize: 14, lineHeight: 1.3, textAlign: "center",
+          fontSize: 14, lineHeight: DUELL_TITEL_ZEILENHOEHE, textAlign: "center",
           width: "100%", overflowWrap: "anywhere",
+          /* Feste Hoehe von zwei Zeilen — nicht max-height: sonst
+             saesse das Jahr bei einzeiligen Titeln hoeher als
+             nebenan. Der Zeilenklammer-Aufbau ist derselbe, den auch
+             Browser ohne -webkit-line-clamp verstehen; dort wird
+             schlicht ohne Auslassungspunkte abgeschnitten. */
+          height: DUELL_TITEL_ZEILEN * DUELL_TITEL_ZEILENHOEHE + "em",
+          overflow: "hidden",
+          display: "-webkit-box",
+          WebkitBoxOrient: "vertical",
+          WebkitLineClamp: DUELL_TITEL_ZEILEN,
         }}
       >
         {eintrag.title}

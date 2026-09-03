@@ -251,8 +251,8 @@ Was die Einstellung tut:
   wieder eingeschaltete Kategorie bringt alle ihre Einträge
   unverändert mit.
 - **Sie wirkt überall.** Tab-Leiste, Wischgeste, Anlegen- und
-  Bewertungsformular, Statistik, Jahresrückblick, Zeitaufwand, Top 10,
-  „Bewertung prüfen", „Du vs. IMDb", Head-to-Head, Turnier, Higher or
+  Bewertungsformular, Statistik (samt ihrer einen Kategorie-Auswahl),
+  Jahresrückblick, „Bewertung prüfen", Head-to-Head, Turnier, Higher or
   Lower, „Was schau ich?", Empfehlungen und die Fortsetzungs-Erinnerung
   folgen derselben Liste — samt Reihenfolge, also auch in Auswahlfeldern
   und Statistik-Blöcken.
@@ -312,6 +312,7 @@ Staffeln gemeinsam in einer Transaktion.
 In der Statistik werden Kriterien-Durchschnitte nur innerhalb einer
 Kategorie gebildet. Bei „Alle" erscheint deshalb ein Block je Kategorie
 statt eines gemeinsamen — die Kriterien sind schlicht nicht dieselben.
+Ist oben eine einzelne Kategorie gewählt, steht dort nur noch ihr Block.
 
 ---
 
@@ -927,6 +928,54 @@ Eintrag werden ausgelassen — eine Reihe aus einem Film ist keine Reihe.
 
 ---
 
+## Statistik
+
+Das Balken-Symbol oben rechts öffnet den Statistik-Tab. Er tritt an die
+Stelle des Kategorie-Inhalts und rechnet ausschließlich mit den echten
+Daten — solange die noch nicht geladen sind, steht dort keine Zahl.
+
+**Eine Kategorie-Auswahl für den ganzen Tab.** Ganz oben steht eine
+einzige Knopfreihe: „Alle" und dahinter die sichtbaren Kategorien in
+ihrer Reihenfolge. Sie bleibt beim Scrollen am oberen Rand stehen
+(`position: sticky`), damit immer dasteht, worauf sich die Zahlen
+darunter beziehen. Mehrere Kategorien lassen sich gleichzeitig wählen;
+wird die letzte abgewählt, gilt wieder „Alle". Leer wird die Auswahl
+also nie.
+
+Ihr folgen **Gesamtstatistik, Zeit, Detailauswertung, „Du vs. IMDb",
+Top 10, Bewertungsverteilung** und **„Ø je Kriterium"**. Zwei Abschnitte
+folgen ihr bewusst **nicht** und zählen weiter über alle sichtbaren
+Kategorien: **„Bewertung prüfen"** sammelt ein, was irgendwo nachzusehen
+wäre, und der **Jahresrückblick** zählt ein ganzes Jahr — beide wären
+mit einem Kategorie-Filter etwas anderes als das, wofür sie da sind.
+
+**Die Kategorie-Kacheln** mit ihrer Anzahl stehen nur bei „Alle", auch
+wenn eine Kategorie leer ist und 0 anzeigt. Ist eine einzelne Kategorie
+gewählt, steht ihre Anzahl bereits in der Kennzahl „Gesamt".
+
+**Jeder Abschnitt ist einklappbar.** Die Kopfzeile ist ein Knopf mit
+Pfeil; zugeklappt steht unter dem Titel eine kurze Zusammenfassung in
+der gedämpften Monospace-Schrift, gerechnet aus denselben Daten, die
+aufgeklappt ausführlich dastehen — die gesehene Zeit in Stunden und
+Tagen, Anzahl und Ø Endnote, die größte IMDb-Abweichung mit Vorzeichen,
+die stärkste Notenspanne samt Anzahl, die gewählte Kategorie, das
+gewählte Jahr. Beim Öffnen des Tabs stehen **Gesamtstatistik** und
+**Top 10** offen, alles Übrige zugeklappt. Welcher Abschnitt offen ist,
+merkt sich das Gerät im `localStorage`
+(`bewertungsapp.statistikAbschnitte`) — wie die Kategorie-Ansicht auch,
+und mit demselben stillen Rückfall auf die Vorgabe, wenn der Stand fehlt
+oder kaputt ist. Kommt später ein Abschnitt dazu, gilt für ihn die
+Vorgabe und nicht der Stand von gestern.
+
+**Der Abschnitt „Zeit"** trägt beides, was in Stunden zählt: die
+**gesehene Zeit** (Laufzeit mal Sehzähler — was hinter einem liegt) und
+den **Zeitaufwand der Watchlist** (was noch vor einem liegt). Gerechnet
+wird an beiden Stellen unverändert; Spiele haben keine abrufbare
+Laufzeit und bleiben außen vor, Einträge ohne bekannte Laufzeit werden
+als Zahl genannt statt geschätzt.
+
+---
+
 ## Minispiele
 
 Das Controller-Symbol oben rechts — links neben Statistik und Zahnrad —
@@ -943,7 +992,11 @@ innerhalb einer Kategorie** statt, nie kategorieübergreifend.
 
 Im Duell stehen Poster, Titel und Jahr nebeneinander, dazwischen „VS" —
 **ohne Note**, damit die Wahl aus dem Titel kommt und nicht aus der Zahl
-daneben. Ein Tippen wählt den Favoriten, „Überspringen" springt ohne
+daneben. Beide Karten sind **gleich hoch**, egal wie lang die Titel
+sind: Der Titelbereich ist auf zwei Zeilen festgelegt, längere Titel
+enden mit Auslassungspunkten und bleiben vollständig im
+`title`-Attribut lesbar. Poster, Titel und Jahr stehen dadurch links und
+rechts auf derselben Höhe, das „VS" mittig dazwischen. Ein Tippen wählt den Favoriten, „Überspringen" springt ohne
 jede Auswertung zum nächsten Duell. Ein Zähler zeigt, wie oft in dieser
 Kategorie schon gespielt wurde; gezählt werden nur ausgewertete Duelle.
 
