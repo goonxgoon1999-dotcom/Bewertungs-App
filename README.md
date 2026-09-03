@@ -140,12 +140,17 @@ gleich: 75 % Kriterien-Note + 25 % Bauchgefühl, dazu der Duell-Zuschlag
 aus dem Minispiel „Head-to-Head". Ohne gespieltes Duell ist der Zuschlag
 exakt 0 — Formel und Herleitung stehen dort und unter „Berechnung".
 
-Die Tab-Leiste oben führt alle Kategorien. Sie passen nicht mehr
-nebeneinander auf ein Telefon — die Leiste ist deshalb seitlich
-wischbar, die Tabs behalten ihre Größe. Der aktive Tab wird immer ins
-Bild geholt. Die Statistik ist keine Kategorie und steht deshalb nicht
-in der Leiste: Sie öffnet sich über das Balkendiagramm-Symbol oben
-rechts im Kopfbereich.
+Die Tab-Leiste oben führt alle Kategorien. Acht passen nicht mehr
+nebeneinander auf ein Telefon — die Leiste **bricht deshalb um** statt
+seitlich zu scrollen. Die Tabs behalten ihre Größe und belegen so viele
+Zeilen, wie sie brauchen; alle sind damit immer vollständig sichtbar,
+und keine Beschriftung wird mitten im Wort abgeschnitten. Welcher Tab in
+welcher Zeile landet, ergibt sich allein aus der Breite — wird eine
+Kategorie in den Einstellungen ausgeblendet, rückt der Rest von selbst
+nach. Bei 390 px sind es drei Zeilen, bei 768 px zwei, ab 960 px eine.
+Die Statistik ist keine Kategorie und steht deshalb nicht in der
+Leiste: Sie öffnet sich über das Balkendiagramm-Symbol oben rechts im
+Kopfbereich.
 
 **Filme, Serien, Anime und Adult Animation** (identische Felder und Gewichte):
 
@@ -739,11 +744,25 @@ alle Werte müssen zwischen 0 und 10 liegen, Kategorie muss gültig sein.
 
 Jede Kategorie hat drei Unter-Reiter: **Bewertet** (die gewohnte
 Rangliste), **Am Schauen** (siehe unten) und **Watchlist** mit der Zahl
-der Vormerkungen dahinter („Watchlist 43"). Die Leiste bricht nie um:
-Wie die Kategorie-Tabs darüber behalten die Knöpfe ihre Größe, und die
-Reihe wird seitlich wischbar — ohne sichtbaren Rollbalken. Vorgemerkt und bewertet bleibt dabei ein
-Entweder-oder — ein Eintrag ist immer nur eines von beidem; das
-Kennzeichen „Am Schauen" steht unabhängig daneben.
+der Vormerkungen dahinter („Watchlist 43").
+
+Die Reihe steht im **Unterstrich-Stil** und hebt sich damit von den
+Kategorie-Tabs darüber ab: kein gefüllter oder umrandeter Knopf mehr,
+sondern reiner Text nebeneinander. Der aktive Reiter steht in der
+Kategoriefarbe und trägt einen kurzen Balken direkt unter sich, die
+übrigen in der gedämpften Textfarbe. Unter der ganzen Reihe läuft eine
+durchgehende dünne Linie, auf der der Balken aufsitzt und die zugleich
+den Kopfbereich vom Inhalt trennt; zwischen den Reitern steht je ein
+kurzer senkrechter Strich in derselben Farbe, der oberhalb der Linie
+endet. Jeder Reiter behält eine Antippfläche von mindestens 44 px, und
+die Schriftstärke ist bei allen dreien gleich — beim Umschalten
+verrutscht deshalb nichts.
+
+**Die Reihe bricht nie um**, auch nicht mit dreistelligen Zählern in
+beiden Reitern. Reicht der Platz einmal nicht, wird sie seitlich
+wischbar — ohne sichtbaren Rollbalken. Vorgemerkt und bewertet bleibt
+dabei ein Entweder-oder — ein Eintrag ist immer nur eines von beidem;
+das Kennzeichen „Am Schauen" steht unabhängig daneben.
 
 Vorgemerkte Einträge stehen in derselben Tabelle, tragen aber
 `watchlist = true` und haben weder Kriterien-Werte noch Bauchgefühl.
@@ -954,7 +973,8 @@ wenn eine Kategorie leer ist und 0 anzeigt. Ist eine einzelne Kategorie
 gewählt, steht ihre Anzahl bereits in der Kennzahl „Gesamt".
 
 **Jeder Abschnitt ist einklappbar.** Die Kopfzeile ist ein Knopf mit
-Pfeil; zugeklappt steht unter dem Titel eine kurze Zusammenfassung in
+Pfeil und mindestens 44 px hoch; zugeklappt steht unter dem Titel eine
+kurze Zusammenfassung in
 der gedämpften Monospace-Schrift, gerechnet aus denselben Daten, die
 aufgeklappt ausführlich dastehen — die gesehene Zeit in Stunden und
 Tagen, Anzahl und Ø Endnote, die größte IMDb-Abweichung mit Vorzeichen,
@@ -966,6 +986,16 @@ merkt sich das Gerät im `localStorage`
 und mit demselben stillen Rückfall auf die Vorgabe, wenn der Stand fehlt
 oder kaputt ist. Kommt später ein Abschnitt dazu, gilt für ihn die
 Vorgabe und nicht der Stand von gestern.
+
+**Getrennt werden die Abschnitte durch eine dünne waagerechte Linie** in
+derselben Farbe, die die App in ihren Listen zieht (`#232326`) — keine
+Karten, keine Rahmen, keine Hintergrundflächen. Die Linie sitzt am Fuß
+des Abschnitts: zugeklappt steht sie direkt unter der Kopfzeile,
+aufgeklappt trennt sie dessen Inhalt vom nächsten Abschnitt. Unter dem
+letzten Abschnitt entfällt sie, dort gibt es nichts mehr zu trennen. Der
+frühere Leerraum von 28 px zwischen den Abschnitten ist damit
+weggefallen — die Grenze ist jetzt sichtbar statt leer, und der Tab
+wird spürbar kürzer.
 
 **Der Abschnitt „Zeit"** trägt beides, was in Stunden zählt: die
 **gesehene Zeit** (Laufzeit mal Sehzähler — was hinter einem liegt) und
