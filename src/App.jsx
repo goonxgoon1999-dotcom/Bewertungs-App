@@ -7930,19 +7930,34 @@ function IconPfeilAuf({ offen }) {
  * `gross` unterscheidet die beiden Ueberschriftgroessen, die der Tab
  * schon vorher hatte (20px und 17px) — daran aendert sich nichts,
  * sie sitzen nur jetzt in einem Knopf.
+ *
+ * Abgegrenzt werden die Abschnitte durch dieselbe duenne Linie, die
+ * die App in allen Listen zieht (#232326) — keine Karte, kein Rahmen,
+ * keine Hintergrundflaeche. Die Linie sitzt am Fuss des Abschnitts und
+ * steht deshalb zugeklappt direkt unter der Kopfzeile, aufgeklappt
+ * unter dessen Inhalt. Beim letzten Abschnitt entfaellt sie, siehe
+ * `.stats-abschnitt:last-child`.
+ *
+ * Der grosse Leerraum zwischen den Abschnitten (28px Aussenabstand)
+ * ist entfallen: die Linie markiert die Grenze jetzt sichtbar, dafuer
+ * braucht es keine Luft mehr. Was bleibt, ist die Polsterung der
+ * Kopfzeile — 12px oben und unten halten sie zusammen mit der
+ * Titelzeile ueber der Antippflaeche von 44px (minHeight sichert das
+ * auch dann, wenn die Schrift einmal kleiner ausfaellt).
  */
 function StatsAbschnitt({ titel, gross = false, zusammenfassung, offen, onUmschalten, children }) {
   return (
-    <div style={{ marginBottom: 28 }}>
+    <div className="stats-abschnitt" style={{ borderBottom: "1px solid #232326" }}>
       <button
         onClick={onUmschalten}
         aria-expanded={offen}
         style={{
           display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
-          width: "100%", textAlign: "left", padding: "6px 0",
+          width: "100%", textAlign: "left", padding: "12px 0", minHeight: 44,
+          boxSizing: "border-box",
           background: "transparent", border: "none", color: "#EDEAE3",
           cursor: "pointer", fontFamily: "inherit",
-          marginBottom: offen ? 14 : 0,
+          marginBottom: offen ? 10 : 0,
         }}
       >
         <span style={{ minWidth: 0 }}>
@@ -7973,7 +7988,9 @@ function StatsAbschnitt({ titel, gross = false, zusammenfassung, offen, onUmscha
           <IconPfeilAuf offen={offen} />
         </span>
       </button>
-      {offen && children}
+      {/* Aufgeklappt braucht der Inhalt Abstand zur Trennlinie darunter
+          — sonst klebte die letzte Zeile daran. */}
+      {offen && <div style={{ paddingBottom: 16 }}>{children}</div>}
     </div>
   );
 }
@@ -11739,13 +11756,11 @@ export default function App() {
   const istDesktop = useDesktop();
   const fileInputRef = useRef(null);
 
-  /* Die Tab-Leiste ist seitlich wischbar und breiter als das Display.
-     Damit der aktive Tab nie ausserhalb des Sichtbaren steht, wird er
-     bei jedem Wechsel hereingeholt — beim ersten Aufbau ebenso wie
-     nach einem Klick auf einen nur halb sichtbaren Tab. "nearest"
-     heisst: steht er schon vollstaendig im Bild, passiert nichts, und
-     die Seite springt vertikal nicht. */
-  const tabLeisteRef = useRef(null);
+  /* Frueher stand hier eine Referenz auf die Tab-Leiste: sie war
+     seitlich wischbar und breiter als das Display, der aktive Tab
+     musste bei jedem Wechsel ins Bild geholt werden. Die Leiste bricht
+     jetzt um (siehe .tab-leiste) — alle Reiter stehen immer im Bild,
+     und es gibt nichts mehr zu scrollen. */
 
   /* Aus welcher Richtung der neue Kategorie-Inhalt hereingleitet:
      1 = nach rechts gewechselt (Inhalt kommt von rechts), -1 = nach
@@ -11784,15 +11799,6 @@ export default function App() {
        gewechselt wird dann nur die Kategorie darunter. */
     if (vorher === "stats" || vorher === "minigames") setActiveTab(vorher);
   }, [sichtbareKeys, category, activeTab]);
-
-  useEffect(() => {
-    const leiste = tabLeisteRef.current;
-    if (!leiste) return;
-    const aktiv = leiste.querySelector('[data-tab="' + activeTab + '"]');
-    if (aktiv && typeof aktiv.scrollIntoView === "function") {
-      aktiv.scrollIntoView({ inline: "nearest", block: "nearest" });
-    }
-  }, [activeTab]);
 
   function normalizeEntry(e) {
     return {
@@ -13774,52 +13780,132 @@ export default function App() {
           outline-offset: 1px;
         }
 
-        /* Sieben Tabs passen auf kein Telefon mehr nebeneinander.
-           Statt sie zu schrumpfen, behalten sie ihre Groesse und die
-           Leiste wird seitlich wischbar. Die Rollbalkenleiste bleibt
-           ausgeblendet — gewischt wird ohnehin mit dem Finger, und ein
-           Balken unter den Tabs saehe aus wie ein Trennstrich.
+        /* ----------------------------------------------------------
+           Statistik: die Grenze zwischen zwei Abschnitten.
 
-           Das Wischen soll nicht mitten in einem Tab stehenbleiben:
-           scroll-snap laesst die Leiste an einem Tabanfang einrasten.
-           Der letzte Tab braucht Luft nach rechts, sonst klebt er am
-           Rand. */
+           Die Linie selbst steht als Inline-Stil am Abschnitt (siehe
+           StatsAbschnitt) — hier faellt sie nur beim letzten weg. Sonst
+           haenge unter dem Tab eine Linie im Leeren, die nichts mehr
+           trennt. Das !important ist noetig, weil ein Inline-Stil sonst
+           vorginge. */
+        .stats-abschnitt:last-child { border-bottom: none !important; }
+
+        /* Acht Kategorien passen auf kein Telefon nebeneinander. Frueher
+           war die Leiste deshalb seitlich wischbar — mit dem Ergebnis,
+           dass der aktive Reiter ausserhalb des Sichtbaren stehen und
+           eine Beschriftung am Rand mitten im Wort abgeschnitten sein
+           konnte.
+
+           Stattdessen bricht die Leiste jetzt um: die Reiter behalten
+           ihre Groesse und belegen so viele Zeilen, wie sie brauchen.
+           Alle acht sind damit immer vollstaendig zu sehen. Welcher
+           Reiter in welcher Zeile landet, ergibt sich allein aus der
+           Breite — wird eine Kategorie ausgeblendet, rutscht der Rest
+           von selbst nach.
+
+           Der waagerechte Abstand bleibt bei 6px: bei 390px Breite
+           entstehen damit drei Zeilen, und weniger werden es auch mit
+           einem kleineren Abstand nicht — die acht Reiter messen allein
+           701px, zwei Zeilen fassen bei 350px Inhaltsbreite aber nur
+           700px. Die Zeilen selbst stehen dicht beieinander, damit die
+           Leiste nicht in die Hoehe waechst. */
         .tab-leiste {
           display: flex;
-          gap: 6px;
-          overflow-x: auto;
-          scroll-snap-type: x proximity;
-          -webkit-overflow-scrolling: touch;
-          scrollbar-width: none;
-          padding-right: 12px;
+          flex-wrap: wrap;
+          column-gap: 6px;
+          row-gap: 4px;
         }
-        .tab-leiste::-webkit-scrollbar { display: none; }
 
-        /* Dieselbe Technik eine Ebene tiefer: die Unter-Reiter
-           ("Bewertet / Am Schauen / Watchlist") brachen um, sobald die
-           Zaehler dazukamen — bei 360 px stand "Watchlist 43" allein in
-           einer zweiten Reihe. Statt die Knoepfe zu schrumpfen behalten
-           sie ihre Groesse, und die Leiste wird seitlich wischbar. */
+        /* ----------------------------------------------------------
+           Unter-Reiter ("Bewertet / Am Schauen / Watchlist", bei
+           Spielen "Bewertet / Am Spielen / Backlog") im
+           Unterstrich-Stil.
+
+           Vorher waren es umrandete Knoepfe — dieselbe Form wie die
+           Kategorie-Reiter eine Zeile darueber, sodass sich beide
+           Reihen wie eine einzige Gruppe lasen. Jetzt steht hier nur
+           noch Text: der aktive in der Kategoriefarbe mit einem kurzen
+           Balken darunter, die uebrigen in der gedaempften Schriftfarbe.
+
+           Unter der ganzen Reihe laeuft eine durchgehende Linie in der
+           Listenfarbe (#232326); auf ihr sitzt der Balken auf, und sie
+           trennt zugleich den Kopfbereich vom Inhalt darunter.
+
+           Die Reihe bricht unter keinen Umstaenden um: weder die Leiste
+           (flex-wrap: nowrap) noch die Beschriftungen selbst
+           (white-space: nowrap, word-break: keep-all). Reicht der Platz
+           einmal nicht, wird sie seitlich wischbar, wie die
+           Kategorie-Reiter es frueher waren; der Rollbalken bleibt dabei
+           ausgeblendet.
+
+           Der schlimmste Fall sind dreistellige Zaehler in beiden
+           Reitern: "Bewertet / Am Schauen 999 / Watchlist 999" misst
+           mit 10px Innenabstand 311px und passt damit bei 390px Breite
+           (350px Inhalt) in eine Zeile — auch auf einem 360px breiten
+           Geraet (320px Inhalt) reicht es. Der Innenabstand war
+           urspruenglich 13px; die 3px weniger je Seite sind genau die
+           Reserve dafuer. Die Schriftgroesse blieb bei 13px. */
         .unter-reiter-leiste {
           display: flex;
-          gap: 6px;
+          flex-wrap: nowrap;
+          align-items: stretch;
+          gap: 0;
           overflow-x: auto;
-          scroll-snap-type: x proximity;
           -webkit-overflow-scrolling: touch;
           scrollbar-width: none;
-          padding-right: 12px;
+          border-bottom: 1px solid #232326;
         }
         .unter-reiter-leiste::-webkit-scrollbar { display: none; }
 
+        /* Der Knopf ist nur noch Text. Die 44px Mindesthoehe halten die
+           Antippflaeche, auch wenn die Schrift kleiner wirkt als der
+           bisherige Knopf. Die Schriftstaerke ist bei allen dreien
+           gleich: waere der aktive fett, sprangen die Nachbarn beim
+           Umschalten um die Differenz zur Seite. */
         .unter-reiter {
+          position: relative;
           flex: 0 0 auto;
-          scroll-snap-align: start;
+          min-height: 44px;
+          padding: 0 10px;
+          background: transparent;
+          border: none;
+          border-radius: 0;
+          font-family: inherit;
+          font-size: 13px;
+          font-weight: 600;
+          line-height: 1;
           white-space: nowrap;
+          word-break: keep-all;
+          cursor: pointer;
+        }
+
+        /* Der kurze senkrechte Trennstrich zwischen zwei Reitern. Er
+           endet oberhalb der waagerechten Linie und laeuft deshalb nicht
+           bis zum Fuss durch. */
+        .unter-reiter + .unter-reiter::before {
+          content: "";
+          position: absolute;
+          left: 0;
+          top: 13px;
+          bottom: 11px;
+          width: 1px;
+          background: #232326;
+        }
+
+        /* Der Balken des aktiven Reiters — genau so breit wie sein Text
+           und aufsitzend auf der Linie unter der Reihe. */
+        .unter-reiter[aria-pressed="true"]::after {
+          content: "";
+          position: absolute;
+          left: 10px;
+          right: 10px;
+          bottom: 0;
+          height: 2px;
+          background: var(--accent, #C9A227);
         }
 
         .tab-btn {
           flex: 0 0 auto;
-          scroll-snap-align: start;
           padding: 13px 12px;
           font-size: 13.5px;
           white-space: nowrap;
@@ -14057,19 +14143,25 @@ export default function App() {
           }
 
           /* --- 3. Tab-Leiste ----------------------------------------
-             Sechs Kategorien haben auf 1200px reichlich Platz. Kein
-             Wischen mehr, stattdessen teilen sich die Tabs die Breite
-             zu gleichen Teilen. Farben, Form und der aktive Zustand
-             stehen als Inline-Stil an den Knoepfen und bleiben, wie
-             sie sind — hier aendert sich allein die Breite. */
-          .tab-leiste {
-            overflow-x: visible;
-            scroll-snap-type: none;
-            padding-right: 0;
-          }
+             Ab 960px ist Platz genug fuer eine Zeile: die acht Reiter
+             sind zusammen 743px breit (701px Text plus 7x6px Abstand),
+             die Inhaltsspalte misst hier mindestens 920px. Sie teilen
+             sich die Breite und fuellen die Zeile aus.
+
+             flex: 1 1 auto statt 1 1 0: mit der Basis 0 und
+             min-width: 0 bekam jeder Reiter dieselben 108px — zu wenig
+             fuer "Adult Animation" (116px) und "Sitcoms/Comedy"
+             (122px), deren Beschriftung dadurch ueber den Knopf
+             hinausstand. Mit "auto" ist die Textbreite die Untergrenze;
+             verteilt wird nur, was darueber hinaus uebrig ist.
+
+             Farben, Form und der aktive Zustand stehen als Inline-Stil
+             an den Knoepfen und bleiben, wie sie sind — hier aendert
+             sich allein die Breite. Die Umbruchregel von oben gilt
+             weiter: sie greift hier nur nicht, weil alles in eine Zeile
+             passt. */
           .tab-btn {
-            flex: 1 1 0;
-            min-width: 0;
+            flex: 1 1 auto;
           }
 
           /* --- 4. Filter und Sortieren als Seitenleiste -------------
@@ -14139,7 +14231,9 @@ export default function App() {
           /* Nur die nicht gewaehlten Tabs reagieren — der aktive traegt
              bereits die Akzentfarbe und soll darunter nicht flackern. */
           .tab-btn:not([data-aktiv="ja"]):hover { color: #EDEAE3; }
-          .unter-reiter:not([aria-pressed="true"]):hover { border-color: #9A968C; }
+          /* Ohne Rahmen bleibt fuer den Hover die Schriftfarbe — wie
+             bei den Kategorie-Reitern darueber. */
+          .unter-reiter:not([aria-pressed="true"]):hover { color: #EDEAE3 !important; }
 
           .filter-eintrag:not([aria-pressed="true"]):hover { border-color: #9A968C; }
           .kopf-icon:hover, .icon-knopf:hover { border-color: var(--accent, #C9A227); }
@@ -14262,8 +14356,8 @@ export default function App() {
               )}
             </div>
 
-          {/* Tabs — seitlich wischbar, siehe .tab-leiste */}
-          <div className="tab-leiste" ref={tabLeisteRef} style={{ marginBottom: 0 }}>
+          {/* Tabs — umbrechend statt wischbar, siehe .tab-leiste */}
+          <div className="tab-leiste" style={{ marginBottom: 0 }}>
             {sichtbareKats.map((c, i) => (
               <button
                 key={c.key}
@@ -14603,8 +14697,9 @@ export default function App() {
           {mode === "list" && (
             <>
               {/* Unter-Reiter: bewertete Eintraege, was gerade laeuft,
-                  oder die Watchlist. Seitlich wischbar statt umbrechend,
-                  siehe .unter-reiter-leiste. Der Zaehler haengt ohne
+                  oder die Watchlist. Reiner Text im Unterstrich-Stil,
+                  einzeilig und niemals umbrechend, siehe
+                  .unter-reiter-leiste. Der Zaehler haengt ohne
                   Mittelpunkt am Namen — die zwei Zeichen entschieden
                   darueber, ob die Leiste noch in eine Reihe passt. */}
               <div className="unter-reiter-leiste" style={{ marginBottom: 16 }}>
@@ -14629,11 +14724,11 @@ export default function App() {
                     aria-pressed={unterReiter === r.key}
                     className="unter-reiter"
                     style={{
-                      padding: "9px 14px", borderRadius: 6, fontSize: 13, cursor: "pointer",
-                      background: unterReiter === r.key ? "var(--accent, #C9A227)" : "transparent",
-                      color: unterReiter === r.key ? "#17171A" : "#9A968C",
-                      border: "1px solid " + (unterReiter === r.key ? "var(--accent, #C9A227)" : "#33333a"),
-                      fontWeight: unterReiter === r.key ? 700 : 400,
+                      /* Alles Weitere — Groesse, Trennstrich, Balken —
+                         steht in .unter-reiter. Hier bleibt nur die
+                         Farbe: aktiv die Kategoriefarbe, sonst die
+                         gedaempfte Schriftfarbe. */
+                      color: unterReiter === r.key ? "var(--accent, #C9A227)" : "#9A968C",
                     }}
                   >
                     {r.label}
