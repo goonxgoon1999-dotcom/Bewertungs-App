@@ -197,10 +197,10 @@ function criteriaFor(category) {
   return CRITERIA_BY_CATEGORY[category] || AV_CRITERIA;
 }
 
-/* Die Reihenfolge hier bestimmt die Reihenfolge ueberall: Tab-Leiste,
-   Statistik, Export. Kinderserien und Adult Animation stehen bei den
-   uebrigen Serienarten, Dokus und Sitcoms/Comedy dahinter, Spiele
-   bleiben am Ende.
+/* Die Reihenfolge hier bestimmt die Reihenfolge ueberall:
+   Kategorie-Auswahl, Statistik, Export. Kinderserien und Adult
+   Animation stehen bei den uebrigen Serienarten, Dokus und
+   Sitcoms/Comedy dahinter, Spiele bleiben am Ende.
 
    Dokus sind ein gemeinsamer Reiter fuer Einzeldokus und Doku-Serien
    — beides bekommt genau eine Gesamtnote. Genauso Sitcoms/Comedy: ein
@@ -2369,7 +2369,7 @@ const WISCH_VERHAELTNIS = 1.5;
 
 /**
  * Gehoert der Punkt, an dem der Finger aufsetzte, zu einem Bereich,
- * der selbst waagerecht rollt (die Reiterleiste liegt ohnehin
+ * der selbst waagerecht rollt (der Kategorie-Knopf liegt ohnehin
  * ausserhalb) oder zu einem Bedienelement, das eigene waagerechte
  * Gesten kennt (Schieberegler, Eingabefelder, Auswahlfelder)? Dann
  * gehoert die Geste dorthin und nicht zum Kategorie-Wechsel.
@@ -2906,7 +2906,7 @@ function useDesktop() {
 }
 
 /* ------------------------------------------------------------
-   Poster-Hintergrund hinter Titel und Tab-Leiste.
+   Poster-Hintergrund hinter Titel und Rang-Abzeichen.
 
    Zwei Ebenen: die scheidende gleitet nach links hinaus, die neue
    von rechts herein. Bei prefers-reduced-motion steht das Bild
@@ -3933,6 +3933,60 @@ function BottomSheet({ title, onClose, children }) {
         {typeof children === "function" ? children(schliessen) : children}
       </div>
     </div>
+  );
+}
+
+/**
+ * Das Auswahlblatt hinter dem Kategorie-Knopf: alle Kategorien
+ * untereinander, jede mit ihrer Anzahl, die aktuelle markiert.
+ *
+ * Angeboten wird genau, was in `kategorien` steht — die Liste kommt
+ * aus der Kategorie-Ansicht und enthaelt damit nur die in den
+ * Einstellungen sichtbar geschalteten, in der dort festgelegten
+ * Reihenfolge (siehe useKategorien). Hier wird nichts gefiltert und
+ * nichts umsortiert.
+ *
+ * Aussehen und Markierung sind von der Sortier-Auswahl im
+ * Filter-Blatt uebernommen: dieselbe Form, dieselben Farben, dieselbe
+ * gefuellte Zeile fuer die aktive Wahl.
+ *
+ * Gewaehlt wird ueber `schliessen`, nicht direkt: so laeuft erst die
+ * Aus-Bewegung des Blattes und danach der Wechsel — sonst taeuschte
+ * ein stehendes Blatt ueber einer schon getauschten Liste.
+ */
+function KategorieBlatt({ kategorien, aktuell, anzahlen, onWaehlen, onClose }) {
+  return (
+    <BottomSheet title="Kategorie" onClose={onClose}>
+      {(schliessen) => (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {kategorien.map((c) => {
+            const aktiv = c.key === aktuell;
+            return (
+              <button
+                key={c.key}
+                onClick={() => schliessen(() => onWaehlen(c.key))}
+                aria-pressed={aktiv}
+                className="filter-eintrag"
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+                  textAlign: "left", padding: "13px 14px", borderRadius: 8, fontSize: 14,
+                  fontFamily: "inherit", cursor: "pointer",
+                  background: aktiv ? "var(--accent, #C9A227)" : "#141416",
+                  color: aktiv ? "#17171A" : "#EDEAE3",
+                  border: "1px solid " + (aktiv ? "var(--accent, #C9A227)" : "#2A2A2E"),
+                  fontWeight: aktiv ? 700 : 400,
+                }}
+              >
+                <span>{c.label}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12.5, opacity: 0.75 }}>
+                  {anzahlen[c.key] || 0}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </BottomSheet>
   );
 }
 
@@ -11741,6 +11795,11 @@ export default function App() {
     [kategorieAnsicht, sichtbareKats]
   );
 
+  /* Das Auswahlblatt des Kategorie-Knopfes. Es steht bewusst nicht im
+     localStorage: Beim naechsten Oeffnen der App soll die Liste da
+     sein, kein Blatt darueber. */
+  const [kategorieBlattOffen, setKategorieBlattOffen] = useState(false);
+
   const [showExport, setShowExport] = useState(false);
   /* Der Bilder-Abschnitt im Daten-Panel startet bei jedem Oeffnen
      zugeklappt — gemerkt wird der Zustand bewusst nicht. */
@@ -11758,9 +11817,9 @@ export default function App() {
 
   /* Frueher stand hier eine Referenz auf die Tab-Leiste: sie war
      seitlich wischbar und breiter als das Display, der aktive Tab
-     musste bei jedem Wechsel ins Bild geholt werden. Die Leiste bricht
-     jetzt um (siehe .tab-leiste) — alle Reiter stehen immer im Bild,
-     und es gibt nichts mehr zu scrollen. */
+     musste bei jedem Wechsel ins Bild geholt werden. Die Leiste gibt
+     es nicht mehr — an ihrer Stelle steht ein einzelner Knopf mit
+     einem Blatt von unten (siehe .kategorie-knopf). */
 
   /* Aus welcher Richtung der neue Kategorie-Inhalt hereingleitet:
      1 = nach rechts gewechselt (Inhalt kommt von rechts), -1 = nach
@@ -12276,9 +12335,21 @@ export default function App() {
      stammt. */
   const cacheHinweis = zeigtCache && loaded;
 
-  /* Im Statistik-Tab zaehlt die Kopfzeile alle Kategorien zusammen,
-     nicht die zuletzt gewaehlte. */
-  const gesamtAnzahl = sichtbareKeys.reduce((s, k) => s + rankedByCategory[k].length, 0);
+  /* Wie viele bewertete Eintraege jede sichtbare Kategorie hat — die
+     Zahl neben ihrem Namen im Auswahlblatt. Sie folgt derselben Quelle
+     wie die Liste darunter: dem Anzeige-Cache, solange der steht, und
+     sonst den echten Daten. Fuer die offene Kategorie kommt damit
+     genau anzeigeListe.length heraus, die Zahl im Knopf selbst. */
+  const anzahlJeKategorie = useMemo(() => {
+    const raus = {};
+    for (const key of sichtbareKeys) {
+      raus[key] =
+        zeigtCache && anzeigeCache
+          ? (anzeigeCache[key] || []).filter(inReiterBewertet).length
+          : (rankedByCategory[key] || []).length;
+    }
+    return raus;
+  }, [sichtbareKeys, zeigtCache, anzeigeCache, rankedByCategory]);
 
   /* ---- Poster-Hintergrund im Kopfbereich ----
      Die Mischung entsteht neu, wenn die Kategorie wechselt — und
@@ -13553,11 +13624,12 @@ export default function App() {
 
   /* ---- Wischen im Inhaltsbereich wechselt die Kategorie ----
      Es wird nur die Geste erkannt; am Finger zieht nichts mit. Erkannt
-     heisst: derselbe Uebergang wie beim Antippen des Reiters, in
-     dieselbe Richtung. Am ersten bzw. letzten Reiter passiert nichts.
+     heisst: derselbe Uebergang wie bei der Wahl im Auswahlblatt, in
+     dieselbe Richtung. An der ersten bzw. letzten Kategorie passiert
+     nichts.
 
-     Die Reiterleiste selbst liegt im Kopfbereich und damit ausserhalb
-     dieses Bereichs; alles andere, was waagerecht rollt oder eigene
+     Der Kategorie-Knopf selbst steht ueber diesem Bereich und damit
+     ausserhalb; alles andere, was waagerecht rollt oder eigene
      waagerechte Gesten hat, faengt istEigenerQuerbereich ab. */
   const wischStart = useRef(null);
   const inhaltRef = useRef(null);
@@ -13739,7 +13811,7 @@ export default function App() {
         .blende-raus { animation: blendeRaus 160ms ease-out forwards; }
 
         /* Die Kategoriefarbe springt nicht um, sie blendet ueber. */
-        .tab-btn, .unter-reiter, .neu-knopf {
+        .kategorie-knopf, .unter-reiter, .neu-knopf {
           transition: background-color 200ms ease, border-color 200ms ease;
         }
 
@@ -13755,7 +13827,7 @@ export default function App() {
           .blende-rein, .blende-raus {
             animation: none !important;
           }
-          .tab-btn, .unter-reiter, .neu-knopf { transition: none !important; }
+          .kategorie-knopf, .unter-reiter, .neu-knopf { transition: none !important; }
           button, .listen-eintrag { transition: none !important; }
           button:active, .listen-eintrag:active { transform: none !important; }
         }
@@ -13790,30 +13862,67 @@ export default function App() {
            vorginge. */
         .stats-abschnitt:last-child { border-bottom: none !important; }
 
-        /* Acht Kategorien passen auf kein Telefon nebeneinander. Frueher
-           war die Leiste deshalb seitlich wischbar — mit dem Ergebnis,
-           dass der aktive Reiter ausserhalb des Sichtbaren stehen und
-           eine Beschriftung am Rand mitten im Wort abgeschnitten sein
-           konnte.
+        /* ----------------------------------------------------------
+           Der Kategorie-Auswahlknopf.
 
-           Stattdessen bricht die Leiste jetzt um: die Reiter behalten
-           ihre Groesse und belegen so viele Zeilen, wie sie brauchen.
-           Alle acht sind damit immer vollstaendig zu sehen. Welcher
-           Reiter in welcher Zeile landet, ergibt sich allein aus der
-           Breite — wird eine Kategorie ausgeblendet, rutscht der Rest
-           von selbst nach.
+           Acht Kategorien passen auf kein Telefon nebeneinander. Als
+           Reiterleiste im Kopfbereich waren sie erst seitlich wischbar
+           (der aktive Reiter konnte ausserhalb des Sichtbaren stehen),
+           dann umbrechend — und der Umbruch belegte auf dem Telefon
+           drei Zeilen statt einer. Der Kopfbereich musste dafuer in die
+           Hoehe wachsen und verlor sein Seitenverhaeltnis; der Titel
+           wurde aus dem Bild geschoben.
 
-           Der waagerechte Abstand bleibt bei 6px: bei 390px Breite
-           entstehen damit drei Zeilen, und weniger werden es auch mit
-           einem kleineren Abstand nicht — die acht Reiter messen allein
-           701px, zwei Zeilen fassen bei 350px Inhaltsbreite aber nur
-           700px. Die Zeilen selbst stehen dicht beieinander, damit die
-           Leiste nicht in die Hoehe waechst. */
-        .tab-leiste {
+           Statt sie unterzubringen, sind sie ganz aus dem Kopfbereich
+           heraus: Hier steht ein einzelner Knopf ueber die volle
+           Breite, der die aktuelle Kategorie zeigt und beim Tippen ein
+           Blatt von unten mit allen sichtbaren Kategorien oeffnet. Die
+           Hoehe des Knopfes haengt an nichts als seiner eigenen
+           Schrift — wie viele Kategorien es gibt, ist ihm gleich.
+
+           Rahmen, Beschriftung und Pfeil tragen die Kategoriefarbe
+           (Inline-Stil am Knopf, siehe accentFor). Die Flaeche bleibt
+           durchsichtig: gefuellt ist "+ Neu hinzufuegen" darunter, und
+           zwei gefuellte Balken uebereinander lasen sich wie zwei
+           gleichrangige Knoepfe.
+
+           Der Rahmen ist hier 1px stark — kraeftiger als eine
+           Haarlinie, damit die Kategoriefarbe auf dem dunklen Grund
+           traegt. Sie ist das einzige, was den Knopf faerbt; bliebe
+           der Rahmen zu duenn, bliebe von ihr fast nichts. */
+        .kategorie-knopf {
           display: flex;
-          flex-wrap: wrap;
-          column-gap: 6px;
-          row-gap: 4px;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+          box-sizing: border-box;
+          min-height: 46px;
+          padding: 12px 14px;
+          background: transparent;
+          border-style: solid;
+          border-width: 1px;
+          border-radius: 8px;
+          font-family: inherit;
+          font-size: 15px;
+          font-weight: 700;
+          line-height: 1.2;
+          text-align: left;
+          cursor: pointer;
+        }
+        /* Die Anzahl haengt direkt am Namen und ist leiser als er:
+           kleinere Schrift, normale Staerke, und die Farbe eine
+           abgedunkelte Abstufung derselben Kategoriefarbe (der
+           Deckkraftwert steht am Knopf, siehe mitDeckkraft). */
+        .kategorie-knopf-zahl {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 12.5px;
+          font-weight: 400;
+        }
+        /* Der Pfeil steht rechts aussen — alles davor bleibt links. */
+        .kategorie-knopf-pfeil {
+          margin-left: auto;
+          font-size: 12px;
+          line-height: 1;
         }
 
         /* ----------------------------------------------------------
@@ -13904,34 +14013,21 @@ export default function App() {
           background: var(--accent, #C9A227);
         }
 
-        .tab-btn {
-          flex: 0 0 auto;
-          padding: 13px 12px;
-          font-size: 13.5px;
-          white-space: nowrap;
-        }
+        /* Fester 16:9-Ausschnitt ueber die volle Breite.
 
-        /* 16:9-Ausschnitt ueber die volle Breite als Untergrenze, nicht
-           als feste Hoehe: der Inhalt sitzt unten, und reicht er einmal
-           tiefer als 16:9 hergeben, waechst der Bereich mit, damit
-           nichts abgeschnitten wird.
+           Er stand hier schon einmal und war zwischenzeitlich durch
+           "min-height: 56.25vw" ersetzt: Der Kopfbereich musste mit den
+           umbrechenden Reiterzeilen mitwachsen, weil ein
+           Seitenverhaeltnis auch die inhaltsbezogenen Mindestmasse aus
+           der Breite ableitet — die Hoehe stand damit fest, und was
+           nicht hineinpasste, fiel unter "overflow: hidden" weg.
 
-           Genau das leistete das frueher hier stehende
-           "aspect-ratio: 16 / 9" nicht. Ein Seitenverhaeltnis leitet
-           auch die inhaltsbezogenen Mindestmasse aus der Breite ab —
-           die Hoehe stand damit fest, und was nicht hineinpasste, fiel
-           unter "overflow: hidden" weg. Weil der Inhalt am unteren Rand
-           haengt (justify-content: flex-end), fiel es oben ab: seit die
-           Reiterleiste umbricht und auf dem Telefon drei Zeilen statt
-           einer belegt, stand der Titel ueber der Oberkante und war nur
-           noch mit den Unterlaengen zu sehen; das Bild dahinter endete
-           an derselben starren Kante mitten in den Reiterzeilen.
-
-           min-height mit 56.25vw (= 9/16 der Breite) ergibt dieselbe
-           Hoehe, solange der Inhalt hineinpasst — der Kopfbereich laeuft
-           ueber die volle Fensterbreite, die vw also mit seiner eigenen
-           gleich. Darueber hinaus waechst er einfach mit, und das Bild
-           (inset: 0) deckt die groessere Flaeche vollstaendig ab. */
+           Die Reiter sind jetzt ganz aus dem Kopfbereich heraus (siehe
+           .kategorie-knopf). Was hier steht — Titel, Rang-Abzeichen und
+           die drei Symbolknoepfe — misst zusammen rund 140px und passt
+           bei jeder Breite in die 16:9. Die Hoehe darf deshalb wieder
+           fest sein, und das ist auch der Zweck: Sie haengt nicht mehr
+           daran, wie viele Kategorien es gibt. */
         /* Luft ueber dem Titel. Der Inhalt haengt am unteren Rand des
            Kopfbereichs (justify-content: flex-end) — ein groesserer
            Innenabstand am Inhalt selbst haette den Titel deshalb nicht
@@ -13952,8 +14048,14 @@ export default function App() {
            dahinter (inset: 0), das den groesseren Ausschnitt einfach
            mitfuellt. */
         .kopfbereich {
-          min-height: 56.25vw;
+          aspect-ratio: 16 / 9;
           padding-top: calc(env(safe-area-inset-top, 0px) + 28px);
+        }
+        /* Ersatz fuer Browser ohne aspect-ratio: 56.25vw sind dieselben
+           9/16 der Fensterbreite, und ueber die volle Breite laufend
+           ist die des Kopfbereichs dieselbe. */
+        @supports not (aspect-ratio: 16 / 9) {
+          .kopfbereich { min-height: calc(56.25vw + env(safe-area-inset-top, 0px) + 28px); }
         }
 
         /* ----------------------------------------------------------
@@ -14129,11 +14231,11 @@ export default function App() {
 
           /* --- 2. Kopfbereich ---------------------------------------
              Ohne 16:9 waere der Kopf auf 1920px ueber 1000px hoch.
-             min-height statt height mit Deckel: Der Kopf traegt Titel,
-             Rang, Zaehler und die Tab-Leiste — waere die Hoehe fest
-             und der Inhalt einmal hoeher, schnitte ihn das
-             overflow: hidden des Kopfbereichs ab. So ist 360px der
-             Boden, nicht die Decke, und nichts kann verschwinden.
+             min-height statt height mit Deckel: Der Kopf traegt Titel
+             und Rang-Abzeichen — waere die Hoehe fest und der Inhalt
+             einmal hoeher, schnitte ihn das overflow: hidden des
+             Kopfbereichs ab. So ist 360px der Boden, nicht die Decke,
+             und nichts kann verschwinden.
 
              Das Bild dahinter fuellt den Ausschnitt unveraendert mit
              object-fit: cover (siehe HeaderSlideshow) — es wird
@@ -14146,33 +14248,18 @@ export default function App() {
              damit ueber dem angepeilten Bereich. Am Handy bleibt es
              beim bisherigen content-box: dort gilt diese Regel nicht. */
           .kopfbereich {
+            aspect-ratio: auto;
             box-sizing: border-box;
             min-height: 360px;
           }
-
-          /* --- 3. Tab-Leiste ----------------------------------------
-             Ab 960px ist Platz genug fuer eine Zeile: die acht Reiter
-             sind zusammen 743px breit (701px Text plus 7x6px Abstand),
-             die Inhaltsspalte misst hier mindestens 920px. Sie teilen
-             sich die Breite und fuellen die Zeile aus.
-
-             flex: 1 1 auto statt 1 1 0: mit der Basis 0 und
-             min-width: 0 bekam jeder Reiter dieselben 108px — zu wenig
-             fuer "Adult Animation" (116px) und "Sitcoms/Comedy"
-             (122px), deren Beschriftung dadurch ueber den Knopf
-             hinausstand. Mit "auto" ist die Textbreite die Untergrenze;
-             verteilt wird nur, was darueber hinaus uebrig ist.
-
-             Farben, Form und der aktive Zustand stehen als Inline-Stil
-             an den Knoepfen und bleiben, wie sie sind — hier aendert
-             sich allein die Breite. Die Umbruchregel von oben gilt
-             weiter: sie greift hier nur nicht, weil alles in eine Zeile
-             passt. */
-          .tab-btn {
-            flex: 1 1 auto;
+          /* Hebt die Ersatzregel aus dem @supports-Block oben auf —
+             sie rechnet ebenfalls mit 56.25vw und stuende hier sonst
+             mit 1080px dagegen. */
+          @supports not (aspect-ratio: 16 / 9) {
+            .kopfbereich { min-height: 360px; }
           }
 
-          /* --- 4. Filter und Sortieren als Seitenleiste -------------
+          /* --- 3. Filter und Sortieren als Seitenleiste -------------
              Zwei Spalten: links die Filter, rechts die Liste. Welche
              Darstellung im Baum steht, entscheidet useDesktop — hier
              steht nur ihre Anordnung. */
@@ -14204,13 +14291,13 @@ export default function App() {
              style-Attribut und sind nicht angefasst. */
           .neu-knopf { max-width: 240px; }
 
-          /* --- 5. Ranglisten-Zeilen ---------------------------------
+          /* --- 4. Ranglisten-Zeilen ---------------------------------
              Einspaltig wie bisher — nur mehr Luft nach oben und
              unten. Die Zeile selbst wird durch den breiteren Container
              breiter, dazu braucht es keine Regel. */
           .listen-eintrag { padding: 16px 10px !important; }
 
-          /* --- 6. Verlauf der Plaetze 1-10 --------------------------
+          /* --- 5. Verlauf der Plaetze 1-10 --------------------------
              Am Handy holt der Inline-Wert calc(-50vw + 50%) den
              Verlauf bis an den linken Fensterrand. Ab hier steht links
              die Filterleiste: derselbe Wert liefe unter ihr hindurch
@@ -14223,7 +14310,7 @@ export default function App() {
           .zeilen-schmuck { left: 0 !important; }
         }
 
-        /* --- 7. Hover ----------------------------------------------
+        /* --- 6. Hover ----------------------------------------------
            Nur fuer Geraete mit echtem Zeiger. Touch-Geraete melden
            hover: none und bekommen davon nichts zu sehen — dort bliebe
            ein Hover-Zustand sonst nach dem Tippen kleben.
@@ -14236,11 +14323,7 @@ export default function App() {
           .listen-eintrag { transition: background var(--bewegung-tippen); }
           .listen-eintrag:hover { background: #1D1D21; }
 
-          /* Nur die nicht gewaehlten Tabs reagieren — der aktive traegt
-             bereits die Akzentfarbe und soll darunter nicht flackern. */
-          .tab-btn:not([data-aktiv="ja"]):hover { color: #EDEAE3; }
-          /* Ohne Rahmen bleibt fuer den Hover die Schriftfarbe — wie
-             bei den Kategorie-Reitern darueber. */
+          /* Ohne Rahmen bleibt fuer den Hover die Schriftfarbe. */
           .unter-reiter:not([aria-pressed="true"]):hover { color: #EDEAE3 !important; }
 
           .filter-eintrag:not([aria-pressed="true"]):hover { border-color: #9A968C; }
@@ -14254,7 +14337,12 @@ export default function App() {
         style={{
           position: "relative",
           overflow: "hidden",
-          borderBottom: "1px solid #2A2A2E",
+          /* Keine Trennlinie mehr am Fuss: Sie schloss frueher die
+             Reiterleiste ab, die bis an die Unterkante reichte. Ohne
+             sie laeuft der Verlauf ueber dem Bild (siehe
+             HeaderSlideshow) bis unten in die Seitenfarbe #17171A aus —
+             eine 1px-Kante in #2A2A2E stuende jetzt als harter Strich
+             quer durch diesen weichen Uebergang. */
           background: "linear-gradient(180deg, #1D1D21 0%, #17171A 100%)",
           // Der Inhalt sitzt unten; die zusaetzliche Hoehe kommt oben
           // dazu und zeigt mehr vom Bild.
@@ -14315,7 +14403,13 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ position: "relative", zIndex: 1, padding: "32px 20px 0" }}>
+        {/* Unten 20px statt 0: Dort sass frueher die Reiterleiste und
+            schloss den Kopfbereich ab. Ohne sie stiesse das
+            Rang-Abzeichen sonst genau an die Unterkante — der Inhalt
+            haengt am unteren Rand (justify-content: flex-end). Die
+            Hoehe des Kopfbereichs steht fest, der Block rutscht also
+            nur um diese 20px nach oben. */}
+        <div style={{ position: "relative", zIndex: 1, padding: "32px 20px 20px" }}>
           <div className="inhalt-breite" style={{ maxWidth: 720, margin: "0 auto" }}>
             <h1 style={{ fontFamily: "'Playfair Display', serif", fontWeight: 800, fontSize: 34, margin: 0, lineHeight: 1.08 }}>
               {APP_NAME_ZEILEN.map((zeile, i) => (
@@ -14343,55 +14437,47 @@ export default function App() {
                 />
               )}
             </div>
-            <div style={{ color: "#9A968C", marginTop: 10, fontSize: 14.5, lineHeight: 1.5, marginBottom: 20 }}>
-              {/* Der Zaehler zeigt erst eine Zahl, wenn es eine gibt —
-                  "0 Filme" waehrend des Ladens sah aus wie eine leere
-                  Sammlung. Bis dahin ein Platzhalter derselben Hoehe. */}
-              {activeTab === "minigames" ? (
-                "Minispiele"
-              ) : activeTab === "stats" ? (
-                /* Die Statistik rechnet ausschliesslich mit den echten
-                   Daten — solange die fehlen, gibt es hier keine Zahl. */
-                loaded && !zeigtCache ? (
-                  `${gesamtAnzahl} ${gesamtAnzahl === 1 ? "Eintrag" : "Einträge"}`
-                ) : (
-                  <SkelettFlaeche breite={92} hoehe={15} rund={3} style={{ margin: "3px 0" }} />
-                )
-              ) : loaded || zeigtCache ? (
-                `${anzeigeListe.length} ${catInfo.label}`
-              ) : (
-                <SkelettFlaeche breite={92} hoehe={15} rund={3} style={{ margin: "3px 0" }} />
-              )}
-            </div>
-
-          {/* Tabs — umbrechend statt wischbar, siehe .tab-leiste */}
-          <div className="tab-leiste" style={{ marginBottom: 0 }}>
-            {sichtbareKats.map((c, i) => (
-              <button
-                key={c.key}
-                data-tab={c.key}
-                data-aktiv={activeTab === c.key ? "ja" : "nein"}
-                onClick={() => {
-                  /* Richtung aus der Position in der Leiste: weiter
-                     rechts heisst, der Inhalt kommt von rechts. */
-                  const jetzt = sichtbareKeys.indexOf(category);
-                  waehleKategorie(c.key, i === jetzt ? 0 : i > jetzt ? 1 : -1);
-                }}
-                className="tab-btn"
-                style={{
-                  background: activeTab === c.key ? "var(--accent, #C9A227)" : "transparent",
-                  color: activeTab === c.key ? "#17171A" : "#9A968C",
-                  border: activeTab === c.key ? "none" : "1px solid #2A2A2E",
-                  borderBottom: activeTab === c.key ? "none" : "1px solid #2A2A2E",
-                  borderRadius: "8px 8px 0 0", fontWeight: 700, cursor: "pointer",
-                }}
-              >
-                {c.label}
-              </button>
-            ))}
-            </div>
+            {/* Weiter steht hier nichts. Der Zaehler ("166 Filme")
+                gehoert zum Auswahlknopf unter dem Kopfbereich, die
+                Kategorien in dessen Blatt — beides zusammen machte den
+                Kopf so hoch, dass sein Seitenverhaeltnis nicht mehr
+                stimmte und der Titel aus dem Bild fiel. */}
           </div>
         </div>
+      </div>
+
+      {/* Der Kategorie-Auswahlknopf — unmittelbar unter dem
+          Kopfbereich, ueber die volle Breite. Er steht ausserhalb des
+          Kategorie-Inhalts weiter unten und damit auch neben Statistik
+          und Minispielen: Die Reiterleiste, an deren Stelle er tritt,
+          war dort ebenfalls zu sehen, und von dort aus eine Kategorie
+          zu waehlen soll weiter ein einziger Schritt bleiben.
+
+          Form, Farben und der Pfeil stehen in .kategorie-knopf; hier
+          bleibt die Kategoriefarbe, die als Inline-Wert jede Regel aus
+          dem Stylesheet schlaegt. */}
+      <div className="inhalt-breite" style={{ maxWidth: 720, margin: "0 auto", padding: "14px 20px 0" }}>
+        <button
+          onClick={() => setKategorieBlattOffen(true)}
+          aria-haspopup="dialog"
+          aria-expanded={kategorieBlattOffen}
+          className="kategorie-knopf"
+          style={{ borderColor: accent, color: accent }}
+        >
+          <span>{catInfo.label}</span>
+          {/* Die Anzahl der Eintraege dieser Kategorie, in einer
+              abgedunkelten Abstufung derselben Farbe. Erst wenn es
+              eine Zahl gibt: "0 Filme" waehrend des Ladens sah aus wie
+              eine leere Sammlung. */}
+          <span className="kategorie-knopf-zahl" style={{ color: mitDeckkraft(accent, 0.62) }}>
+            {loaded || zeigtCache ? (
+              anzeigeListe.length
+            ) : (
+              <SkelettFlaeche breite={24} hoehe={11} rund={3} style={{ display: "inline-block" }} />
+            )}
+          </span>
+          <span className="kategorie-knopf-pfeil" aria-hidden="true">▾</span>
+        </button>
       </div>
 
       {/* Daten-Panel — ueber das Zahnrad im Kopfbereich erreichbar und
@@ -14628,7 +14714,12 @@ export default function App() {
           onTouchEnd={wischEnde}
           onTouchCancel={() => { wischStart.current = null; }}
           className="inhalt-breite"
-          style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px" }}
+          /* Oben nur 10px statt 20px: Der Auswahlknopf steht
+             unmittelbar darueber, und zusammen mit seinen 14px Abstand
+             zum Kopfbereich lesen sich Knopf und Unter-Reiter dadurch
+             als ein Steuerbereich statt als zwei Reihen mit einer
+             Luecke dazwischen. */
+          style={{ maxWidth: 720, margin: "0 auto", padding: "10px 20px 20px" }}
         >
           {/* Der Tabwechsel blendet den neuen Kategorie-Inhalt ein.
               Der Zustand darunter bleibt erhalten — die Huelle tauscht
@@ -15100,6 +15191,24 @@ export default function App() {
           category={category}
           onApply={(f) => { setFilterState(f); setShowFilter(false); }}
           onClose={() => setShowFilter(false)}
+        />
+      )}
+
+      {kategorieBlattOffen && (
+        <KategorieBlatt
+          kategorien={sichtbareKats}
+          aktuell={category}
+          anzahlen={anzahlJeKategorie}
+          onWaehlen={(key) => {
+            setKategorieBlattOffen(false);
+            /* Dieselbe Richtung wie frueher aus der Reiterleiste:
+               weiter unten in der Liste heisst, der Inhalt kommt von
+               rechts herein. */
+            const jetzt = sichtbareKeys.indexOf(category);
+            const ziel = sichtbareKeys.indexOf(key);
+            waehleKategorie(key, ziel === jetzt ? 0 : ziel > jetzt ? 1 : -1);
+          }}
+          onClose={() => setKategorieBlattOffen(false)}
         />
       )}
 

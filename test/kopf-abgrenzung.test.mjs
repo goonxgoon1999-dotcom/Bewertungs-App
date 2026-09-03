@@ -9,8 +9,9 @@
  *      Linie in der Listenfarbe getrennt statt durch Leerraum, die
  *      Kopfzeile bleibt antippbar (44px), und unter dem letzten
  *      Abschnitt steht keine Linie mehr.
- *   2. Kategorie-Reiter — die Leiste bricht um, statt seitlich zu
- *      scrollen; kein Reiter wird beschnitten.
+ *   2. Kategorie-Auswahl — die Reiterleiste ist aus dem Kopfbereich
+ *      verschwunden; an ihrer Stelle steht ein Knopf mit einem Blatt
+ *      von unten.
  *   3. Unter-Reiter — reiner Text im Unterstrich-Stil, einzeilig und
  *      unter keinen Umstaenden umbrechend.
  *
@@ -35,7 +36,7 @@ import { transform } from "esbuild";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-const GEPRUEFT = ["StatsAbschnitt"];
+const GEPRUEFT = ["StatsAbschnitt", "KategorieBlatt", "CATEGORY_COLORS"];
 
 const QUELLE = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 
@@ -69,6 +70,24 @@ function regel(selektor) {
   const treffer = QUELLE.match(new RegExp("\\n\\s*" + escaped + "\\s*\\{([^}]*)\\}"));
   assert.ok(treffer, "Regel nicht gefunden: " + selektor);
   return treffer[1];
+}
+
+/* Der Kopfbereich als Textausschnitt: vom Element bis zu dem
+   Kommentar, mit dem der Auswahlknopf darunter anfaengt. */
+function kopfBlock() {
+  const start = QUELLE.indexOf('className="kopfbereich"');
+  const ende = QUELLE.indexOf("Der Kategorie-Auswahlknopf", start);
+  assert.ok(start > 0 && ende > start, "Kopfbereich nicht gefunden");
+  return QUELLE.slice(start, ende);
+}
+
+/* Und der Auswahlknopf selbst. Gesucht wird ab dem Kopfbereich —
+   derselbe Satz steht weiter oben schon im Stylesheet. */
+function knopfBlock() {
+  const start = QUELLE.indexOf("Der Kategorie-Auswahlknopf", QUELLE.indexOf('className="kopfbereich"'));
+  const ende = QUELLE.indexOf("</button>", start);
+  assert.ok(start > 0 && ende > start, "Auswahlknopf nicht gefunden");
+  return QUELLE.slice(start, ende);
 }
 
 /* ---------------------------------------------------------------- *
@@ -144,54 +163,194 @@ test("Der grosse Leerraum zwischen den Abschnitten ist weg", () => {
 });
 
 /* ---------------------------------------------------------------- *
- * 2. Kategorie-Reiter: Umbruch statt seitlichem Scrollen
+ * 2. Kategorie-Auswahl: ein Knopf statt der Reiterleiste
+ *
+ * Die acht Reiter passten auf kein Telefon nebeneinander. Wischbar
+ * konnte der aktive ausserhalb des Sichtbaren stehen; umbrechend
+ * belegten sie drei Zeilen und trieben den Kopfbereich so in die
+ * Hoehe, dass sein Seitenverhaeltnis nicht mehr stimmte und der Titel
+ * aus dem Bild fiel. Sie sind deshalb ganz aus dem Kopfbereich heraus:
+ * ein Knopf ueber die volle Breite darunter, dahinter ein Blatt von
+ * unten mit allen sichtbaren Kategorien.
  * ---------------------------------------------------------------- */
 
-test("Die Kategorie-Leiste bricht um, statt seitlich zu scrollen", () => {
-  const leiste = regel(".tab-leiste");
-  assert.match(leiste, /flex-wrap:\s*wrap/);
-  assert.ok(!/overflow-x/.test(leiste), "kein seitliches Scrollen mehr");
-  assert.ok(!/scroll-snap-type/.test(leiste), "ohne Scrollen braucht es kein Einrasten");
+test("Von der Reiterleiste ist nichts uebrig", () => {
+  for (const weg of ["tab-leiste", "tab-btn"]) {
+    assert.ok(!QUELLE.includes(weg), weg + " gehoert samt Regeln entfernt");
+  }
+  assert.ok(!/data-aktiv/.test(QUELLE), "ohne Reiter gibt es keinen aktiven Reiter");
+});
+
+test("Der Knopf laeuft ueber die volle Breite und bleibt ungefuellt", () => {
+  const knopf = regel(".kategorie-knopf");
+  assert.match(knopf, /width:\s*100%/);
+  assert.match(knopf, /background:\s*transparent/, "gefuellt ist allein '+ Neu hinzufuegen'");
+  assert.match(knopf, /box-sizing:\s*border-box/, "sonst stuende er ueber seinen Container hinaus");
+});
+
+test("Der Rahmen ist 1px stark, damit die Kategoriefarbe traegt", () => {
+  const knopf = regel(".kategorie-knopf");
+  assert.match(knopf, /border-width:\s*1px/);
+  assert.match(knopf, /border-style:\s*solid/);
+});
+
+test("Rahmen und Beschriftung tragen die Kategoriefarbe", () => {
+  const block = knopfBlock();
+  assert.match(block, /borderColor:\s*accent/, "der Rahmen in der Farbe der Kategorie");
+  assert.match(block, /color:\s*accent/, "und die Beschriftung ebenso");
+});
+
+test("Die Anzahl steht in einer abgedunkelten Abstufung derselben Farbe", () => {
+  const block = knopfBlock();
+  const zahl = block.slice(block.indexOf('className="kategorie-knopf-zahl"'));
+  const farbe = zahl.match(/color:\s*mitDeckkraft\(accent,\s*([0-9.]+)\)/);
+  assert.ok(farbe, "die Zahl nimmt dieselbe Farbe, nur gedaempft");
+  assert.ok(Number(farbe[1]) < 1, "gedaempft heisst: leiser als der Name");
+  /* Und sie ist kleiner gesetzt als der Name (15px am Knopf). */
+  const stil = regel(".kategorie-knopf-zahl");
+  const groesse = stil.match(/font-size:\s*([0-9.]+)px/);
+  assert.ok(groesse && Number(groesse[1]) < 15, "kleinere Schrift als der Name");
+});
+
+test("Der Pfeil zeigt nach unten und steht rechts aussen", () => {
+  const block = knopfBlock();
+  assert.match(block, /className="kategorie-knopf-pfeil"[^>]*>▾</s, "ein nach unten zeigender Pfeil");
+  assert.match(regel(".kategorie-knopf-pfeil"), /margin-left:\s*auto/, "alles davor bleibt links");
+});
+
+test("Der Knopf fuehrt keinen einzigen neuen Farbwert ein", () => {
+  /* Alles Farbige an ihm kommt aus accentFor — also aus den acht
+     Werten in CATEGORY_COLORS. Im Stylesheet steht dazu nichts. */
+  const knopf = regel(".kategorie-knopf") + regel(".kategorie-knopf-zahl") + regel(".kategorie-knopf-pfeil");
+  assert.ok(!/#[0-9A-Fa-f]{3,8}/.test(knopf), "keine Farbe im Stylesheet des Knopfes");
+  assert.ok(!/rgb/.test(knopf));
+  assert.equal(Object.keys(app.CATEGORY_COLORS).length, 8, "acht Kategorien, acht Farben");
+});
+
+test("Der Knopf steht zwischen Kopfbereich und Unter-Reitern", () => {
+  const kopf = QUELLE.indexOf('className="kopfbereich"');
+  const knopf = QUELLE.indexOf('className="kategorie-knopf"');
+  const unter = QUELLE.indexOf('className="unter-reiter-leiste"');
+  assert.ok(kopf > 0 && knopf > kopf, "der Knopf steht unter dem Kopfbereich");
+  assert.ok(unter > knopf, "und ueber den Unter-Reitern");
+});
+
+test("Er steht ausserhalb des Kopfbereichs — dessen Hoehe haengt nicht an ihm", () => {
+  const kopf = QUELLE.indexOf('className="kopfbereich"');
+  const knopf = QUELLE.indexOf('className="kategorie-knopf"');
+  /* Zwischen beiden schliesst der Kopfbereich: der Kommentar, der den
+     Knopf einleitet, steht hinter dem schliessenden </div>. */
+  const dazwischen = QUELLE.slice(kopf, knopf);
   assert.ok(
-    !/\.tab-leiste::-webkit-scrollbar/.test(QUELLE),
-    "ohne Rollbalken braucht es keine Regel, die ihn versteckt"
+    dazwischen.includes("Der Kategorie-Auswahlknopf"),
+    "der Knopf gehoert hinter den Kopfbereich, nicht hinein"
   );
 });
 
-test("Kein Kategorie-Reiter rastet noch an einer Scrollposition ein", () => {
-  const btn = regel(".tab-btn");
-  assert.ok(!/scroll-snap-align/.test(btn));
-  assert.match(btn, /white-space:\s*nowrap/, "eine Beschriftung bricht nie im Wort um");
-});
-
-test("Ab 960px teilen sich die Reiter die Zeile, ohne beschnitten zu werden", () => {
-  /* Mit `flex: 1 1 0` und `min-width: 0` bekam jeder Reiter dieselbe
-     Breite — zu wenig fuer "Adult Animation" und "Sitcoms/Comedy",
-     deren Beschriftung dadurch ueber den Knopf hinausstand. Mit
-     `auto` ist die Textbreite die Untergrenze. */
-  const desktop = QUELLE.slice(QUELLE.indexOf("@media (min-width: 960px)"));
-  const btn = desktop.match(/\.tab-btn\s*\{([^}]*)\}/);
-  assert.ok(btn, "Desktop-Regel fuer .tab-btn nicht gefunden");
-  assert.match(btn[1], /flex:\s*1 1 auto/);
-  assert.ok(!/min-width:\s*0/.test(btn[1]), "min-width: 0 liess die Beschriftung ueberlaufen");
-});
-
-test("Die Leiste holt keinen Reiter mehr ins Bild", () => {
-  /* Das Hereinholen des aktiven Reiters gab es nur, weil die Leiste
-     seitlich scrollte. Jetzt stehen ohnehin alle im Bild. */
-  assert.ok(!/tabLeisteRef/.test(QUELLE), "die Referenz auf die Leiste hat keinen Zweck mehr");
-  assert.ok(
-    !/data-tab="'\s*\+\s*activeTab/.test(QUELLE),
-    "es wird nicht mehr nach dem aktiven Reiter gesucht, um zu ihm zu scrollen"
+test("Knopf und Unter-Reiter stehen dicht beieinander", () => {
+  /* 14px unter dem Kopfbereich, 10px darunter bis zu den
+     Unter-Reitern — beide lesen sich als ein Steuerbereich. */
+  assert.match(QUELLE, /padding: "14px 20px 0"/, "Abstand des Knopfes zum Kopfbereich");
+  assert.match(
+    QUELLE,
+    /style=\{\{ maxWidth: 720, margin: "0 auto", padding: "10px 20px 20px" \}\}/,
+    "der Inhalt darunter faengt knapp an"
   );
 });
 
-test("Alle sichtbaren Kategorien stehen in der Leiste — ohne feste Zeilenzuordnung", () => {
-  /* Die Reiter kommen unveraendert aus sichtbareKats; wer eine
-     Kategorie ausblendet, laesst den Rest von selbst nachruecken.
-     Eine Aufteilung auf Zeilen steht nirgends im Baum. */
-  assert.match(QUELLE, /\{sichtbareKats\.map\(\(c, i\) => \(/);
-  assert.ok(!/tab-zeile/.test(QUELLE), "es gibt keine feste Zeile fuer einen Reiter");
+/* --- Das Auswahlblatt --- */
+
+/* Die Liste, die der Knopf bekommt, ist die der Kategorie-Ansicht:
+   nur sichtbar geschaltete Kategorien, in der dort festgelegten
+   Reihenfolge. Hier wird mit zwei Ausschnitten gerendert. */
+const ALLE = [
+  { key: "movie", label: "Filme" },
+  { key: "series", label: "Serien" },
+  { key: "anime", label: "Anime" },
+  { key: "kids", label: "Kinderserien" },
+  { key: "adultanim", label: "Adult Animation" },
+  { key: "doku", label: "Dokus" },
+  { key: "comedy", label: "Sitcoms/Comedy" },
+  { key: "game", label: "Spiele" },
+];
+
+function blatt(kategorien, aktuell, anzahlen) {
+  return renderToStaticMarkup(
+    createElement(app.KategorieBlatt, {
+      kategorien,
+      aktuell,
+      anzahlen,
+      onWaehlen: () => {},
+      onClose: () => {},
+    })
+  );
+}
+
+test("Das Blatt bietet jede sichtbare Kategorie mit Namen und Anzahl", () => {
+  const zahlen = Object.fromEntries(ALLE.map((c, i) => [c.key, i * 7]));
+  const markup = blatt(ALLE, "movie", zahlen);
+  for (const c of ALLE) {
+    assert.ok(markup.includes(c.label), c.label + " fehlt im Blatt");
+    assert.ok(markup.includes(">" + zahlen[c.key] + "<"), "die Anzahl zu " + c.label + " fehlt");
+  }
+});
+
+test("Auch die laengsten Namen stehen vollstaendig da", () => {
+  const markup = blatt(ALLE, "movie", {});
+  for (const lang of ["Adult Animation", "Sitcoms/Comedy", "Kinderserien"]) {
+    assert.ok(markup.includes(lang), lang + " gehoert ungekuerzt ins Blatt");
+  }
+  /* Untereinander, nicht nebeneinander: nichts kann abgeschnitten
+     werden, egal wie lang der Name ist. */
+  assert.match(markup, /flex-direction:column/);
+});
+
+test("Die aktuelle Kategorie ist markiert, die uebrigen nicht", () => {
+  const markup = blatt(ALLE, "comedy", {});
+  const zeilen = markup.split("<button").slice(1);
+  assert.equal(zeilen.length, 8);
+  const markiert = zeilen.filter((z) => z.includes('aria-pressed="true"'));
+  assert.equal(markiert.length, 1, "genau eine Zeile ist die aktuelle");
+  assert.ok(markiert[0].includes("Sitcoms/Comedy"));
+  assert.match(markiert[0], /background:var\(--accent, #C9A227\)/, "in der Kategoriefarbe");
+});
+
+test("Ausgeblendete Kategorien werden gar nicht erst angeboten", () => {
+  /* Der Knopf reicht sichtbareKats durch — steht nur das im Blatt,
+     kann eine versteckte Kategorie dort nicht auftauchen. */
+  const zwei = [ALLE[0], ALLE[7]];
+  const markup = blatt(zwei, "movie", { movie: 166, game: 12 });
+  assert.equal(markup.split("<button").length - 1, 2, "zwei sichtbare, zwei Zeilen");
+  assert.ok(markup.includes("Filme") && markup.includes("Spiele"));
+  for (const weg of ["Anime", "Dokus", "Adult Animation", "Sitcoms/Comedy", "Kinderserien"]) {
+    assert.ok(!markup.includes(weg), weg + " ist ausgeblendet und gehoert nicht ins Blatt");
+  }
+});
+
+test("Die Reihenfolge im Blatt ist die der Einstellungen", () => {
+  const gedreht = [...ALLE].reverse();
+  const markup = blatt(gedreht, "game", {});
+  const stellen = gedreht.map((c) => markup.indexOf(">" + c.label + "<"));
+  for (const stelle of stellen) assert.ok(stelle > 0);
+  const sortiert = [...stellen].sort((a, b) => a - b);
+  assert.deepEqual(stellen, sortiert, "die Zeilen stehen in der uebergebenen Reihenfolge");
+});
+
+test("Das Blatt kommt von unten und traegt die Wahl weiter", () => {
+  const markup = blatt(ALLE, "movie", {});
+  assert.match(markup, /class="blatt-rein"/, "dieselbe Bewegung wie alle Blaetter der App");
+  const auswahl = QUELLE.slice(QUELLE.indexOf("<KategorieBlatt"), QUELLE.indexOf("<KategorieBlatt") + 900);
+  assert.match(auswahl, /kategorien=\{sichtbareKats\}/, "genau die sichtbaren Kategorien");
+  assert.match(auswahl, /setKategorieBlattOffen\(false\)/, "nach der Wahl schliesst es");
+  assert.match(auswahl, /waehleKategorie\(key,/, "und die Liste wechselt");
+});
+
+test("Gewaehlt wird erst, wenn die Aus-Bewegung durch ist", () => {
+  /* schliessen(...) spielt sie und ruft danach — sonst stuende ein
+     Blatt ueber einer schon getauschten Liste. */
+  const start = QUELLE.indexOf("function KategorieBlatt");
+  const block = QUELLE.slice(start, QUELLE.indexOf("function ConfirmDialog"));
+  assert.match(block, /onClick=\{\(\) => schliessen\(\(\) => onWaehlen\(c\.key\)\)\}/);
 });
 
 /* ---------------------------------------------------------------- *
@@ -292,80 +451,77 @@ test('Der Knopf "+ Neu hinzufuegen" steht weiter unter den Unter-Reitern', () =>
 });
 
 /* ---------------------------------------------------------------- *
- * 4. Kopfbereich: waechst mit den Reiterzeilen
+ * 4. Kopfbereich: festes 16:9 zurueck
  *
- * Der Umbruch der Leiste hat den Inhalt des Kopfbereichs tiefer
- * gemacht — auf dem Telefon drei Reiterzeilen statt einer. Seine Hoehe
- * stand aber fest (16:9 per aspect-ratio) und schnitt mit
- * overflow: hidden ab, was nicht hineinpasste: weil der Inhalt am
- * unteren Rand haengt, fiel das oben ab, und der Titel stand ueber der
- * Oberkante. Das Bild endete an derselben starren Kante.
+ * Solange die Reiter darin standen, musste die Hoehe mitwachsen — mit
+ * dem Ergebnis, dass das Seitenverhaeltnis nicht mehr stimmte. Ohne
+ * sie traegt der Kopfbereich nur noch Bild, Titel, Rang-Abzeichen und
+ * die drei Symbolknoepfe; die Hoehe darf deshalb wieder fest sein und
+ * haengt an nichts, was sich mit den Kategorien aendert.
  * ---------------------------------------------------------------- */
 
-test("Die Hoehe des Kopfbereichs ist eine Untergrenze, keine feste Hoehe", () => {
+test("Der Kopfbereich hat sein festes 16:9 zurueck", () => {
   const kopf = regel(".kopfbereich");
-  assert.match(kopf, /min-height:\s*56\.25vw/, "16:9 der Breite als Untergrenze");
-  assert.ok(
-    !/aspect-ratio/.test(kopf),
-    "ein Seitenverhaeltnis legte die Hoehe fest und schnitt den Titel ab"
-  );
+  assert.match(kopf, /aspect-ratio:\s*16 \/ 9/);
+  assert.ok(!/min-height/.test(kopf), "keine mitwachsende Untergrenze mehr");
 });
 
-test("Das Seitenverhaeltnis ist auch nirgends sonst am Kopfbereich uebrig", () => {
-  /* Sonst stuenden Ersatzregeln (@supports) oder das Aufheben im
-     Desktop-Block fuer etwas, das es nicht mehr gibt. Erwaehnt wird es
-     noch im Kommentar daneben — gesucht sind hier nur Angaben. */
-  assert.ok(
-    !/^\s*aspect-ratio\s*:/m.test(QUELLE),
-    "keine Angabe zum Seitenverhaeltnis mehr im Stilblock"
+test("Browser ohne aspect-ratio bekommen dieselben 9/16 der Breite", () => {
+  assert.match(
+    QUELLE,
+    /@supports not \(aspect-ratio: 16 \/ 9\) \{\s*\.kopfbereich \{ min-height: calc\(56\.25vw/,
+    "56.25vw sind 9/16 der Fensterbreite"
   );
-  assert.ok(!/@supports not \(aspect-ratio/.test(QUELLE), "keine Ersatzregel mehr noetig");
 });
 
 test("Ab 960px bleibt die Mindesthoehe von 360px", () => {
   const desktop = QUELLE.slice(QUELLE.indexOf("@media (min-width: 960px)"));
   const kopf = desktop.match(/\.kopfbereich\s*\{([^}]*)\}/);
   assert.ok(kopf, "Desktop-Regel fuer .kopfbereich nicht gefunden");
+  assert.match(kopf[1], /aspect-ratio:\s*auto/, "sonst waere der Kopf auf 1920px ueber 1000px hoch");
   assert.match(kopf[1], /min-height:\s*360px/);
   assert.match(kopf[1], /box-sizing:\s*border-box/);
 });
 
-test("Das Bild deckt den ganzen Kopfbereich ab, auch die Reiterzeilen", () => {
-  /* Bild und Abdunkelung liegen mit inset: 0 auf der ganzen Flaeche —
-     waechst sie, wachsen sie mit. Zu pruefen ist nur, dass die
-     Slideshow keine eigene, feste Hoehe mitbringt. */
+test("Die Hoehe haengt an nichts, was sich mit den Kategorien aendert", () => {
+  const kopf = kopfBlock();
+  assert.ok(!/sichtbareKats/.test(kopf), "keine Kategorienliste mehr im Kopfbereich");
+  assert.ok(!/catInfo\.label/.test(kopf), "und auch kein Zaehler '166 Filme'");
+});
+
+test("Im Kopfbereich stehen nur noch Bild, Titel, Abzeichen und die drei Symbole", () => {
+  const kopf = kopfBlock();
+  assert.ok(kopf.includes("<HeaderSlideshow"), "das Hintergrundbild");
+  assert.ok(kopf.includes("APP_NAME_ZEILEN"), "der App-Titel");
+  assert.ok(kopf.includes("<RangChip"), "das Rang-Abzeichen");
+  assert.equal(
+    (kopf.match(/<KopfIconButton/g) || []).length,
+    3,
+    "Minispiele, Statistik und Daten — drei Symbolknoepfe"
+  );
+});
+
+test("Titel und Abzeichen stehen unten links, die Symbole oben rechts", () => {
+  const kopf = kopfBlock();
+  assert.match(kopf, /justifyContent: "flex-end"/, "der Inhalt haengt am unteren Rand");
+  const symbole = kopf.slice(kopf.indexOf("position: \"absolute\", top: 0"));
+  assert.match(symbole.slice(0, 400), /justifyContent: "flex-end"/, "die Symbolreihe nach rechts");
+});
+
+test("Das Bild deckt den ganzen Kopfbereich ab", () => {
   const start = QUELLE.indexOf("function HeaderSlideshow");
   const block = QUELLE.slice(start, QUELLE.indexOf("\n}", QUELLE.indexOf("return (", start)));
   assert.match(block, /position:\s*"absolute",\s*inset:\s*0/);
   assert.ok(!/aspectRatio/.test(block), "das Bild bringt keine eigene feste Hoehe mit");
 });
 
-/* ---------------------------------------------------------------- *
- * 5. Kategorie-Reiter: Groesse und Form unveraendert
- *
- * Der Umbruch sollte allein die Zeilenaufteilung aendern. Schrift,
- * Innenabstand und Eckenrundung stehen deshalb weiter auf den Werten,
- * die sie vor dem Umbruch hatten — und die Rundung ist fuer den
- * aktiven Reiter dieselbe wie fuer die uebrigen.
- * ---------------------------------------------------------------- */
-
-test("Schrift und Innenabstand der Reiter sind die alten", () => {
-  const btn = regel(".tab-btn");
-  assert.match(btn, /padding:\s*13px 12px/);
-  assert.match(btn, /font-size:\s*13\.5px/);
-  assert.ok(!/min-height/.test(btn), "die Hoehe ergibt sich aus Schrift und Polsterung");
-});
-
-test("Aktiver und uebrige Reiter tragen dieselbe Eckenrundung", () => {
-  /* Die Rundung steht als ein Inline-Stil fuer alle Reiter da, nicht
-     abhaengig vom aktiven Zustand. */
-  const start = QUELLE.indexOf('className="tab-btn"');
-  const block = QUELLE.slice(start, start + 600);
-  const runden = block.match(/borderRadius:\s*"([^"]*)"/g) || [];
-  assert.equal(runden.length, 1, "nur eine Rundung fuer alle Reiter");
-  assert.match(runden[0], /"8px 8px 0 0"/);
-  assert.ok(
-    !/borderRadius:\s*activeTab/.test(block),
-    "die Rundung haengt nicht am aktiven Zustand"
-  );
+test("Am Fuss des Kopfbereichs steht keine harte Kante mehr", () => {
+  /* Die 1px-Linie schloss frueher die Reiterleiste ab. Ohne sie laeuft
+     der Verlauf ueber dem Bild bis unten in die Seitenfarbe aus. */
+  const kopf = kopfBlock();
+  assert.ok(!/borderBottom/.test(kopf.slice(0, kopf.indexOf("<HeaderSlideshow"))),
+    "keine Trennlinie unter dem Kopfbereich");
+  const start = QUELLE.indexOf("function HeaderSlideshow");
+  const block = QUELLE.slice(start, QUELLE.indexOf("\n}", QUELLE.indexOf("return (", start)));
+  assert.match(block, /rgba\(23,23,26,0\.92\) 82%, #17171A 100%/, "unten die volle Seitenfarbe");
 });
