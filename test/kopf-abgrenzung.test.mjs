@@ -290,3 +290,82 @@ test('Der Knopf "+ Neu hinzufuegen" steht weiter unter den Unter-Reitern', () =>
   const knopf = QUELLE.indexOf('className="neu-knopf"');
   assert.ok(leiste > 0 && knopf > leiste, "der Knopf gehoert hinter die Unter-Reiter");
 });
+
+/* ---------------------------------------------------------------- *
+ * 4. Kopfbereich: waechst mit den Reiterzeilen
+ *
+ * Der Umbruch der Leiste hat den Inhalt des Kopfbereichs tiefer
+ * gemacht — auf dem Telefon drei Reiterzeilen statt einer. Seine Hoehe
+ * stand aber fest (16:9 per aspect-ratio) und schnitt mit
+ * overflow: hidden ab, was nicht hineinpasste: weil der Inhalt am
+ * unteren Rand haengt, fiel das oben ab, und der Titel stand ueber der
+ * Oberkante. Das Bild endete an derselben starren Kante.
+ * ---------------------------------------------------------------- */
+
+test("Die Hoehe des Kopfbereichs ist eine Untergrenze, keine feste Hoehe", () => {
+  const kopf = regel(".kopfbereich");
+  assert.match(kopf, /min-height:\s*56\.25vw/, "16:9 der Breite als Untergrenze");
+  assert.ok(
+    !/aspect-ratio/.test(kopf),
+    "ein Seitenverhaeltnis legte die Hoehe fest und schnitt den Titel ab"
+  );
+});
+
+test("Das Seitenverhaeltnis ist auch nirgends sonst am Kopfbereich uebrig", () => {
+  /* Sonst stuenden Ersatzregeln (@supports) oder das Aufheben im
+     Desktop-Block fuer etwas, das es nicht mehr gibt. Erwaehnt wird es
+     noch im Kommentar daneben — gesucht sind hier nur Angaben. */
+  assert.ok(
+    !/^\s*aspect-ratio\s*:/m.test(QUELLE),
+    "keine Angabe zum Seitenverhaeltnis mehr im Stilblock"
+  );
+  assert.ok(!/@supports not \(aspect-ratio/.test(QUELLE), "keine Ersatzregel mehr noetig");
+});
+
+test("Ab 960px bleibt die Mindesthoehe von 360px", () => {
+  const desktop = QUELLE.slice(QUELLE.indexOf("@media (min-width: 960px)"));
+  const kopf = desktop.match(/\.kopfbereich\s*\{([^}]*)\}/);
+  assert.ok(kopf, "Desktop-Regel fuer .kopfbereich nicht gefunden");
+  assert.match(kopf[1], /min-height:\s*360px/);
+  assert.match(kopf[1], /box-sizing:\s*border-box/);
+});
+
+test("Das Bild deckt den ganzen Kopfbereich ab, auch die Reiterzeilen", () => {
+  /* Bild und Abdunkelung liegen mit inset: 0 auf der ganzen Flaeche —
+     waechst sie, wachsen sie mit. Zu pruefen ist nur, dass die
+     Slideshow keine eigene, feste Hoehe mitbringt. */
+  const start = QUELLE.indexOf("function HeaderSlideshow");
+  const block = QUELLE.slice(start, QUELLE.indexOf("\n}", QUELLE.indexOf("return (", start)));
+  assert.match(block, /position:\s*"absolute",\s*inset:\s*0/);
+  assert.ok(!/aspectRatio/.test(block), "das Bild bringt keine eigene feste Hoehe mit");
+});
+
+/* ---------------------------------------------------------------- *
+ * 5. Kategorie-Reiter: Groesse und Form unveraendert
+ *
+ * Der Umbruch sollte allein die Zeilenaufteilung aendern. Schrift,
+ * Innenabstand und Eckenrundung stehen deshalb weiter auf den Werten,
+ * die sie vor dem Umbruch hatten — und die Rundung ist fuer den
+ * aktiven Reiter dieselbe wie fuer die uebrigen.
+ * ---------------------------------------------------------------- */
+
+test("Schrift und Innenabstand der Reiter sind die alten", () => {
+  const btn = regel(".tab-btn");
+  assert.match(btn, /padding:\s*13px 12px/);
+  assert.match(btn, /font-size:\s*13\.5px/);
+  assert.ok(!/min-height/.test(btn), "die Hoehe ergibt sich aus Schrift und Polsterung");
+});
+
+test("Aktiver und uebrige Reiter tragen dieselbe Eckenrundung", () => {
+  /* Die Rundung steht als ein Inline-Stil fuer alle Reiter da, nicht
+     abhaengig vom aktiven Zustand. */
+  const start = QUELLE.indexOf('className="tab-btn"');
+  const block = QUELLE.slice(start, start + 600);
+  const runden = block.match(/borderRadius:\s*"([^"]*)"/g) || [];
+  assert.equal(runden.length, 1, "nur eine Rundung fuer alle Reiter");
+  assert.match(runden[0], /"8px 8px 0 0"/);
+  assert.ok(
+    !/borderRadius:\s*activeTab/.test(block),
+    "die Rundung haengt nicht am aktiven Zustand"
+  );
+});

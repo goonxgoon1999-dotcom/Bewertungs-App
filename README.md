@@ -323,7 +323,10 @@ Ist oben eine einzelne Kategorie gewählt, steht dort nur noch ihr Block.
 
 ## Kopfbereich
 
-Oben zeigt die App einen festen 16:9-Ausschnitt über die volle Breite.
+Oben zeigt die App einen 16:9-Ausschnitt über die volle Breite. Die
+Höhe ist dabei eine Untergrenze: braucht der Inhalt — Titel, Rang,
+Zähler und die umbrechende Reiterleiste — mehr Platz, wächst der
+Kopfbereich mit, und das Bild deckt die größere Fläche vollständig ab.
 Die Bilder dafür werden **von Hand** gepflegt — dafür gibt es keine
 automatische Suche.
 
