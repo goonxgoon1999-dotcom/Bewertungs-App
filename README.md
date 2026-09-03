@@ -140,16 +140,28 @@ gleich: 75 % Kriterien-Note + 25 % Bauchgefühl, dazu der Duell-Zuschlag
 aus dem Minispiel „Head-to-Head". Ohne gespieltes Duell ist der Zuschlag
 exakt 0 — Formel und Herleitung stehen dort und unter „Berechnung".
 
-Die Tab-Leiste oben führt alle Kategorien. Acht passen nicht mehr
-nebeneinander auf ein Telefon — die Leiste **bricht deshalb um** statt
-seitlich zu scrollen. Die Tabs behalten ihre Größe und belegen so viele
-Zeilen, wie sie brauchen; alle sind damit immer vollständig sichtbar,
-und keine Beschriftung wird mitten im Wort abgeschnitten. Welcher Tab in
-welcher Zeile landet, ergibt sich allein aus der Breite — wird eine
-Kategorie in den Einstellungen ausgeblendet, rückt der Rest von selbst
-nach. Bei 390 px sind es drei Zeilen, bei 768 px zwei, ab 960 px eine.
-Die Statistik ist keine Kategorie und steht deshalb nicht in der
-Leiste: Sie öffnet sich über das Balkendiagramm-Symbol oben rechts im
+Gewechselt wird über den **Kategorie-Knopf** direkt unter dem
+Kopfbereich. Er läuft über die volle Breite und zeigt links den Namen
+der offenen Kategorie, dahinter kleiner die Anzahl ihrer bewerteten
+Einträge und rechts einen Pfeil nach unten. Rahmen, Beschriftung und
+Pfeil tragen die Akzentfarbe der Kategorie — die Anzahl in einer
+gedämpften Abstufung derselben Farbe; gefüllt ist der Knopf nicht.
+
+Ein Tipp öffnet ein Blatt von unten mit allen Kategorien
+untereinander, jede mit ihrer Anzahl, die aktuelle markiert. Nach der
+Wahl schließt sich das Blatt und die Liste wechselt. Angeboten wird
+genau, was in den Einstellungen sichtbar geschaltet ist, in der dort
+festgelegten Reihenfolge.
+
+Vorher standen die Kategorien als Reiterleiste im Kopfbereich. Acht
+passen auf kein Telefon nebeneinander: wischbar konnte der aktive
+Reiter außerhalb des Sichtbaren stehen, umbrechend belegte die Leiste
+drei Zeilen und trieb den Kopfbereich so in die Höhe, dass sein
+Seitenverhältnis nicht mehr stimmte und der Titel aus dem Bild fiel.
+Ein Knopf ist von der Anzahl der Kategorien unabhängig.
+
+Die Statistik ist keine Kategorie und steht deshalb nicht im Blatt:
+Sie öffnet sich über das Balkendiagramm-Symbol oben rechts im
 Kopfbereich.
 
 **Filme, Serien, Anime und Adult Animation** (identische Felder und Gewichte):
@@ -255,8 +267,8 @@ Was die Einstellung tut:
 - **Ausblenden ist reine Anzeige.** Es wird nichts gelöscht. Eine
   wieder eingeschaltete Kategorie bringt alle ihre Einträge
   unverändert mit.
-- **Sie wirkt überall.** Tab-Leiste, Wischgeste, Anlegen- und
-  Bewertungsformular, Statistik (samt ihrer einen Kategorie-Auswahl),
+- **Sie wirkt überall.** Kategorie-Knopf samt Blatt, Wischgeste,
+  Anlegen- und Bewertungsformular, Statistik (samt ihrer einen Kategorie-Auswahl),
   Jahresrückblick, „Bewertung prüfen", Head-to-Head, Turnier, Higher or
   Lower, „Was schau ich?", Empfehlungen und die Fortsetzungs-Erinnerung
   folgen derselben Liste — samt Reihenfolge, also auch in Auswahlfeldern
@@ -323,11 +335,24 @@ Ist oben eine einzelne Kategorie gewählt, steht dort nur noch ihr Block.
 
 ## Kopfbereich
 
-Oben zeigt die App einen 16:9-Ausschnitt über die volle Breite. Die
-Höhe ist dabei eine Untergrenze: braucht der Inhalt — Titel, Rang,
-Zähler und die umbrechende Reiterleiste — mehr Platz, wächst der
-Kopfbereich mit, und das Bild deckt die größere Fläche vollständig ab.
-Die Bilder dafür werden **von Hand** gepflegt — dafür gibt es keine
+Oben zeigt die App einen festen 16:9-Ausschnitt über die volle
+Breite. Darin stehen nur noch vier Dinge: das Hintergrundbild, der
+App-Titel und das Rang-Abzeichen unten links, die drei Symbolknöpfe
+oben rechts. Weil nichts davon mit der Zahl der Kategorien wächst,
+steht die Höhe fest — der Titel ist beim Öffnen immer vollständig zu
+sehen.
+
+Genau genommen gilt das 16:9 für die Inhaltsfläche; darüber kommen
+noch die Gerätekerbe und 28 px Luft, damit der Titel nicht unter der
+Statusleiste liegt. Bei 390 px Breite ist der Kopf damit 247 px hoch,
+bei 768 px 460 px. Ab 960 px gilt statt der 16:9 eine Mindesthöhe von
+360 px, sonst wäre der Kopf auf einem breiten Bildschirm über 800 px
+hoch.
+
+Die Zahl der Einträge stand früher hier („166 Filme"); sie steht
+jetzt im Kategorie-Knopf darunter.
+
+Die Bilder werden **von Hand** gepflegt — dafür gibt es keine
 automatische Suche.
 
 Im Daten-Panel (Zahnrad oben rechts im Kopfbereich) unter
@@ -341,8 +366,9 @@ einer eigenen Tabelle und bleiben dauerhaft erhalten.
 
 Die Bilder füllen den Ausschnitt formatfüllend und zentriert
 (`object-fit: cover`) bei 90 % Deckkraft; darüber liegt ein Verlauf,
-der Titel und Tabs lesbar hält. Eine Adresse, die sich nicht laden
-lässt, wird übersprungen.
+der den Titel lesbar hält und nach unten in die Seitenfarbe ausläuft —
+am Fuß des Kopfbereichs steht deshalb keine Trennlinie mehr. Eine
+Adresse, die sich nicht laden lässt, wird übersprungen.
 
 ---
 
