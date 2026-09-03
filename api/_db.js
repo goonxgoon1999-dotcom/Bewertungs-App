@@ -298,6 +298,7 @@ async function init() {
   await ensureDuellPaare();
   await ensureHighscores();
   await ensureAmSchauen();
+  await ensureErstsichtung();
 
   /* Hier endet der Start. Eine frische Datenbank bleibt in allen
      Kategorien leer.
@@ -1091,6 +1092,27 @@ async function ensureAmSchauen() {
   await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS folge_nr INTEGER`;
 }
 
+/* ----------------------------------------------------------------
+   Erstsichtung — wann wurde der Titel zum ersten Mal gesehen?
+
+   `rated_at` beantwortet das nicht: Es haelt den Tag fest, an dem aus
+   dem Eintrag ein bewerteter wurde. Wer einen Film 2011 gesehen und
+   erst 2026 hier eingetragen hat, hat ihn nicht 2026 zum ersten Mal
+   geschaut.
+
+   Die Spalte ist deshalb rein optional und wird ausschliesslich von
+   Hand gefuellt (Detailansicht, Karte "ERSTMALS GESCHAUT"). Es gibt
+   KEINEN Backfill: Bestehende Zeilen bleiben leer, und leer heisst in
+   der Anzeige "es gilt das Bewertungsdatum". Ein automatisch
+   eingetragener Wert waere nichts anderes als eine Behauptung.
+
+   Wie alle Migrationen hier rein strukturell: eine Spalte kommt dazu,
+   keine bestehende Zeile wird angefasst.
+   ---------------------------------------------------------------- */
+async function ensureErstsichtung() {
+  await sql`ALTER TABLE media_items ADD COLUMN IF NOT EXISTS first_watched_at BIGINT`;
+}
+
 /* Die Episodenanzahl je Staffel steht — wie die Genres — als eine
    Zeichenkette in der Spalte: "12|12|24" heisst drei Staffeln mit 12,
    12 und 24 Folgen. Eine eigene Tabelle waere sauberer, brachte hier
@@ -1327,6 +1349,13 @@ export function rowToItem(r) {
     // bekannt" — bei vorgemerkten Eintraegen und bei Altbestand ohne
     // brauchbares Datum. Der Jahresrueckblick laesst beide aus.
     ratedAt: r.rated_at === null || r.rated_at === undefined ? null : Number(r.rated_at),
+    /* Wann der Titel zum ersten Mal gesehen wurde — von Hand
+       eingetragen, sonst null. null heisst ausdruecklich "nicht
+       angegeben": Die Anzeige faellt dann auf `ratedAt` zurueck. */
+    firstWatchedAt:
+      r.first_watched_at === null || r.first_watched_at === undefined
+        ? null
+        : Number(r.first_watched_at),
   };
 }
 
@@ -1466,6 +1495,18 @@ function angabenFehler(body) {
     (typeof body.ratedAt !== "number" || !Number.isFinite(body.ratedAt) || body.ratedAt < 0)
   ) {
     errors.push("Ungültiges Bewertungsdatum.");
+  }
+
+  /* Das Erstsichtungsdatum kommt aus der Detailansicht oder aus einer
+     Sicherung. `null` ist ein gueltiger Wert: damit wird es geleert
+     und die Anzeige faellt auf das Bewertungsdatum zurueck. */
+  if (
+    body.firstWatchedAt != null &&
+    (typeof body.firstWatchedAt !== "number" ||
+      !Number.isFinite(body.firstWatchedAt) ||
+      body.firstWatchedAt < 0)
+  ) {
+    errors.push("Ungültiges Erstsichtungsdatum.");
   }
 
   errors.push(...laufzeitFehler(body));

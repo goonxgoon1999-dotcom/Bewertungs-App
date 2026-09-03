@@ -547,6 +547,39 @@ async function fromTmdb(title, kind) {
 }
 
 /**
+ * Welche TMDB-Bereiche eine Kategorie abfragt — genau die Reihenfolge,
+ * in der die Suchkette oben sie durchlaeuft.
+ *
+ * Anime steht bewusst bei `tv`: Dort fuehrt zwar Jikan, aber die
+ * Angaben zum Werk (Jahr, Regie, IMDb-Kennung) kommen auch bei Anime
+ * aus dem TMDB-Serientreffer. Spiele kennt TMDB gar nicht.
+ */
+function tmdbArten(category) {
+  if (category === "game") return [];
+  if (category === "doku" || category === "comedy") return ["movie", "tv"];
+  if (category === "anime" || istSerienArt(category)) return ["tv"];
+  return ["movie"];
+}
+
+/**
+ * Der TMDB-Treffer zu einem Titel: `{ id, kind, year }` oder null.
+ *
+ * Das ist GENAU die Zuordnung, aus der auch Jahr, Regie und die
+ * IMDb-Kennung stammen (siehe `tmdbTreffer` im Handler unten) — mit
+ * derselben Kandidatenauswahl und derselben Aehnlichkeitsschwelle.
+ * Andere Endpunkte, die eine TMDB-Kennung brauchen, greifen hier zu,
+ * statt sich eine zweite Zuordnungslogik zu bauen.
+ */
+export async function tmdbKennungFuer(title, category) {
+  if (!tmdbKey()) return null;
+  for (const kind of tmdbArten(category)) {
+    const { meta } = await fromTmdb(title, kind);
+    if (meta) return meta;
+  }
+  return null;
+}
+
+/**
  * Der SteamGridDB-Schluessel ist optional. Ohne ihn gibt es fuer Spiele
  * gar keine automatische Suche — TMDB und die uebrigen Quellen kennen
  * keine Spiele, ein Treffer dort waere zwangslaeufig falsch.
