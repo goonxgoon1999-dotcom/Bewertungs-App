@@ -2,7 +2,7 @@
  * Tests fuer die Sortierung der Kategorie-Liste (Filter-Menü) in
  * src/App.jsx.
  *
- * Der Anlass: "Zuerst/Zuletzt hinzugefügt" liess die Liste unveraendert
+ * Der Anlass: "Zuerst/Zuletzt geschaut" liess die Liste unveraendert
  * in der Notenreihenfolge stehen. Der Vergleich las
  * `(a.createdAt || 0) - (b.createdAt || 0)`; wo beide Seiten 0 sind,
  * ist die Differenz 0, und weil `Array.prototype.sort` stabil ist und
@@ -12,14 +12,17 @@
  * Die Zusagen:
  *
  *   1. Jede Sortierung ordnet nach dem, was sie verspricht.
- *   2. "Hinzugefügt" meint das Anlegedatum, nicht das Erscheinungsjahr.
- *   3. Fehlt `createdAt`, springt `ratedAt` ein — es gibt Zeilen mit
- *      created_at = 0 (siehe ensureBewertetAm in api/_db.js).
- *   4. Eintraege ganz ohne Datum stehen in BEIDEN Richtungen am Ende,
- *      alphabetisch geordnet: Sie sind weder die aeltesten noch die
- *      neuesten, sondern die unbekannten.
- *   5. Die Liste kommt nach Endnote sortiert an und darf danach nicht
- *      mehr so aussehen — der Fall, der den Fehler ausmachte.
+ *   2. Die beiden Datums-Sortierungen richten sich nach der
+ *      ERSTSICHTUNG — nicht nach dem Anlegedatum und nicht nach dem
+ *      Erscheinungsjahr.
+ *   3. Sie fragen dafuer dieselbe `erstsichtung()` wie die
+ *      Detailansicht und der Jahresrueckblick: eigenes
+ *      Erstsichtungsdatum, sonst das Bewertungsdatum. Eine zweite
+ *      Fassung dieser Regel darf es nirgends geben.
+ *   4. `createdAt` geht nicht mehr ein — auch dann nicht, wenn es das
+ *      einzige Datum am Eintrag ist.
+ *   5. Ein Gleichstand faellt auf den Titel zurueck, damit die Liste
+ *      nie stillschweigend in der Notenreihenfolge stehen bleibt.
  *   6. Die Beschriftungen sagen, worauf sie sich beziehen.
  *
  *   npm test
@@ -33,7 +36,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { transform } from "esbuild";
 
-const GEPRUEFT = ["sortiereListe", "hinzugefuegtAm", "ohneDatumZahl", "SORT_OPTIONS", "SORT_NACH_DATUM"];
+const GEPRUEFT = ["sortiereListe", "erstsichtung", "SORT_OPTIONS"];
 
 async function ladeApp() {
   const quelle = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
@@ -52,21 +55,25 @@ async function ladeApp() {
 }
 
 const app = await ladeApp();
+const QUELLE = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 
 const AM = (jahr, monat, tag) => new Date(jahr, monat - 1, tag, 12, 0, 0, 0).getTime();
 const titel = (liste) => liste.map((f) => f.title);
 
 /* Die sechs Titel aus dem Fehlerbericht. Die Endnote faellt von oben
-   nach unten, das Anlegedatum steigt dabei, das Erscheinungsjahr
+   nach unten, die Erstsichtung steigt dabei, das Erscheinungsjahr
    faellt — jede der drei Sortierungen ergibt damit eine andere
-   Reihenfolge, und keine laesst sich mit einer anderen verwechseln. */
+   Reihenfolge, und keine laesst sich mit einer anderen verwechseln.
+
+   `createdAt` laeuft bewusst GEGEN die Erstsichtung: Wer es doch noch
+   heranzoege, bekaeme hier sofort die falsche Reihenfolge. */
 const MCU = [
-  { title: "The Avengers", score: 9.5, createdAt: AM(2026, 1, 6), releaseYear: 2014 },
-  { title: "Civil War", score: 9.42, createdAt: AM(2026, 1, 5), releaseYear: 2015 },
-  { title: "The Winter Soldier", score: 9.4, createdAt: AM(2026, 1, 4), releaseYear: 2016 },
-  { title: "Infinity War", score: 9.36, createdAt: AM(2026, 1, 3), releaseYear: 2017 },
-  { title: "Endgame", score: 9.3, createdAt: AM(2026, 1, 2), releaseYear: 2018 },
-  { title: "Guardians", score: 9.26, createdAt: AM(2026, 1, 1), releaseYear: 2019 },
+  { title: "The Avengers", score: 9.5, firstWatchedAt: AM(2026, 1, 6), ratedAt: null, createdAt: AM(2026, 1, 1), releaseYear: 2014 },
+  { title: "Civil War", score: 9.42, firstWatchedAt: AM(2026, 1, 5), ratedAt: null, createdAt: AM(2026, 1, 2), releaseYear: 2015 },
+  { title: "The Winter Soldier", score: 9.4, firstWatchedAt: AM(2026, 1, 4), ratedAt: null, createdAt: AM(2026, 1, 3), releaseYear: 2016 },
+  { title: "Infinity War", score: 9.36, firstWatchedAt: AM(2026, 1, 3), ratedAt: null, createdAt: AM(2026, 1, 4), releaseYear: 2017 },
+  { title: "Endgame", score: 9.3, firstWatchedAt: AM(2026, 1, 2), ratedAt: null, createdAt: AM(2026, 1, 5), releaseYear: 2018 },
+  { title: "Guardians", score: 9.26, firstWatchedAt: AM(2026, 1, 1), ratedAt: null, createdAt: AM(2026, 1, 6), releaseYear: 2019 },
 ];
 
 /* So kommt die Liste bei der Sortierung an: nach Endnote absteigend
@@ -90,7 +97,7 @@ test("Alphabetisch — A→Z und Z→A", () => {
   assert.deepEqual(titel(app.sortiereListe(MCU, "title-desc")), [...az].reverse());
 });
 
-test("Zuerst hinzugefuegt dreht die Notenreihenfolge tatsaechlich um", () => {
+test("Zuerst geschaut dreht die Notenreihenfolge tatsaechlich um", () => {
   /* Der gemeldete Fehler: Der Knopf war gedrueckt, die Liste blieb
      "The Avengers, Civil War, The Winter Soldier, …" — exakt die
      Notenreihenfolge. */
@@ -99,7 +106,7 @@ test("Zuerst hinzugefuegt dreht die Notenreihenfolge tatsaechlich um", () => {
   assert.notDeepEqual(alt, NACH_NOTE, "die Liste steht noch in der Notenreihenfolge");
 });
 
-test("Zuletzt hinzugefuegt ist die Gegenrichtung", () => {
+test("Zuletzt geschaut ist die Gegenrichtung", () => {
   assert.deepEqual(titel(app.sortiereListe(MCU, "recent-desc")), NACH_NOTE);
 });
 
@@ -114,74 +121,93 @@ test("Die Liste selbst wird nicht angefasst", () => {
 });
 
 /* ---------------------------------------------------------------- *
- * 2. Anlegedatum, nicht Erscheinungsjahr
+ * 2. Erstsichtung — nicht Anlegedatum, nicht Erscheinungsjahr
  * ---------------------------------------------------------------- */
 
-test("Sortiert wird nach dem Anlegedatum, nicht nach dem Erscheinungsjahr", () => {
+test("Sortiert wird nach der Erstsichtung, nicht nach dem Erscheinungsjahr", () => {
   /* In dieser Liste laufen beide gegeneinander: Guardians ist der
-     neueste Film (2019) und der zuerst angelegte Eintrag. Steht er bei
-     "Zuerst hinzugefügt" vorn, entscheidet das Anlegedatum. */
+     neueste Film (2019) und der zuerst gesehene Titel. Steht er bei
+     "Zuerst geschaut" vorn, entscheidet die Erstsichtung. */
   const erster = app.sortiereListe(MCU, "recent-asc")[0];
   assert.equal(erster.title, "Guardians");
   assert.equal(erster.releaseYear, 2019, "es ist der NEUESTE Film — das Jahr entscheidet also nicht");
 });
 
-/* ---------------------------------------------------------------- *
- * 3. Der Rueckfall auf das Bewertungsdatum
- * ---------------------------------------------------------------- */
-
-test("Ohne createdAt springt ratedAt ein", () => {
-  assert.equal(app.hinzugefuegtAm({ createdAt: AM(2026, 1, 1), ratedAt: AM(2020, 1, 1) }), AM(2026, 1, 1));
-  assert.equal(app.hinzugefuegtAm({ createdAt: 0, ratedAt: AM(2020, 1, 1) }), AM(2020, 1, 1));
-  assert.equal(app.hinzugefuegtAm({ ratedAt: AM(2020, 1, 1) }), AM(2020, 1, 1));
-  assert.equal(app.hinzugefuegtAm({ createdAt: 0, ratedAt: null }), null);
-  assert.equal(app.hinzugefuegtAm(null), null);
+test("Das Anlegedatum entscheidet nicht mehr mit", () => {
+  /* `createdAt` laeuft in MCU genau gegen die Erstsichtung. Wuerde es
+     noch herangezogen, stuende hier die umgekehrte Reihenfolge. */
+  const erster = app.sortiereListe(MCU, "recent-asc")[0];
+  assert.equal(erster.title, "Guardians");
+  assert.equal(erster.createdAt, AM(2026, 1, 6), "es ist der ZULETZT angelegte Eintrag");
 });
 
-test("Zeilen mit created_at = 0 sortieren ueber ihr Bewertungsdatum", () => {
-  /* Genau diese Zeilen gibt es in der Datenbank — ensureBewertetAm in
-     api/_db.js laesst sie beim Backfill ausdruecklich aus. */
+test("Ein Eintrag, der nur ein Anlegedatum hat, gilt als datumslos", () => {
+  /* Frueher sprang `createdAt` ein. Jetzt zaehlt allein, was
+     `erstsichtung()` kennt — und die kennt `createdAt` nicht. */
+  const nur = { title: "Nur angelegt", score: 9, createdAt: AM(2026, 1, 1), ratedAt: null };
+  assert.equal(app.erstsichtung(nur).zeit, null);
+});
+
+/* ---------------------------------------------------------------- *
+ * 3. Dieselbe Regel wie ueberall sonst
+ * ---------------------------------------------------------------- */
+
+test("Ohne eigenes Erstsichtungsdatum gilt das Bewertungsdatum", () => {
   const liste = [
-    { title: "A", score: 9, createdAt: 0, ratedAt: AM(2026, 3, 1) },
-    { title: "B", score: 8, createdAt: 0, ratedAt: AM(2024, 3, 1) },
-    { title: "C", score: 7, createdAt: 0, ratedAt: AM(2025, 3, 1) },
+    { title: "A", score: 9, firstWatchedAt: null, ratedAt: AM(2026, 3, 1) },
+    { title: "B", score: 8, firstWatchedAt: null, ratedAt: AM(2024, 3, 1) },
+    { title: "C", score: 7, firstWatchedAt: null, ratedAt: AM(2025, 3, 1) },
   ];
   assert.deepEqual(titel(app.sortiereListe(liste, "recent-asc")), ["B", "C", "A"]);
   assert.deepEqual(titel(app.sortiereListe(liste, "recent-desc")), ["A", "C", "B"]);
 });
 
+test("Ein eigenes Erstsichtungsdatum verdraengt das Bewertungsdatum", () => {
+  /* Der Fall, um den es geht: 2011 gesehen, erst 2026 bewertet. Beim
+     Sortieren zaehlt 2011. */
+  const liste = [
+    { title: "Alt gesehen", score: 9, firstWatchedAt: AM(2011, 7, 20), ratedAt: AM(2026, 3, 1) },
+    { title: "Neu gesehen", score: 8, firstWatchedAt: null, ratedAt: AM(2020, 1, 1) },
+  ];
+  assert.deepEqual(titel(app.sortiereListe(liste, "recent-asc")), ["Alt gesehen", "Neu gesehen"]);
+});
+
+test("Die Sortierung baut keine zweite Datumslogik daneben", () => {
+  /* Es gibt genau eine Stelle, die entscheidet, welches Datum gilt.
+     Der Vergleich muss sie fragen — und darf firstWatchedAt/ratedAt
+     nicht selbst auslesen. */
+  const anfang = QUELLE.indexOf("function sortiereListe(");
+  const ende = QUELLE.indexOf("\n}", QUELLE.indexOf("case \"score-desc\":", anfang));
+  const rumpf = QUELLE.slice(anfang, ende);
+  assert.match(rumpf, /erstsichtung\(a\)\.zeit/);
+  assert.match(rumpf, /erstsichtung\(b\)\.zeit/);
+  assert.ok(!/firstWatchedAt/.test(rumpf), "liest das Feld selbst aus");
+  assert.ok(!/ratedAt/.test(rumpf), "liest das Feld selbst aus");
+  assert.ok(!/createdAt/.test(rumpf), "zieht das Anlegedatum noch heran");
+});
+
 /* ---------------------------------------------------------------- *
- * 4. Eintraege ganz ohne Datum
+ * 4. Gleichstand und fehlendes Datum
  * ---------------------------------------------------------------- */
 
-const GEMISCHT = [
-  { title: "Mit Datum neu", score: 9.5, createdAt: AM(2026, 1, 2), ratedAt: null },
-  { title: "Ohne B", score: 9.4, createdAt: 0, ratedAt: null },
-  { title: "Mit Datum alt", score: 9.3, createdAt: AM(2026, 1, 1), ratedAt: null },
-  { title: "Ohne A", score: 9.2, createdAt: 0, ratedAt: null },
-];
-
-test("Ohne Datum steht in beiden Richtungen am Ende", () => {
-  assert.deepEqual(titel(app.sortiereListe(GEMISCHT, "recent-asc")), [
-    "Mit Datum alt", "Mit Datum neu", "Ohne A", "Ohne B",
-  ]);
-  assert.deepEqual(titel(app.sortiereListe(GEMISCHT, "recent-desc")), [
-    "Mit Datum neu", "Mit Datum alt", "Ohne A", "Ohne B",
-  ]);
+test("Bei gleichem Datum entscheidet der Titel, nicht die Note", () => {
+  /* Sonst bliebe die Liste in der Notenreihenfolge stehen — genau der
+     Fehler, um den es hier ging. */
+  const gleich = [
+    { title: "Zebra", score: 9.5, firstWatchedAt: AM(2026, 1, 1), ratedAt: null },
+    { title: "Alpha", score: 9.4, firstWatchedAt: AM(2026, 1, 1), ratedAt: null },
+  ];
+  assert.deepEqual(titel(app.sortiereListe(gleich, "recent-asc")), ["Alpha", "Zebra"]);
+  assert.deepEqual(titel(app.sortiereListe(gleich, "recent-desc")), ["Alpha", "Zebra"]);
 });
 
-test("Der Block ohne Datum ist alphabetisch geordnet, nicht nach Note", () => {
-  /* Nach Note stuende "Ohne B" (9.4) vor "Ohne A" (9.2). Der Block
-     bekommt eine eigene, erkennbare Ordnung — sonst saehe der Schluss
-     der Liste nach einer Chronologie aus, die es dort nicht gibt. */
-  const ohne = titel(app.sortiereListe(GEMISCHT, "recent-asc")).slice(2);
-  assert.deepEqual(ohne, ["Ohne A", "Ohne B"]);
-});
-
-test("Traegt keiner ein Datum, steht die Liste trotzdem nicht mehr nach Note", () => {
-  /* Der gemeldete Fall in Reinform: alle Daten fehlen. Vorher blieb
-     die Notenreihenfolge stehen; jetzt ordnet der Block alphabetisch. */
-  const keins = MCU.map((f) => ({ ...f, createdAt: 0, ratedAt: null }));
+test("Ohne jedes Datum bleibt die Liste nicht in der Notenreihenfolge stehen", () => {
+  /* Bewertete Eintraege tragen praktisch immer ein Bewertungsdatum.
+     Praktisch, nicht garantiert: ensureBewertetAm() in api/_db.js hat
+     die Zeilen mit created_at = 0 beim Backfill ausgelassen. Fuer die
+     gilt weiter — still, ohne Hinweis in der Anzeige —, dass sie am
+     Ende stehen und dort alphabetisch geordnet sind. */
+  const keins = MCU.map((f) => ({ ...f, firstWatchedAt: null, ratedAt: null }));
   const sortiert = titel(app.sortiereListe(keins, "recent-asc"));
   assert.deepEqual(sortiert, [
     "Civil War", "Endgame", "Guardians", "Infinity War", "The Avengers", "The Winter Soldier",
@@ -189,27 +215,31 @@ test("Traegt keiner ein Datum, steht die Liste trotzdem nicht mehr nach Note", (
   assert.notDeepEqual(sortiert, NACH_NOTE, "die Notenreihenfolge steht immer noch da");
 });
 
-test("Gezaehlt wird, wie viele kein Datum tragen", () => {
-  assert.equal(app.ohneDatumZahl(GEMISCHT), 2);
-  assert.equal(app.ohneDatumZahl(MCU), 0);
-  assert.equal(app.ohneDatumZahl([]), 0);
+test("Ohne Datum steht hinter allem, was eines hat", () => {
+  const gemischt = [
+    { title: "Ohne B", score: 9.5, firstWatchedAt: null, ratedAt: null },
+    { title: "Mit Datum", score: 9.4, firstWatchedAt: null, ratedAt: AM(2026, 1, 1) },
+    { title: "Ohne A", score: 9.3, firstWatchedAt: null, ratedAt: null },
+  ];
+  assert.deepEqual(titel(app.sortiereListe(gemischt, "recent-asc")), ["Mit Datum", "Ohne A", "Ohne B"]);
+  assert.deepEqual(titel(app.sortiereListe(gemischt, "recent-desc")), ["Mit Datum", "Ohne A", "Ohne B"]);
+});
+
+test("Der Hinweis auf Eintraege ohne Datum steht nicht mehr ueber der Liste", () => {
+  assert.ok(!QUELLE.includes("ohne Datum stehen am Ende"), "der Hinweis steht noch da");
+  assert.ok(!QUELLE.includes("ohneDatumZahl"), "die Zaehlfunktion steht noch da");
+  assert.ok(!QUELLE.includes("hinzugefuegtAm"), "die zweite Datumslogik steht noch da");
 });
 
 /* ---------------------------------------------------------------- *
  * 5. Die Beschriftungen
  * ---------------------------------------------------------------- */
 
-test("Die Beschriftungen nennen das Hinzufuegen, nicht ein vages Alter", () => {
+test("Die Beschriftungen nennen das Schauen, nicht das Hinzufuegen", () => {
   const labels = Object.fromEntries(app.SORT_OPTIONS.map((o) => [o.key, o.label]));
-  assert.equal(labels["recent-desc"], "Zuletzt hinzugefügt");
-  assert.equal(labels["recent-asc"], "Zuerst hinzugefügt");
-  /* "Neueste/Älteste zuerst" liess offen, ob das Erscheinungsjahr
-     gemeint ist — genau daran entzuendete sich die Rueckfrage. */
+  assert.equal(labels["recent-desc"], "Zuletzt geschaut");
+  assert.equal(labels["recent-asc"], "Zuerst geschaut");
   for (const o of app.SORT_OPTIONS) {
-    assert.ok(!/Neueste|Älteste/.test(o.label), "mehrdeutige Beschriftung: " + o.label);
+    assert.ok(!/hinzugefügt|Neueste|Älteste/.test(o.label), "veraltete Beschriftung: " + o.label);
   }
-});
-
-test("Nur die beiden Datums-Sortierungen brauchen ein Datum", () => {
-  assert.deepEqual([...app.SORT_NACH_DATUM].sort(), ["recent-asc", "recent-desc"]);
 });
