@@ -185,7 +185,7 @@ test("Die Kaesten um die Abschnitte sind weg — es trennt nur die Linie", () =>
   // Die Linie kommt aus StatsAbschnitt und ist die Listenfarbe.
   const abschnitt = QUELLE.slice(
     QUELLE.indexOf("function StatsAbschnitt"),
-    QUELLE.indexOf("function StatsAbschnitt") + 600
+    QUELLE.indexOf("function RanglistenZeile")
   );
   assert.match(abschnitt, /borderBottom: "1px solid #232326"/);
   assert.match(regel(".stats-abschnitt:last-child"), /border-bottom: none/);

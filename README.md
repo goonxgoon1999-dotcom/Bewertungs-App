@@ -618,7 +618,12 @@ an der sie nebenbei entsteht. Bestehende Einträge bleiben leer.
 
 **In der Detailansicht** steht sie als eigene Karte neben der IMDb-Note,
 mit der Beschriftung `ERSTMALS GESCHAUT` und einem Stiftknopf rechts —
-genau wie bei Jahr, Regie und IMDb-Note. Zwei Zustände:
+genau wie bei Jahr, Regie und IMDb-Note. **Bei Spielen heißt die Karte
+`ERSTMALS GESPIELT`** (`erstsichtungLabel`), in allen übrigen
+Kategorien bleibt es bei „geschaut": Direkt darunter stehen dort
+„Gespielt: 1×" und „Am Spielen", und „geschaut" widersprach dem. Das
+Datumsfeld hinter dem Stiftknopf trägt dieselbe Beschriftung wie die
+Karte, die es aufmacht. Zwei Zustände:
 
 | Zustand | Anzeige |
 |---------|---------|
@@ -1068,6 +1073,14 @@ einzelne Sache. Welcher Abschnitt zuletzt offen war, wird bewusst
 **nicht** gemerkt — weder im `localStorage` noch über das Schließen
 hinweg; jedes erneute Öffnen fängt wieder bei zugeklappt an.
 
+**Offen ist höchstens einer.** Wer einen Abschnitt aufklappt, schließt
+damit den vorigen — dieselbe Regel wie im Statistik-Tab, samt allem, was
+am offenen Zustand hängt (klebende Kopfzeile, senkrechte Linie,
+Akzentfarbe, Zuklappen-Zeile; siehe „Der aufgeklappte Abschnitt").
+Die Akzentfarbe ist hier die der App (`var(--accent)`) und damit die der
+gerade gewählten Kategorie — dieselbe, die „Poster neu suchen" und die
+Export-Knöpfe ohnehin tragen.
+
 **Zugeklappt steht unter dem Titel eine kurze Zusammenfassung** in der
 gedämpften Monospace-Schrift, damit man beim Scrollen sieht, was
 eingestellt ist:
@@ -1144,8 +1157,12 @@ Ausreißer. Die gesehene Zeit nennt die Tage dabei **ohne** die
 angebrochenen Stunden: Neben „5317 Stunden" stand mit „221 Tage 13
 Stunden" dieselbe Einheit ein zweites Mal.
 
-Beim Öffnen des Tabs stehen **Gesamtstatistik** und
-**Top 10** offen, alles Übrige zugeklappt. Welcher Abschnitt offen ist,
+Beim Öffnen des Tabs steht **genau die Gesamtstatistik** offen, alles
+Übrige zugeklappt — sie sagt, was überhaupt da ist. Früher stand die
+**Top 10** daneben ebenfalls offen; seit jeder offene Abschnitt seine
+Kopfzeile oben festhält, stünden zwei davon übereinander. Ein
+gespeicherter Stand von damals wird beim Laden auf den obersten offenen
+Abschnitt zurechtgestutzt (`nurEinerOffen`). Welcher Abschnitt offen ist,
 merkt sich das Gerät im `localStorage`
 (`bewertungsapp.statistikAbschnitte`) — wie die Kategorie-Ansicht auch,
 und mit demselben stillen Rückfall auf die Vorgabe, wenn der Stand fehlt
@@ -1161,6 +1178,55 @@ letzten Abschnitt entfällt sie, dort gibt es nichts mehr zu trennen. Der
 frühere Leerraum von 28 px zwischen den Abschnitten ist damit
 weggefallen — die Grenze ist jetzt sichtbar statt leer, und der Tab
 wird spürbar kürzer.
+
+#### Der aufgeklappte Abschnitt
+
+Zugeklappt sind Statistik und Einstellungen übersichtlich. Offen
+verlor man beim Scrollen den Überblick: Der Inhalt eines Abschnitts
+trennte sich optisch durch nichts von der nächsten Kopfzeile. Fünf
+Regeln hängen deshalb am offenen Zustand — und nur an ihm. Sie gelten
+im **Statistik-Tab und in den Einstellungen gleichermaßen**, weil beide
+dieselbe Kopfzeile benutzen (`StatsAbschnitt`).
+
+**1. Offen ist höchstens einer.** Das Aufklappen schließt den zuvor
+offenen. Danach scrollt die Ansicht so, dass die Kopfzeile des neu
+geöffneten Abschnitts oben steht. Gescrollt wird nur für den Abschnitt,
+der selbst bedient wurde: Schließt sich einer, weil nebenan aufgeklappt
+wurde, bleibt die Ansicht bei dem, der jetzt offen ist.
+
+**2. Eine senkrechte Linie am Inhalt.** Der Inhalt ist um 16 px
+eingerückt (2 px Linie + 14 px Polsterung) und trägt an dieser Kante
+eine durchgehende Linie von 2 px in der Akzentfarbe. Sie beginnt unter
+der Kopfzeile und endet mit dem Abschnitt.
+
+**3. Titel und Pfeil in der Akzentfarbe.** Zugeklappte Abschnitte
+bleiben bei der normalen Textfarbe (`#EDEAE3`) und dem gedämpften Pfeil.
+
+**4. Die Kopfzeile klebt.** Solange der Abschnitt offen ist, bleibt
+seine Kopfzeile beim Scrollen am oberen Rand stehen, bis der Abschnitt
+zu Ende ist (`position: sticky`). Im Statistik-Tab klebt sie **unter**
+der Kategorie-Auswahl, nicht über ihr: Deren Höhe wird gemessen
+(`ResizeObserver`, weil die Knöpfe bei schmalen Fenstern umbrechen) und
+als `top` gesetzt; der `z-index` bleibt mit 4 unter deren 5. In den
+Einstellungen steht nichts darüber, dort ist der Wert 0. Die Kopfzeile
+trägt im klebenden Zustand den Hintergrund der Seite (`#17171A`), sonst
+schiene der Inhalt durch sie hindurch.
+
+**5. Eine Zuklappen-Zeile am Fuß.** „&lt;Abschnittsname&gt; zuklappen",
+mit nach oben zeigendem Pfeil. Sie klappt denselben Abschnitt zu und
+scrollt zurück zu dessen Kopfzeile — nach einem langen Abschnitt wie
+„Ø je Kriterium" ist der Weg dorthin sonst weit. Zurückhaltend
+gestaltet: dünner Rahmen (`#2A2A2E`), gedämpfte Schrift (`#77746c`),
+keine gefüllte Fläche, mindestens 44 px hoch.
+
+**Die Akzentfarbe** kommt aus einem Kontext (`AbschnittStil`), damit die
+Abschnitte in eigenen Bausteinen — Jahresrückblick, Zeit, „Du vs. IMDb",
+Top 10, „Bewertung prüfen" — sie nicht durchreichen müssen, ohne selbst
+etwas damit zu tun zu haben. Im Statistik-Tab folgt sie der
+Kategorie-Auswahl: Genau eine gewählte Kategorie färbt in ihrer Farbe
+(`accentFor`), „Alle" und mehrere bleiben bei dem Gold (`#C9A227`), das
+die Auswahlleiste für „Alle" ohnehin trägt. Neue Farbwerte kommen keine
+dazu.
 
 **Der Abschnitt „Zeit"** trägt beides, was in Stunden zählt: die
 **gesehene Zeit** (Laufzeit mal Sehzähler — was hinter einem liegt) und

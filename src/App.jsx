@@ -2709,6 +2709,14 @@ function zaehlerLabel(category) {
   return category === "game" ? "Gespielt" : "Geschaut";
 }
 
+/* Dieselbe Unterscheidung fuer die Karte "Erstmals ..." in der
+   Detailansicht. Sie stand bisher fest auf "ERSTMALS GESCHAUT" und
+   widersprach damit direkt darunter dem Zaehler ("Gespielt: 1×") und
+   dem Schalter ("Am Spielen"). */
+function erstsichtungLabel(category) {
+  return category === "game" ? "ERSTMALS GESPIELT" : "ERSTMALS GESCHAUT";
+}
+
 function entryWatchCount(entry) {
   const n = entry && entry.watchCount;
   return typeof n === "number" && Number.isFinite(n) ? Math.max(WATCH_COUNT_MIN, Math.round(n)) : WATCH_COUNT_MIN;
@@ -7252,7 +7260,8 @@ function AngabenEditor({ entry, regieLabel, busy, onSave, onCancel }) {
 }
 
 /* ------------------------------------------------------------
-   ERSTMALS GESCHAUT — die Karte in der Detailansicht.
+   ERSTMALS GESCHAUT — die Karte in der Detailansicht. Bei Spielen
+   heisst sie "ERSTMALS GESPIELT" (siehe erstsichtungLabel).
 
    Sie hat zwei Zustaende, und der Unterschied ist der ganze Punkt:
 
@@ -7268,7 +7277,7 @@ function AngabenEditor({ entry, regieLabel, busy, onSave, onCancel }) {
    Aufbau und Masse wie die IMDb-Karte daneben, samt Stiftknopf
    rechts.
    ------------------------------------------------------------ */
-function ErstsichtungKarte({ zeit, eigen, onBearbeiten }) {
+function ErstsichtungKarte({ zeit, eigen, category, onBearbeiten }) {
   return (
     <span
       title={
@@ -7291,7 +7300,7 @@ function ErstsichtungKarte({ zeit, eigen, onBearbeiten }) {
           fontFamily: "'JetBrains Mono', monospace", whiteSpace: "nowrap",
         }}
       >
-        ERSTMALS GESCHAUT
+        {erstsichtungLabel(category)}
       </span>
       {zeit ? (
         <>
@@ -7322,7 +7331,7 @@ function ErstsichtungKarte({ zeit, eigen, onBearbeiten }) {
    Rueckfallwert zurueck — es loescht ausschliesslich dieses eine
    Feld und fasst weder die Bewertung noch das Bewertungsdatum an.
    ------------------------------------------------------------ */
-function ErstsichtungEditor({ zeit, eigen, busy, onSave, onCancel }) {
+function ErstsichtungEditor({ zeit, eigen, category, busy, onSave, onCancel }) {
   const [wert, setWert] = useState(eigen ? datumFeldWert(zeit) : "");
 
   function speichern() {
@@ -7332,7 +7341,8 @@ function ErstsichtungEditor({ zeit, eigen, busy, onSave, onCancel }) {
 
   return (
     <div style={{ background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12, padding: 16, marginBottom: 20 }}>
-      <div style={{ ...angabenLabel, marginBottom: 12 }}>ERSTMALS GESCHAUT</div>
+      {/* Dieselbe Beschriftung wie auf der Karte, die ihn aufmacht. */}
+      <div style={{ ...angabenLabel, marginBottom: 12 }}>{erstsichtungLabel(category)}</div>
 
       <label style={angabenLabel} htmlFor="erstsichtung-datum">DATUM</label>
       <input
@@ -7629,6 +7639,7 @@ function DetailView({ entry, category, singular, busy, anbieter, region, onBack,
           <ErstsichtungKarte
             zeit={ersteSicht.zeit}
             eigen={ersteSicht.eigen}
+            category={category}
             onBearbeiten={() => setErstsichtungOffen(true)}
           />
         </div>
@@ -7637,6 +7648,7 @@ function DetailView({ entry, category, singular, busy, anbieter, region, onBack,
           <ErstsichtungEditor
             zeit={ersteSicht.zeit}
             eigen={ersteSicht.eigen}
+            category={category}
             busy={busy}
             onSave={(wert) => { onSaveErstsichtung(wert); setErstsichtungOffen(false); }}
             onCancel={() => setErstsichtungOffen(false)}
@@ -7941,12 +7953,13 @@ function statsAuswahlUmschalten(auswahl, key) {
    stehen, damit immer dasteht, worauf sich die Zahlen darunter
    beziehen. Der Hintergrund ist der der Seite — sonst schoebe sich
    der Inhalt sichtbar unter den Knoepfen durch. */
-function StatsKategorieAuswahl({ kategorien, auswahl, onUmschalten }) {
+function StatsKategorieAuswahl({ kategorien, auswahl, onUmschalten, messRef }) {
   const bereiche = statsBereiche(kategorien);
   const alle = statsIstAlle(auswahl, kategorien);
 
   return (
     <div
+      ref={messRef}
       style={{
         position: "sticky", top: 0, zIndex: 5,
         background: "#17171A", borderBottom: "1px solid #232326",
@@ -7995,20 +8008,44 @@ function StatsKategorieAuswahl({ kategorien, auswahl, onUmschalten }) {
    ============================================================ */
 const STATISTIK_ABSCHNITTE_SCHLUESSEL = "bewertungsapp.statistikAbschnitte";
 
-/* Beim Oeffnen des Tabs stehen Gesamtstatistik und Top 10 offen —
-   die eine sagt, was da ist, die andere, was oben steht. Alles
-   Weitere ist zum Nachsehen da und wartet zugeklappt. */
+/* Beim Oeffnen des Tabs steht die Gesamtstatistik offen — sie sagt,
+   was ueberhaupt da ist. Alles Weitere ist zum Nachsehen da und
+   wartet zugeklappt.
+
+   Zwei offene Abschnitte gibt es nicht mehr: Offen ist immer
+   hoechstens einer, siehe nurEinerOffen. Frueher stand die Top 10
+   daneben ebenfalls offen; sobald aber jeder offene Abschnitt seine
+   Kopfzeile oben festhaelt, stuenden zwei davon uebereinander. */
 const STATISTIK_ABSCHNITTE_VORGABE = {
   gesamt: true,
   jahr: false,
   zeit: false,
   detail: false,
   imdb: false,
-  top10: true,
+  top10: false,
   pruefen: false,
   verteilung: false,
   kriterien: false,
 };
+
+/**
+ * Einen Stand auf hoechstens einen offenen Abschnitt zurechtstutzen.
+ *
+ * Gebraucht wird das fuer Staende von frueher: Damals durften
+ * Gesamtstatistik und Top 10 zugleich offen stehen. Es gewinnt der
+ * erste offene in der Reihenfolge der Vorgabe — also der, der im Tab
+ * am weitesten oben sitzt.
+ */
+function nurEinerOffen(stand) {
+  const rein = {};
+  let schon = false;
+  for (const key of Object.keys(STATISTIK_ABSCHNITTE_VORGABE)) {
+    const offen = !schon && !!(stand && stand[key]);
+    if (offen) schon = true;
+    rein[key] = offen;
+  }
+  return rein;
+}
 
 function normalisiereStatistikAbschnitte(roh) {
   const rein = { ...STATISTIK_ABSCHNITTE_VORGABE };
@@ -8017,7 +8054,7 @@ function normalisiereStatistikAbschnitte(roh) {
       if (typeof roh[key] === "boolean") rein[key] = roh[key];
     }
   }
-  return rein;
+  return nurEinerOffen(rein);
 }
 
 function ladeStatistikAbschnitte() {
@@ -8038,6 +8075,45 @@ function speichereStatistikAbschnitte(stand) {
     );
   } catch (e) {
     // Ohne localStorage gilt die Einstellung nur fuer diesen Besuch.
+  }
+}
+
+/* Akzentfarbe und Klebehoehe der Abschnitte.
+
+   Beides haengt an der Seite und nicht am einzelnen Abschnitt: Der
+   Statistik-Tab faerbt nach seiner Kategorie-Auswahl und muss mit
+   seinen Kopfzeilen unter deren klebender Leiste bleiben, die
+   Einstellungen nehmen die Akzentfarbe der App und kleben am oberen
+   Rand. Ueber einen Kontext, weil die Abschnitte teils in eigenen
+   Bausteinen stecken (Jahresrueckblick, Zeit, Du vs. IMDb, Top 10,
+   Bewertung pruefen) — die muessten die Werte sonst allesamt
+   durchreichen, ohne selbst etwas damit zu tun zu haben.
+
+   Die Vorgabe ist der Fall der Einstellungen: die Akzentfarbe der
+   App und nichts, was darueber klebt. */
+const ABSCHNITT_AKZENT_VORGABE = "var(--accent, #C9A227)";
+const AbschnittStil = createContext({ akzent: ABSCHNITT_AKZENT_VORGABE, klebtBei: 0 });
+
+/* Auf dem Server gibt es kein Layout zu messen. useEffect verhaelt
+   sich dort genauso (er laeuft ebenfalls nicht) — nur warnt React
+   nicht darueber. */
+const useLayoutEffectSicher = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+/**
+ * Eine Stelle nach oben holen, ohne sie unter die klebende Leiste zu
+ * schieben. `abstand` ist deren Hoehe.
+ */
+function scrolleZuAbschnitt(el, abstand) {
+  if (!el || typeof window === "undefined" || typeof window.scrollTo !== "function") return;
+  const oben = el.getBoundingClientRect().top + (window.scrollY || 0) - (abstand || 0);
+  const ruhig =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  try {
+    window.scrollTo({ top: Math.max(0, oben), behavior: ruhig ? "auto" : "smooth" });
+  } catch (e) {
+    // Aeltere Browser kennen nur die zwei Zahlen.
+    window.scrollTo(0, Math.max(0, oben));
   }
 }
 
@@ -8062,14 +8138,61 @@ function IconPfeilAuf({ offen }) {
 }
 
 /**
+ * Die Zeile am Fuss eines offenen Abschnitts.
+ *
+ * Sie klappt denselben Abschnitt wieder zu und holt dessen Kopfzeile
+ * zurueck nach oben. Nach einem langen Abschnitt — "Ø je Kriterium"
+ * etwa — ist der Weg dorthin sonst weit, und der einzige andere Weg
+ * zurueck fuehrt ueber die klebende Kopfzeile.
+ *
+ * Zurueckhaltend gestaltet: duenner Rahmen, gedaempfte Schrift, keine
+ * gefuellte Flaeche — sie beendet den Abschnitt, sie ist nicht sein
+ * Hauptknopf. 44px Antippflaeche wie die Kopfzeile darueber.
+ */
+function ZuklappenZeile({ titel, onZuklappen }) {
+  return (
+    <button
+      onClick={onZuklappen}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        width: "100%", minHeight: 44, marginTop: 18, padding: "10px 12px",
+        boxSizing: "border-box",
+        background: "transparent", border: "1px solid #2A2A2E", borderRadius: 8,
+        color: "#77746c", fontFamily: "inherit", fontSize: 13, cursor: "pointer",
+      }}
+    >
+      <IconPfeilAuf offen />
+      <span>{titel} zuklappen</span>
+    </button>
+  );
+}
+
+/**
  * Ein einklappbarer Abschnitt — im Statistik-Tab wie im Daten-Panel.
  *
  * Beide Seiten sind lang, beide werden auf dieselbe Weise
  * durchsucht; deshalb tragen sie dieselbe Kopfzeile, dieselbe
  * Ueberschrift und dieselbe Trennlinie. Was sie unterscheidet, steht
  * nicht hier, sondern bei den Aufrufern: der Statistik-Tab merkt sich
- * den Auf- und Zuklapp-Stand und laesst zwei Abschnitte offen, das
- * Panel startet jedes Mal komplett zugeklappt.
+ * den Auf- und Zuklapp-Stand und startet mit der Gesamtstatistik, das
+ * Panel startet jedes Mal komplett zugeklappt. Offen ist auf beiden
+ * Seiten hoechstens ein Abschnitt.
+ *
+ * Offen unterscheidet sich ein Abschnitt in vier Punkten von einem
+ * zugeklappten, und alle vier haben denselben Grund: Sobald der
+ * Inhalt laenger ist als das Fenster, verliert man beim Scrollen
+ * sonst, wozu er gehoert.
+ *
+ *   - Die Kopfzeile klebt am oberen Rand, bis der Abschnitt zu Ende
+ *     ist. `klebtBei` haelt sie unter der Kategorie-Auswahl des
+ *     Statistik-Tabs, die ihrerseits klebt; in den Einstellungen
+ *     steht dort nichts und der Wert ist 0. Der Hintergrund der Seite
+ *     liegt dabei unter ihr, sonst schiene der Inhalt durch.
+ *   - Titel und Pfeil stehen in der Akzentfarbe.
+ *   - Der Inhalt ist eingerueckt und traegt an dieser Kante eine
+ *     durchgehende Linie in derselben Farbe, von der Kopfzeile bis
+ *     zum Ende des Abschnitts.
+ *   - Am Fuss steht die Zuklappen-Zeile.
  *
  * `gross` unterscheidet die beiden Ueberschriftgroessen, die der
  * Statistik-Tab schon vorher hatte (20px und 17px) — daran aendert
@@ -8092,18 +8215,49 @@ function IconPfeilAuf({ offen }) {
  * auch dann, wenn die Schrift einmal kleiner ausfaellt).
  */
 function StatsAbschnitt({ titel, gross = false, zusammenfassung, offen, onUmschalten, children }) {
+  const { akzent, klebtBei } = useContext(AbschnittStil);
+
+  /* Der Rahmen des Abschnitts ist das Ziel beim Scrollen: Seine
+     Oberkante ist die natuerliche Lage der Kopfzeile — auch dann,
+     wenn diese gerade oben klebt und deshalb woanders steht. */
+  const rahmen = useRef(null);
+  /* Gescrollt wird nur, wenn dieser Abschnitt selbst bedient wurde.
+     Schliesst er sich, weil nebenan einer aufgeklappt wurde, bleibt
+     die Ansicht bei dem, der jetzt offen ist. */
+  const eigenerGriff = useRef(false);
+  const warOffen = useRef(offen);
+
+  useLayoutEffectSicher(() => {
+    if (warOffen.current === offen) return;
+    warOffen.current = offen;
+    if (!eigenerGriff.current) return;
+    eigenerGriff.current = false;
+    scrolleZuAbschnitt(rahmen.current, klebtBei);
+  }, [offen, klebtBei]);
+
+  function umschalten() {
+    eigenerGriff.current = true;
+    onUmschalten();
+  }
+
   return (
-    <div className="stats-abschnitt" style={{ borderBottom: "1px solid #232326" }}>
+    <div ref={rahmen} className="stats-abschnitt" style={{ borderBottom: "1px solid #232326" }}>
       <button
-        onClick={onUmschalten}
+        onClick={umschalten}
         aria-expanded={offen}
         style={{
           display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
           width: "100%", textAlign: "left", padding: "12px 0", minHeight: 44,
           boxSizing: "border-box",
-          background: "transparent", border: "none", color: "#EDEAE3",
+          background: offen ? "#17171A" : "transparent",
+          border: "none", color: offen ? akzent : "#EDEAE3",
           cursor: "pointer", fontFamily: "inherit",
           marginBottom: offen ? 10 : 0,
+          /* Solange der Abschnitt offen ist, laeuft sein Inhalt unter
+             der Kopfzeile durch statt sie mitzunehmen. Der zIndex
+             bleibt unter dem der Kategorie-Auswahl (5) — die steht
+             oben, diese Zeile darunter. */
+          ...(offen ? { position: "sticky", top: klebtBei, zIndex: 4 } : null),
         }}
       >
         <span style={{ minWidth: 0 }}>
@@ -8130,13 +8284,29 @@ function StatsAbschnitt({ titel, gross = false, zusammenfassung, offen, onUmscha
             </span>
           )}
         </span>
-        <span style={{ display: "flex", color: "#77746c" }}>
+        <span style={{ display: "flex", color: offen ? akzent : "#77746c" }}>
           <IconPfeilAuf offen={offen} />
         </span>
       </button>
       {/* Aufgeklappt braucht der Inhalt Abstand zur Trennlinie darunter
-          — sonst klebte die letzte Zeile daran. */}
-      {offen && <div style={{ paddingBottom: 16 }}>{children}</div>}
+          — sonst klebte die letzte Zeile daran.
+
+          Die senkrechte Linie an der linken Kante bindet ihn an seine
+          Kopfzeile: Sie beginnt unter ihr und endet mit dem
+          Abschnitt. Ohne sie ging der Inhalt beim Scrollen optisch in
+          die naechste Kopfzeile ueber. */}
+      {offen && (
+        <div
+          style={{
+            paddingBottom: 16,
+            borderLeft: "2px solid " + akzent,
+            paddingLeft: 14,
+          }}
+        >
+          {children}
+          <ZuklappenZeile titel={titel} onZuklappen={umschalten} />
+        </div>
+      )}
     </div>
   );
 }
@@ -9096,16 +9266,37 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
   const istAlle = statsIstAlle(auswahl, kategorien);
 
   /* Welche Abschnitte offen sind — je Geraet gemerkt, wie die
-     Kategorie-Ansicht auch. */
+     Kategorie-Ansicht auch. Offen ist hoechstens einer: Wer einen
+     aufklappt, schliesst damit den vorigen. */
   const [abschnitte, setAbschnitte] = useState(ladeStatistikAbschnitte);
   function umschalten(key) {
     setAbschnitte((alt) => {
-      const neu = { ...alt, [key]: !alt[key] };
+      const neu = nurEinerOffen(alt[key] ? {} : { [key]: true });
       speichereStatistikAbschnitte(neu);
       return neu;
     });
   }
   const klapper = (key) => ({ offen: !!abschnitte[key], onUmschalten: () => umschalten(key) });
+
+  /* Die Kopfzeile eines offenen Abschnitts klebt unter der
+     Auswahlleiste, nicht unter ihr hindurch. Deren Hoehe steht nicht
+     fest — bei schmalen Fenstern brechen die Knoepfe um —, also wird
+     sie gemessen statt geraten. */
+  const auswahlRef = useRef(null);
+  const [auswahlHoehe, setAuswahlHoehe] = useState(0);
+  useLayoutEffectSicher(() => {
+    const el = auswahlRef.current;
+    if (!el) return undefined;
+    const messen = () => setAuswahlHoehe(el.getBoundingClientRect().height);
+    messen();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", messen);
+      return () => window.removeEventListener("resize", messen);
+    }
+    const beobachter = new ResizeObserver(messen);
+    beobachter.observe(el);
+    return () => beobachter.disconnect();
+  }, []);
 
   /* Die Liste, ueber die alles rechnet, was der Auswahl folgt. */
   const scopedList = useMemo(
@@ -9166,13 +9357,25 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
     null
   );
 
+  /* Die Akzentfarbe der offenen Abschnitte folgt der Auswahl oben:
+     Genau eine Kategorie faerbt in ihrer Farbe, "Alle" und mehrere
+     bleiben bei dem Gold, das die Auswahlleiste ohnehin fuer "Alle"
+     traegt. Neue Farbwerte kommen dabei keine dazu. */
+  const akzent = !istAlle && aktive.length === 1 ? accentFor(aktive[0].key) : "#C9A227";
+  const abschnittStil = useMemo(
+    () => ({ akzent, klebtBei: auswahlHoehe }),
+    [akzent, auswahlHoehe]
+  );
+
   return (
+    <AbschnittStil.Provider value={abschnittStil}>
     <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 20px 50px" }}>
       {/* Die eine Auswahl fuer alles, was darunter steht. */}
       <StatsKategorieAuswahl
         kategorien={kategorien}
         auswahl={auswahl}
         onUmschalten={(key) => setAuswahl((alt) => statsAuswahlUmschalten(alt, key))}
+        messRef={auswahlRef}
       />
 
       <StatsAbschnitt
@@ -9307,6 +9510,7 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
         </>
       )}
     </div>
+    </AbschnittStil.Provider>
   );
 }
 
@@ -12052,11 +12256,15 @@ export default function App() {
      Anders als im Statistik-Tab wird hier nichts gemerkt und nichts
      vorgegeben: Beim Oeffnen ist alles zu, weil man in den
      Einstellungen gezielt eine einzelne Sache sucht. Das leere Objekt
-     ist genau dieser Zustand. */
+     ist genau dieser Zustand.
+
+     Offen ist hoechstens ein Abschnitt — wie im Statistik-Tab:
+     Aufklappen schliesst den vorigen, das Objekt traegt also nie mehr
+     als einen Schluessel. */
   const [panelAbschnitte, setPanelAbschnitte] = useState({});
   const panelKlapper = (key) => ({
     offen: !!panelAbschnitte[key],
-    onUmschalten: () => setPanelAbschnitte((stand) => ({ ...stand, [key]: !stand[key] })),
+    onUmschalten: () => setPanelAbschnitte((stand) => (stand[key] ? {} : { [key]: true })),
   });
   const [showFilter, setShowFilter] = useState(false);
   const [exportFormat, setExportFormat] = useState("json");

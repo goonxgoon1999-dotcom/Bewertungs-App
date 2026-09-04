@@ -44,6 +44,7 @@ const GEPRUEFT = [
   "datumKurz",
   "datumFeldWert",
   "feldWertZuZeit",
+  "erstsichtungLabel",
   "ErstsichtungKarte",
   "ErstsichtungEditor",
 ];
@@ -130,6 +131,42 @@ test("Die Karte traegt die Ueberschrift in der Monospace-Beschriftung", () => {
   const html = karte({ zeit: am(2011, 7, 20), eigen: true });
   assert.match(html, /ERSTMALS GESCHAUT/);
   assert.match(html, /JetBrains Mono/);
+});
+
+test("Bei Spielen heisst die Karte ERSTMALS GESPIELT", () => {
+  /* Direkt darunter stehen in der Detailansicht "Gespielt: 1x" und
+     "Am Spielen" — "geschaut" widersprach dem. */
+  const spiel = karte({ zeit: am(2011, 7, 20), eigen: true, category: "game" });
+  assert.match(spiel, /ERSTMALS GESPIELT/);
+  assert.ok(!spiel.includes("ERSTMALS GESCHAUT"));
+
+  // In allen uebrigen Kategorien bleibt es beim bisherigen Wort.
+  for (const category of ["movie", "series", "anime", "kids", "adultanim", "doku", "comedy"]) {
+    const html = karte({ zeit: am(2011, 7, 20), eigen: true, category });
+    assert.match(html, /ERSTMALS GESCHAUT/, category + " sollte weiter geschaut heissen");
+  }
+
+  // Und die Funktion dahinter sagt dasselbe.
+  assert.equal(app.erstsichtungLabel("game"), "ERSTMALS GESPIELT");
+  assert.equal(app.erstsichtungLabel("movie"), "ERSTMALS GESCHAUT");
+  assert.equal(app.erstsichtungLabel(undefined), "ERSTMALS GESCHAUT");
+});
+
+test("Der Editor traegt dieselbe Beschriftung wie seine Karte", () => {
+  const editor = (category) =>
+    renderToStaticMarkup(
+      createElement(app.ErstsichtungEditor, {
+        zeit: am(2011, 7, 20), eigen: true, category, busy: false, onSave() {}, onCancel() {},
+      })
+    );
+  assert.match(editor("game"), /ERSTMALS GESPIELT/);
+  assert.match(editor("series"), /ERSTMALS GESCHAUT/);
+});
+
+test("Die Detailansicht reicht ihre Kategorie an beides durch", async () => {
+  const quelle = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  assert.match(quelle, /<ErstsichtungKarte[\s\S]{0,200}category=\{category\}/);
+  assert.match(quelle, /<ErstsichtungEditor[\s\S]{0,200}category=\{category\}/);
 });
 
 test("Mit eigenem Datum: normale Textfarbe, kein Zusatz", () => {
