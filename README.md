@@ -642,9 +642,13 @@ Schleife im Frontend schickt es bewusst gar nicht erst mit.
 Der **Rückfallwert ist `ratedAt` und nicht `createdAt`**: Letzteres wird
 auch beim Vormerken gesetzt und stünde bei einem Titel, der zwei Jahre
 auf der Watchlist lag, um zwei Jahre zu früh. Auch nicht `bewertetAm()`
-(das den Jahresrückblick trägt) — dort zählt die zuletzt nachgetragene
-Staffel mit, das Datum wanderte also mit jeder weiteren Staffel nach
-vorn.
+(das die CSV-Spalte „bewertet am" trägt) — dort zählt die zuletzt
+nachgetragene Staffel mit, das Datum wanderte also mit jeder weiteren
+Staffel nach vorn.
+
+Auf derselben Rechnung steht der **Jahresrückblick**: Er zählt nach dem
+Jahr der Erstsichtung, mit genau diesem Rückfall. Näheres unten im
+Statistik-Tab.
 
 Export und Backup nehmen das Feld als `firstWatchedAt` mit; ältere
 Sicherungen ohne das Feld lassen sich unverändert einspielen.
@@ -1090,6 +1094,42 @@ den **Zeitaufwand der Watchlist** (was noch vor einem liegt). Gerechnet
 wird an beiden Stellen unverändert; Spiele haben keine abrufbare
 Laufzeit und bleiben außen vor, Einträge ohne bekannte Laufzeit werden
 als Zahl genannt statt geschätzt.
+
+### Jahresrückblick
+
+**Gezählt wird nach der Erstsichtung**, nicht nach der Bewertung. Ein
+Eintrag gehört in das Jahr, in dem er zum **ersten Mal gesehen** wurde.
+Wer einen Film 2011 gesehen und erst 2026 hier eingetragen hat, hat 2011
+einen Film gesehen — 2026 hat er ihn nur bewertet.
+
+Dahinter steht dieselbe `erstsichtung()` wie in der Detailansicht, mit
+demselben Rückfall: **Ohne eigenes Erstsichtungsdatum gilt das
+Bewertungsdatum** (`ratedAt`). Ausdrücklich nicht `bewertetAm()` — dort
+zählt bei Serien die zuletzt nachgetragene Staffel mit, das Jahr wanderte
+also mit jeder weiteren Staffel nach vorn. Hier zählt der erste Kontakt,
+und der verschiebt sich nicht mehr. Trägt ein Eintrag weder das eine noch
+das andere Datum — Altbestand aus der Zeit vor `rated_at` —, steht er in
+keinem Jahr; wie viele das sind, sagt die Fußzeile des Abschnitts.
+
+**Die Jahresknöpfe sind nicht vorgegeben**, sondern werden aus den
+Jahren gebildet, die tatsächlich vorkommen: Stehen Einträge aus 2019,
+2023 und 2026 da, gibt es genau drei Knöpfe, absteigend sortiert. Beim
+Öffnen ist das **neueste** vorkommende Jahr gewählt — nicht das laufende;
+wer zuletzt 2019 etwas gesehen hat, sähe sonst einen leeren Rückblick.
+Alle Kennzahlen und Zeilen darunter beziehen sich ausschließlich auf das
+gewählte Jahr, und zugeklappt steht dieses Jahr in der Kopfzeile.
+
+Der Abschnitt zählt über **alle sichtbaren Kategorien** und folgt der
+Kategorie-Auswahl oben bewusst nicht — ein Jahr ist ein Jahr. Die Zeilen:
+**Meiste Einträge** (die stärkste Kategorie), **Häufigstes Genre**,
+**Bester Titel** samt Note und **Gesehene Zeit**. Letztere zählt jede
+Laufzeit genau einmal, ohne den Sehzähler — sie beantwortet „was ist in
+diesem Jahr dazugekommen?", während die gesehene Zeit im Abschnitt
+„Zeit" mit dem Zähler rechnet und „wie viel Zeit steckt insgesamt darin?"
+beantwortet. Der Wert **bricht um, statt abgeschnitten zu werden**: Auf
+schmalen Geräten stand dort sonst „3944 Stunden · 164 Tage…", und
+ausgerechnet die Tage, wegen derer die zweite Hälfte überhaupt dasteht,
+fielen weg.
 
 ---
 
