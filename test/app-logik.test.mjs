@@ -30,7 +30,7 @@ const GEPRUEFT = [
   "laengenPunkt",
   "tonPunkt",
   "bewertetAm",
-  "jahrDerBewertung",
+  "jahrDerErstsichtung",
   "trefferSchluessel",
   "findeDuplikat",
   "erfassteStaffeln",
@@ -151,18 +151,37 @@ test("Ohne gesetzte Stimmung aendert sich am Filter nichts", () => {
 });
 
 /* ---------------------------------------------------------------- *
- * Jahresrueckblick — das Bewertungsdatum
+ * Jahresrueckblick — das Erstsichtungsdatum
+ *
+ * Der Rueckblick zaehlt nach dem Jahr der Erstsichtung, nicht nach dem
+ * der Bewertung. `bewertetAm` bleibt daneben bestehen: Es traegt die
+ * Spalte "bewertet am" im CSV-Export.
  * ---------------------------------------------------------------- */
 
 const AM = (jahr, monat, tag) => new Date(Date.UTC(jahr, monat - 1, tag, 12)).getTime();
 
-test("Das Bewertungsdatum kommt aus ratedAt, nicht aus createdAt", () => {
-  const eintrag = { ratedAt: AM(2026, 3, 1), createdAt: AM(2024, 1, 1), updatedAt: AM(2026, 8, 1) };
-  assert.equal(app.jahrDerBewertung(eintrag), 2026);
+test("Das Jahr kommt aus dem eigenen Erstsichtungsdatum", () => {
+  /* Der Fall, um den es geht: 2011 gesehen, erst 2026 eingetragen. Der
+     Titel gehoert ins Jahr 2011. */
+  const eintrag = {
+    firstWatchedAt: AM(2011, 7, 20),
+    ratedAt: AM(2026, 3, 1),
+    createdAt: AM(2026, 3, 1),
+  };
+  assert.equal(app.jahrDerErstsichtung(eintrag), 2011);
 });
 
-test("Bei Staffeln zaehlt die zuletzt nachgetragene", () => {
+test("Ohne eigenes Datum faellt das Jahr auf die Bewertung zurueck", () => {
+  const eintrag = { firstWatchedAt: null, ratedAt: AM(2026, 3, 1), createdAt: AM(2024, 1, 1) };
+  assert.equal(app.jahrDerErstsichtung(eintrag), 2026);
+});
+
+test("Eine nachgetragene Staffel verschiebt das Jahr nicht", () => {
+  /* `bewertetAm` zieht die zuletzt nachgetragene Staffel heran — der
+     Rueckblick tut das ausdruecklich nicht mehr: Der erste Kontakt mit
+     einer Serie bleibt, wo er war. */
   const eintrag = {
+    firstWatchedAt: null,
     ratedAt: AM(2024, 5, 1),
     seasons: [
       { createdAt: AM(2024, 5, 1) },
@@ -170,14 +189,20 @@ test("Bei Staffeln zaehlt die zuletzt nachgetragene", () => {
       { createdAt: AM(2026, 2, 1) },
     ],
   };
-  assert.equal(app.jahrDerBewertung(eintrag), 2026);
+  assert.equal(app.bewertetAm(eintrag), AM(2026, 2, 1), "der CSV-Export zaehlt weiter so");
+  assert.equal(app.jahrDerErstsichtung(eintrag), 2024);
+});
+
+test("Das Anlegedatum springt nicht ein", () => {
+  // Ein Titel, der zwei Jahre auf der Watchlist lag, stuende sonst zu frueh.
+  assert.equal(app.jahrDerErstsichtung({ ratedAt: null, createdAt: AM(2024, 1, 1) }), null);
 });
 
 test("Ohne Datum gibt es kein Jahr", () => {
   assert.equal(app.bewertetAm({ createdAt: AM(2024, 1, 1) }), null);
-  assert.equal(app.jahrDerBewertung({ ratedAt: null, seasons: [] }), null);
+  assert.equal(app.jahrDerErstsichtung({ ratedAt: null, seasons: [] }), null);
   // Der Altbestand steht auf 0 und darf nicht als 1970 durchgehen.
-  assert.equal(app.jahrDerBewertung({ ratedAt: 0, createdAt: 0 }), null);
+  assert.equal(app.jahrDerErstsichtung({ ratedAt: 0, createdAt: 0, firstWatchedAt: 0 }), null);
 });
 
 /* ---------------------------------------------------------------- *

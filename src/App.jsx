@@ -8638,22 +8638,27 @@ function ZeitUeberschrift({ children }) {
 /* ============================================================
    JAHRESRÜCKBLICK
 
-   Was ist in einem Jahr zusammengekommen? Gezaehlt wird nach dem Tag,
-   an dem aus einem Eintrag ein bewerteter wurde — nicht nach dem Tag,
-   an dem er angelegt oder zuletzt angefasst wurde.
+   Was ist in einem Jahr zusammengekommen? Gezaehlt wird nach der
+   ERSTSICHTUNG — nach dem Tag also, an dem der Titel zum ersten Mal
+   gesehen wurde, nicht nach dem Tag der Bewertung. Wer einen Film 2011
+   gesehen und erst 2026 hier eingetragen hat, hat 2011 einen Film
+   gesehen; ihn dem Jahr 2026 zuzuschlagen waere schlicht falsch.
 
-   Das Datum steht seit dieser Erweiterung in einer eigenen Spalte
-   (`ratedAt`, siehe api/_db.js). Es wird genau einmal gesetzt und
-   danach nie wieder verschoben; das automatische Nachladen von Poster,
-   Genres und Laufzeit laesst es unberuehrt.
+   Dahinter steht dieselbe `erstsichtung()` wie in der Detailansicht,
+   mit demselben Rueckfall: Ohne eigenes Erstsichtungsdatum gilt das
+   Bewertungsdatum (`ratedAt`). Bewusst nicht `bewertetAm()`: Dort
+   zaehlt bei Serien die zuletzt nachgetragene Staffel mit, das Jahr
+   wanderte also mit jeder weiteren Staffel nach vorn — hier zaehlt der
+   erste Kontakt, und der verschiebt sich nicht mehr.
 
-   Bei Serien mit einzeln bewerteten Staffeln zaehlt die zuletzt
-   nachgetragene Staffel: Wer 2024 die ersten drei Staffeln bewertet
-   und 2026 die vierte nachtraegt, hat die Serie 2026 zuletzt bewertet.
+   Die Jahresknoepfe stehen nicht fest, sondern werden aus den Jahren
+   gebildet, die tatsaechlich vorkommen — absteigend, das neueste zuerst
+   und beim Oeffnen gewaehlt. Alle Kennzahlen und Listen darunter
+   beziehen sich ausschliesslich auf das gewaehlte Jahr.
 
-   Eintraege ohne Datum — der Altbestand aus der Zeit vor dieser Spalte
-   — bleiben aussen vor und werden am Fuss des Abschnitts als Zahl
-   genannt. Sie einem Jahr zuzuschlagen hiesse, es zu erfinden.
+   Eintraege ohne Datum — der Altbestand aus der Zeit vor der Spalte
+   `ratedAt` — bleiben aussen vor und werden am Fuss des Abschnitts als
+   Zahl genannt. Sie einem Jahr zuzuschlagen hiesse, es zu erfinden.
    ============================================================ */
 
 /** Wann wurde zuletzt bewertet? Zeitstempel oder null. */
@@ -8665,14 +8670,20 @@ function bewertetAm(entry) {
   return zeit > 0 ? zeit : null;
 }
 
-function jahrDerBewertung(entry) {
-  const zeit = bewertetAm(entry);
+/** Das Jahr der Erstsichtung — die Achse des Rueckblicks. */
+function jahrDerErstsichtung(entry) {
+  const zeit = erstsichtung(entry).zeit;
   return zeit ? new Date(zeit).getFullYear() : null;
 }
 
 function Jahresrueckblick({ ranked, offen, onUmschalten }) {
   const kategorien = useKategorien();
-  const [gewaehlt, setGewaehlt] = useState(() => new Date().getFullYear());
+
+  /* Nichts gewaehlt heisst "das neueste Jahr" — welches das ist, steht
+     erst fest, wenn die Daten da sind. Ein fest vorgegebenes laufendes
+     Jahr waere hier falsch: Wer zuletzt 2023 etwas gesehen hat, soll
+     2023 sehen und nicht ein leeres 2026. */
+  const [gewaehlt, setGewaehlt] = useState(null);
 
   const daten = useMemo(() => {
     const nachJahr = new Map();
@@ -8680,7 +8691,7 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
 
     for (const cat of kategorien) {
       for (const eintrag of ranked[cat.key] || []) {
-        const jahr = jahrDerBewertung(eintrag);
+        const jahr = jahrDerErstsichtung(eintrag);
         if (!jahr) {
           ohneDatum++;
           continue;
@@ -8697,8 +8708,10 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
     };
   }, [ranked, kategorien]);
 
-  /* Das laufende Jahr, solange darin etwas steht — sonst das neueste
-     Jahr, zu dem es ueberhaupt etwas zu zeigen gibt. */
+  /* Das gewaehlte Jahr, solange darin etwas steht — sonst das neueste
+     Jahr, zu dem es ueberhaupt etwas zu zeigen gibt. Das faengt beide
+     Faelle ab: den ersten Aufschlag ohne Wahl und ein Jahr, das durch
+     ein nachgetragenes Erstsichtungsdatum leer geworden ist. */
   const jahr = daten.nachJahr.has(gewaehlt) ? gewaehlt : daten.jahre[0] ?? null;
 
   const rueckblick = useMemo(() => {
@@ -8756,8 +8769,9 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
       <StatsAbschnitt titel="Jahresrückblick" gross offen={offen} onUmschalten={onUmschalten}>
         <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.6 }}>
           Noch nichts zu zeigen. Sobald du etwas bewertest, sammelt sich
-          hier das Jahr — der Bestand aus der Zeit davor trägt kein
-          Bewertungsdatum und bleibt deshalb außen vor.
+          hier das Jahr der Erstsichtung — der Bestand aus der Zeit davor
+          trägt weder Erstsichtungs- noch Bewertungsdatum und bleibt
+          deshalb außen vor.
         </div>
       </StatsAbschnitt>
     );
@@ -8772,7 +8786,9 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
       zusammenfassung={jahr === null ? null : String(jahr)}
     >
       {/* Jahresauswahl — eigene Knoepfe, sie waehlen ja kein Jahr aus
-          Kategorien, sondern aus Jahren. */}
+          Kategorien, sondern aus Jahren. Die Reihe kommt aus den
+          tatsaechlich vorkommenden Jahren: Stehen Eintraege aus 2019,
+          2023 und 2026 da, gibt es genau diese drei Knoepfe. */}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
         {daten.jahre.map((j) => (
           <ZeitaufwandBereich
@@ -8804,7 +8820,7 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
             }}
           >
             <RueckblickZeile
-              label="Meiste Bewertungen"
+              label="Meiste Einträge"
               wert={
                 rueckblick.staerksteKategorie
                   ? rueckblick.staerksteKategorie.label +
@@ -8822,7 +8838,7 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
               }
             />
             <RueckblickZeile
-              label="Bester Neuzugang"
+              label="Bester Titel"
               wert={rueckblick.bester ? rueckblick.bester.title : "—"}
               zusatz={
                 rueckblick.bester && typeof rueckblick.bester.score === "number"
@@ -8848,12 +8864,12 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
           </div>
 
           <div style={{ fontSize: 11, color: "#77746c", lineHeight: 1.6 }}>
-            Gezählt wird nach dem Datum der Bewertung; bei Serien nach der
-            zuletzt nachgetragenen Staffel. Spiele haben keine abrufbare
+            Gezählt wird nach dem Datum der Erstsichtung; ohne eigenes
+            Datum gilt das Bewertungsdatum. Spiele haben keine abrufbare
             Laufzeit und gehen in die gesehene Zeit nicht ein.
             {rueckblick.ohneLaufzeit > 0 && " " + ohneLaufzeitHinweis(rueckblick.ohneLaufzeit)}
             {daten.ohneDatum > 0 &&
-              " " + daten.ohneDatum + " ältere Einträge tragen kein Bewertungsdatum und stehen in keinem Jahr."}
+              " " + daten.ohneDatum + " ältere Einträge tragen kein Datum und stehen in keinem Jahr."}
           </div>
         </>
       )}
@@ -8862,7 +8878,14 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
 }
 
 /* Eine Zeile im Rueckblick: Beschriftung links, Wert rechts — dieselbe
-   Aufteilung wie in der Detailansicht eines Eintrags. */
+   Aufteilung wie in der Detailansicht eines Eintrags.
+
+   Der Wert bricht um, statt abgeschnitten zu werden. "Gesehene Zeit"
+   wurde auf schmalen Geraeten sonst zu "3944 Stunden · 164 Tage…"
+   gekuerzt — und ausgerechnet die Tage, wegen derer die zweite Haelfte
+   ueberhaupt dasteht, fielen weg. Lieber zwei Zeilen als eine halbe.
+   Der Zusatz (die Note beim besten Neuzugang) bleibt dabei an einem
+   Stueck; eine umgebrochene Zahl waere keine Zahl mehr. */
 function RueckblickZeile({ label, wert, zusatz, zusatzFarbe, letzte }) {
   return (
     <div
@@ -8883,7 +8906,7 @@ function RueckblickZeile({ label, wert, zusatz, zusatzFarbe, letzte }) {
       <span
         style={{
           fontSize: 14, color: "#EDEAE3", textAlign: "right", minWidth: 0,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          overflowWrap: "anywhere",
         }}
       >
         {wert}
@@ -8892,6 +8915,7 @@ function RueckblickZeile({ label, wert, zusatz, zusatzFarbe, letzte }) {
             style={{
               fontFamily: "'JetBrains Mono', monospace", fontSize: 13,
               color: zusatzFarbe || "#9A968C", marginLeft: 8,
+              whiteSpace: "nowrap",
             }}
           >
             {zusatz}
