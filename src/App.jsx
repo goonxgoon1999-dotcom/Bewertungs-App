@@ -1819,73 +1819,56 @@ const SCORE_PRESETS = [
   { key: "u6", label: "unter 6.0", min: 0, max: 5.99 },
 ];
 
-/* "Zuletzt/Zuerst hinzugefuegt" und nicht "Neueste/Aelteste zuerst":
-   Gemeint ist der Tag, an dem der Eintrag in die Sammlung kam — nicht
-   das Erscheinungsjahr des Werks. Die alten Beschriftungen liessen
-   beides zu, und wer nach dem Erscheinungsjahr sortieren wollte,
-   bekam eine Reihenfolge, die er sich nicht erklaeren konnte. */
+/* "Zuerst/Zuletzt geschaut": Sortiert wird nach der ERSTSICHTUNG, nach
+   dem Tag also, an dem der Titel zum ersten Mal gesehen wurde. Nicht
+   nach dem Anlegedatum (`createdAt`) — das sagt nur, wann der Eintrag
+   getippt wurde — und nicht nach dem Erscheinungsjahr des Werks; wer
+   danach sortieren will, findet es im Filter "Jahrzehnt". */
 const SORT_OPTIONS = [
   { key: "score-desc", label: "Bewertung: hoch → niedrig" },
   { key: "score-asc", label: "Bewertung: niedrig → hoch" },
   { key: "title-asc", label: "Alphabetisch A → Z" },
   { key: "title-desc", label: "Alphabetisch Z → A" },
-  { key: "recent-desc", label: "Zuletzt hinzugefügt" },
-  { key: "recent-asc", label: "Zuerst hinzugefügt" },
+  { key: "recent-desc", label: "Zuletzt geschaut" },
+  { key: "recent-asc", label: "Zuerst geschaut" },
 ];
-
-/* Welche Sortierungen ein Datum brauchen — nur sie koennen an
-   Eintraegen ohne Datum scheitern. */
-const SORT_NACH_DATUM = ["recent-desc", "recent-asc"];
-
-/**
- * Wann kam der Eintrag in die Sammlung? Zeitstempel oder null.
- *
- * Zwei Quellen, in dieser Reihenfolge:
- *
- *   1. `createdAt` — der Tag des Anlegens.
- *   2. `ratedAt` — der Tag, an dem daraus ein bewerteter wurde.
- *
- * Der zweite Schritt ist keine Spielerei: In der Datenbank stehen
- * Zeilen mit `created_at = 0` (siehe ensureBewertetAm in api/_db.js,
- * das sie ausdruecklich auslaesst). Fuer sie ist `ratedAt` die beste
- * Naeherung, die es rueckwirkend gibt — dieselbe Ueberlegung, mit der
- * der Backfill dort umgekehrt `rated_at` aus `created_at` gefuellt hat.
- *
- * Bleibt beides leer, gibt es kein Datum. Erfunden wird keines.
- */
-function hinzugefuegtAm(entry) {
-  if (entry && typeof entry.createdAt === "number" && entry.createdAt > 0) return entry.createdAt;
-  if (entry && typeof entry.ratedAt === "number" && entry.ratedAt > 0) return entry.ratedAt;
-  return null;
-}
 
 /**
  * Die Liste in die gewaehlte Reihenfolge bringen. Reine Funktion, die
  * eine neue Liste zurueckgibt — sie stand frueher als `switch` mitten
  * in der Komponente und war damit von keinem Test erreichbar.
  *
- * Bei den beiden Datums-Sortierungen gilt: Eintraege OHNE Datum
- * stehen in beiden Richtungen am Ende. Sie sind weder die aeltesten
- * noch die neuesten, sondern die unbekannten — sie ans eine oder
- * andere Ende zu sortieren hiesse, ein Datum zu behaupten. Innerhalb
- * dieses Blocks wird alphabetisch geordnet, damit er eine erkennbare
- * eigene Ordnung hat.
+ * Die beiden Datums-Sortierungen fragen `erstsichtung()` — dieselbe
+ * Funktion, die auch die Detailansicht und der Jahresrueckblick
+ * fragen. Damit gilt hier ohne Ausnahme dieselbe Regel wie ueberall
+ * sonst: eigenes Erstsichtungsdatum, sonst das Bewertungsdatum. Eine
+ * zweite Fassung dieser Regel gibt es bewusst nirgends.
  *
- * Genau daran scheiterte die Sortierung vorher: Der Vergleich las
+ * `createdAt` geht ausdruecklich NICHT mehr ein. Es sagt, wann der
+ * Eintrag getippt wurde, nicht wann der Titel gesehen wurde — und bei
+ * einem Titel, der zwei Jahre auf der Watchlist lag, sind das zwei
+ * verschiedene Jahre.
+ *
+ * Der Rest ist die Lehre aus dem Fehler davor: Der Vergleich las
  * `(a.createdAt || 0) - (b.createdAt || 0)`, und wo beide Seiten 0
  * sind, ist die Differenz 0. `Array.prototype.sort` ist stabil, die
  * Liste kam nach Endnote sortiert an — und blieb deshalb exakt in
  * der Notenreihenfolge stehen, obwohl der Knopf gedrueckt war.
+ * Deshalb faellt ein Gleichstand hier immer auf den Titel zurueck,
+ * und `null` (weder Erstsichtung noch Bewertungsdatum) landet am
+ * Ende statt sich als "gleich alt" zu tarnen. Bewertete Eintraege
+ * tragen praktisch immer ein Datum — praktisch, nicht garantiert:
+ * ensureBewertetAm() in api/_db.js hat die Zeilen mit created_at = 0
+ * beim Backfill ausgelassen.
  */
 function sortiereListe(liste, sort) {
   const sortiert = [...liste];
   const nachTitel = (a, b) => a.title.localeCompare(b.title, "de");
 
-  /* Ein Vergleich fuer beide Richtungen: `richtung` dreht ihn um,
-     der Block ohne Datum bleibt davon unberuehrt am Ende. */
+  /* Ein Vergleich fuer beide Richtungen: `richtung` dreht ihn um. */
   const nachDatum = (richtung) => (a, b) => {
-    const links = hinzugefuegtAm(a);
-    const rechts = hinzugefuegtAm(b);
+    const links = erstsichtung(a).zeit;
+    const rechts = erstsichtung(b).zeit;
     if (links === null && rechts === null) return nachTitel(a, b);
     if (links === null) return 1;
     if (rechts === null) return -1;
@@ -1913,13 +1896,6 @@ function sortiereListe(liste, sort) {
       sortiert.sort((a, b) => sortWert(b.score) - sortWert(a.score));
   }
   return sortiert;
-}
-
-/** Wie viele Eintraege der Liste kein Datum tragen. */
-function ohneDatumZahl(liste) {
-  let anzahl = 0;
-  for (const eintrag of liste) if (hinzugefuegtAm(eintrag) === null) anzahl++;
-  return anzahl;
 }
 
 /* Der Filterzustand. Sortierung und Notenbereich waren schon da; die
@@ -12897,15 +12873,6 @@ export default function App() {
     return sortiereListe(list, filterState.sort);
   }, [anzeigeListe, search, filterState, category]);
 
-  /* Bei einer Sortierung nach Datum: wie viele der angezeigten
-     Eintraege keines tragen. Sie stehen am Ende, und die Zahl sagt es
-     — sonst saehe der Schluss der Liste nach einer Reihenfolge aus,
-     die es dort gar nicht gibt. */
-  const ohneDatum = useMemo(
-    () => (SORT_NACH_DATUM.includes(filterState.sort) ? ohneDatumZahl(filtered) : 0),
-    [filtered, filterState.sort]
-  );
-
   const isFilterActive = filterAktiv(filterState);
   const isSortActive = filterState.sort !== DEFAULT_FILTER.sort;
 
@@ -15314,20 +15281,7 @@ export default function App() {
                 {!loaded && !zeigtCache ? (
                   <SkelettFlaeche breite={120} hoehe={11} rund={3} style={{ margin: "3px 0" }} />
                 ) : (
-                  <>
-                    {`${filtered.length} von ${anzeigeListe.length} ${catInfo.label}`}
-                    {/* Nach Datum sortiert, aber nicht jeder Eintrag hat
-                        eines: Die ohne stehen am Ende, alphabetisch. Ohne
-                        diesen Satz saehe der Schluss der Liste nach einer
-                        Reihenfolge aus, die es dort nicht gibt. */}
-                    {ohneDatum > 0 && (
-                      <div style={{ fontSize: 11.5, color: "#55524c", marginTop: 4, lineHeight: 1.5 }}>
-                        {ohneDatum === 1
-                          ? "1 Eintrag ohne Datum steht am Ende"
-                          : ohneDatum + " Einträge ohne Datum stehen am Ende"}
-                      </div>
-                    )}
-                  </>
+                  `${filtered.length} von ${anzeigeListe.length} ${catInfo.label}`
                 )}
               </div>
             );

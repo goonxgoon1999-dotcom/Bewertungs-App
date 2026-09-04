@@ -978,28 +978,22 @@ Filter. Ab 960 px steht dasselbe als feste Spalte neben der Liste.
 ### Sortierung
 
 Sechs Möglichkeiten: Endnote hoch → niedrig und umgekehrt, alphabetisch
-A → Z und umgekehrt, sowie **„Zuletzt hinzugefügt"** und **„Zuerst
-hinzugefügt"**.
+A → Z und umgekehrt, sowie **„Zuletzt geschaut"** und **„Zuerst
+geschaut"**.
 
-**Die beiden letzten meinen das Anlegedatum des Eintrags, nicht das
-Erscheinungsjahr des Werks.** Sie hießen früher „Neueste/Älteste zuerst"
-und ließen genau das offen. Wer nach dem Erscheinungsjahr sortieren will,
-findet es nicht in der Sortierung, sondern im Filter **Jahrzehnt**.
+**Die beiden letzten richten sich nach der Erstsichtung** — nach dem
+Tag also, an dem der Titel zum ersten Mal gesehen wurde. Es gilt
+dieselbe Regel wie überall sonst in der App, und zwar über dieselbe
+Funktion `erstsichtung()`, die auch die Detailansicht und der
+Jahresrückblick fragen: **eigenes Erstsichtungsdatum, sonst das
+Bewertungsdatum** (siehe „Erstmals geschaut"). Eine zweite Fassung
+dieser Regel gibt es bewusst nirgends.
 
-Als Datum gilt `createdAt`; fehlt es, springt `ratedAt` ein — der Tag,
-an dem aus dem Eintrag ein bewerteter wurde. Das ist kein Schönheits-
-korrektiv, sondern nötig: In der Datenbank stehen Zeilen mit
-`created_at = 0`, die `ensureBewertetAm()` beim Backfill ausdrücklich
-ausgelassen hat (siehe `api/_db.js`). Für sie ist das Bewertungsdatum die
-beste Näherung, die es rückwirkend gibt — dieselbe Überlegung, mit der
-der Backfill dort umgekehrt `rated_at` aus `created_at` gefüllt hat.
-
-**Einträge ohne beides stehen in beiden Richtungen am Ende**, innerhalb
-dieses Blocks alphabetisch. Sie sind weder die ältesten noch die
-neuesten, sondern die unbekannten; sie an ein Ende zu sortieren hieße,
-ein Datum zu behaupten. Wie viele es sind, steht unter dem Zähler über
-der Liste („12 Einträge ohne Datum stehen am Ende") — sonst sähe der
-Schluss der Liste nach einer Reihenfolge aus, die es dort nicht gibt.
+**`createdAt` geht ausdrücklich nicht mehr ein.** Es sagt, wann der
+Eintrag getippt wurde, nicht wann der Titel gesehen wurde — bei einem
+Titel, der zwei Jahre auf der Watchlist lag, sind das zwei verschiedene
+Jahre. Und wer nach dem **Erscheinungsjahr** sortieren will, findet es
+nicht in der Sortierung, sondern im Filter **Jahrzehnt**.
 
 Gerechnet wird das in `sortiereListe()`, einer reinen Funktion auf
 oberster Ebene. Sie stand früher als `switch` mitten in der Komponente
@@ -1008,6 +1002,16 @@ und war damit von keinem Test erreichbar: Der Vergleich las
 ist die Differenz 0. Weil `Array.prototype.sort` stabil ist und die
 Liste bereits nach Endnote sortiert ankommt, blieb sie exakt so stehen —
 der Knopf war gedrückt, die Reihenfolge unverändert.
+
+Die Lehre daraus steht als Regel im Vergleich: **Ein Gleichstand fällt
+immer auf den Titel zurück**, und ein Eintrag ohne jedes Datum landet am
+Ende, statt sich als „gleich alt" zu tarnen. Bewertete Einträge tragen
+praktisch immer mindestens ein Bewertungsdatum — praktisch, nicht
+garantiert: `ensureBewertetAm()` hat beim Backfill die Zeilen mit
+`created_at = 0` ausgelassen (siehe `api/_db.js`), und die tragen weder
+`rated_at` noch `first_watched_at`. Für sie greift die Regel still, ohne
+Hinweis in der Anzeige; der Jahresrückblick nennt dieselben Einträge in
+seiner Fußzeile.
 
 ### Filter
 
