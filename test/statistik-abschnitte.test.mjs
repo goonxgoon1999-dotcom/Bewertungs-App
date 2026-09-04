@@ -39,6 +39,7 @@ const GEPRUEFT = [
   "statsIstAlle",
   "statsAuswahlUmschalten",
   "normalisiereStatistikAbschnitte",
+  "nurEinerOffen",
   "STATISTIK_ABSCHNITTE_VORGABE",
   "ladeStatistikAbschnitte",
   "groessteImdbAbweichung",
@@ -49,6 +50,7 @@ const GEPRUEFT = [
   "statsZeitText",
   "tageKurz",
   "StatsAbschnitt",
+  "AbschnittStil",
   "StatsPage",
   "DuellKarte",
   "DUELL_TITEL_ZEILEN",
@@ -150,12 +152,11 @@ test("Eine Auswahl aus lauter ausgeblendeten Kategorien faellt auf Alle zurueck"
  * Der gemerkte Auf-/Zuklapp-Stand
  * ---------------------------------------------------------------- */
 
-test("Beim Oeffnen stehen Gesamtstatistik und Top 10 offen, sonst nichts", () => {
+test("Beim Oeffnen steht genau die Gesamtstatistik offen, sonst nichts", () => {
   const stand = app.normalisiereStatistikAbschnitte(null);
   assert.equal(stand.gesamt, true);
-  assert.equal(stand.top10, true);
   for (const [key, offen] of Object.entries(stand)) {
-    if (key === "gesamt" || key === "top10") continue;
+    if (key === "gesamt") continue;
     assert.equal(offen, false, key + " sollte zugeklappt beginnen");
   }
 });
@@ -165,8 +166,35 @@ test("Ein gespeicherter Stand ueberschreibt nur, was er kennt", () => {
   assert.equal(stand.gesamt, false);
   assert.equal(stand.zeit, true);
   // Alles Uebrige bleibt bei der Vorgabe.
-  assert.equal(stand.top10, true);
+  assert.equal(stand.top10, false);
   assert.equal(stand.detail, false);
+});
+
+test("Ein alter Stand mit zwei offenen Abschnitten behaelt nur den oberen", () => {
+  /* Genau der Stand, den die Vorgabe von frueher hinterlassen hat:
+     Gesamtstatistik UND Top 10. Offen bleibt der, der im Tab weiter
+     oben steht. */
+  const stand = app.normalisiereStatistikAbschnitte({ gesamt: true, top10: true });
+  assert.equal(stand.gesamt, true);
+  assert.equal(stand.top10, false);
+
+  // Und ohne die Gesamtstatistik gewinnt der naechste in der Reihe.
+  const ohne = app.normalisiereStatistikAbschnitte({ gesamt: false, zeit: true, top10: true });
+  assert.equal(ohne.zeit, true);
+  assert.equal(ohne.top10, false);
+});
+
+test("nurEinerOffen laesst hoechstens einen offenen Abschnitt uebrig", () => {
+  const alles = {};
+  for (const key of Object.keys(app.STATISTIK_ABSCHNITTE_VORGABE)) alles[key] = true;
+  const stand = app.nurEinerOffen(alles);
+  assert.equal(Object.values(stand).filter(Boolean).length, 1);
+  assert.equal(stand.gesamt, true);
+
+  // Alles zugeklappt bleibt alles zugeklappt — auch das ist ein Zustand.
+  const keiner = app.nurEinerOffen({});
+  assert.equal(Object.values(keiner).filter(Boolean).length, 0);
+  assert.deepEqual(Object.keys(keiner), Object.keys(app.STATISTIK_ABSCHNITTE_VORGABE));
 });
 
 test("Unbekannte oder kaputte Werte fallen still auf die Vorgabe zurueck", () => {
@@ -228,6 +256,102 @@ test("Zugeklappt steht die Zusammenfassung da, aufgeklappt der Inhalt", () => {
 });
 
 /* ---------------------------------------------------------------- *
+ * Der aufgeklappte Abschnitt
+ *
+ * Zugeklappt sind beide Seiten uebersichtlich; offen verlor man beim
+ * Scrollen den Zusammenhang, weil der Inhalt optisch nichts von der
+ * naechsten Kopfzeile trennte. Vier Dinge haengen deshalb am offenen
+ * Zustand — und nur an ihm.
+ * ---------------------------------------------------------------- */
+
+function abschnitt(props) {
+  return renderToStaticMarkup(
+    createElement(
+      app.StatsAbschnitt,
+      { titel: "Ø je Kriterium", offen: true, onUmschalten: () => {}, ...props },
+      createElement("p", null, "Der Inhalt")
+    )
+  );
+}
+
+test("Die Kopfzeile eines offenen Abschnitts klebt oben und deckt dabei ab", () => {
+  const auf = abschnitt({});
+  assert.match(auf, /position:sticky/);
+  /* Der Hintergrund der Seite unter der Kopfzeile: sonst schiene der
+     Inhalt beim Scrollen durch sie hindurch. */
+  assert.match(auf, /background:#17171A/);
+  /* Unter der klebenden Kategorie-Auswahl (zIndex 5), nicht ueber
+     ihr — beide stehen untereinander. */
+  assert.match(auf, /z-index:4/);
+
+  const zu = abschnitt({ offen: false });
+  assert.ok(!/position:sticky/.test(zu), "zugeklappt klebt nichts");
+});
+
+test("Der offene Inhalt haengt an einer senkrechten Linie in der Akzentfarbe", () => {
+  const auf = abschnitt({});
+  /* 2px, durchgehend, links am eingerueckten Inhalt. Die Farbe kommt
+     aus dem Kontext; ohne ihn gilt die Akzentfarbe der App. */
+  assert.match(auf, /border-left:2px solid var\(--accent, #C9A227\)/);
+  assert.match(auf, /padding-left:14px/);
+
+  const zu = abschnitt({ offen: false });
+  assert.ok(!/border-left:2px solid/.test(zu));
+});
+
+test("Titel und Pfeil des offenen Abschnitts stehen in der Akzentfarbe", () => {
+  const auf = abschnitt({});
+  /* Die Kopfzeile faerbt Titel und Pfeil; der Pfeil traegt die Farbe
+     ausserdem selbst, weil er sonst die gedaempfte behielte. */
+  const kopf = auf.slice(0, auf.indexOf("</button>"));
+  assert.equal((kopf.match(/color:var\(--accent, #C9A227\)/g) || []).length, 2);
+
+  const zu = abschnitt({ offen: false });
+  const kopfZu = zu.slice(0, zu.indexOf("</button>"));
+  assert.match(kopfZu, /color:#EDEAE3/, "zugeklappt bleibt es bei der Textfarbe");
+  assert.ok(!/color:var\(--accent, #C9A227\)/.test(kopfZu));
+});
+
+test("Am Fuss des offenen Abschnitts steht die Zuklappen-Zeile", () => {
+  const auf = abschnitt({});
+  assert.match(auf, /Ø je Kriterium zuklappen/);
+  /* Zurueckhaltend: duenner Rahmen, gedaempfte Schrift, keine
+     gefuellte Flaeche — und trotzdem 44px hoch. */
+  const zeile = auf.slice(auf.lastIndexOf("<button"));
+  assert.match(zeile, /border:1px solid #2A2A2E/);
+  assert.match(zeile, /background:transparent/);
+  assert.match(zeile, /color:#77746c/);
+  assert.match(zeile, /min-height:44px/);
+  /* Der Pfeil zeigt nach oben — dasselbe gedrehte Symbol wie in der
+     Kopfzeile eines offenen Abschnitts. */
+  assert.match(zeile, /rotate\(180deg\)/);
+
+  const zu = abschnitt({ offen: false });
+  assert.ok(!/zuklappen/.test(zu), "zugeklappt gibt es nichts zuzuklappen");
+});
+
+test("Die Akzentfarbe kommt aus dem Kontext der Seite", () => {
+  /* Der Statistik-Tab setzt darin die Farbe der gewaehlten Kategorie,
+     die Einstellungen lassen die Vorgabe stehen. Neue Farbwerte
+     kommen keine dazu — hier steht die Farbe der Spiele. */
+  const html = renderToStaticMarkup(
+    createElement(
+      app.AbschnittStil.Provider,
+      { value: { akzent: "#C4633E", klebtBei: 59 } },
+      createElement(
+        app.StatsAbschnitt,
+        { titel: "Zeit", offen: true, onUmschalten: () => {} },
+        createElement("p", null, "Der Inhalt")
+      )
+    )
+  );
+  assert.match(html, /border-left:2px solid #C4633E/);
+  assert.match(html, /color:#C4633E/);
+  // Und die gemessene Hoehe der Auswahlleiste haelt die Kopfzeile darunter.
+  assert.match(html, /top:59px/);
+});
+
+/* ---------------------------------------------------------------- *
  * Der Tab als Ganzes
  * ---------------------------------------------------------------- */
 
@@ -272,7 +396,7 @@ test("Die Auswahl bleibt beim Scrollen oben stehen", () => {
   assert.match(markup, /position:sticky/);
 });
 
-test("Gesamtstatistik und Top 10 stehen offen, der Rest zugeklappt", () => {
+test("Die Gesamtstatistik steht offen, der Rest zugeklappt", () => {
   const markup = statsMarkup(leereListen({ movie: [film("a", "Ein Film", 8)] }));
 
   /* Die Ueberschriften aller Abschnitte stehen da … */
@@ -289,17 +413,23 @@ test("Gesamtstatistik und Top 10 stehen offen, der Rest zugeklappt", () => {
     assert.match(markup, new RegExp(titel.replace(".", "\\.")));
   }
 
-  /* … der Inhalt der offenen Abschnitte auch: die Kacheln der
-     Gesamtstatistik und die Zeile der Top 10. */
+  /* … der Inhalt des einen offenen Abschnitts auch: die Kacheln der
+     Gesamtstatistik. */
   assert.match(markup, /GESAMT/);
-  assert.match(markup, /Ein Film/);
 
   /* Der Inhalt der zugeklappten Abschnitte nicht. Jede dieser
      Beschriftungen steht ausschliesslich in einem zugeklappten
-     Abschnitt. */
+     Abschnitt. Der Titel "Ein Film" taugt dafuer nicht: Er steht
+     auch in der Zusammenfassung der zugeklappten Top 10. */
   for (const inhalt of ["MIT LAUFZEIT", "ANZAHL", "9 – 10", "Bauchgefühl"]) {
     assert.ok(!markup.includes(inhalt), inhalt + " steht da, obwohl zugeklappt");
   }
+
+  /* Und offen ist genau einer: Die Zuklappen-Zeile steht am Fuss
+     jedes offenen Abschnitts, also genau einmal. */
+  const zuklappen = markup.match(/ zuklappen<\/span>/g) || [];
+  assert.equal(zuklappen.length, 1);
+  assert.ok(markup.includes("Gesamtstatistik zuklappen"));
 });
 
 test("Zeit steht als ein Abschnitt da, nicht mehr als zwei", () => {
@@ -454,4 +584,33 @@ test("Ohne Laufzeit steht dort, dass es keine gibt", () => {
      Nachbarn — genau das soll nicht mehr vorkommen. */
   assert.equal(app.statsZeitText({ moeglich: false, minuten: 0 }), "Noch keine Laufzeiten bekannt");
   assert.equal(app.statsZeitText({ moeglich: true, minuten: 0 }), "Noch keine Laufzeiten bekannt");
+});
+
+/* ---------------------------------------------------------------- *
+ * Die Regeln, die im Quelltext stehen
+ * ---------------------------------------------------------------- */
+
+test("Der Statistik-Tab faerbt nach seiner Auswahl und misst die Auswahlleiste", () => {
+  /* Genau eine Kategorie: ihre Farbe. "Alle" und mehrere: das Gold,
+     das die Auswahlleiste fuer "Alle" ohnehin traegt. */
+  assert.match(
+    QUELLE,
+    /const akzent = !istAlle && aktive\.length === 1 \? accentFor\(aktive\[0\]\.key\) : "#C9A227";/
+  );
+  // Die Hoehe der klebenden Leiste wird gemessen, nicht geraten.
+  assert.match(QUELLE, /messRef=\{auswahlRef\}/);
+  assert.match(QUELLE, /klebtBei: auswahlHoehe/);
+});
+
+test("Aufklappen schliesst den vorigen Abschnitt — auf beiden Seiten", () => {
+  // Statistik-Tab: der neue Stand kennt nur den einen Schluessel.
+  assert.match(
+    QUELLE,
+    /const neu = nurEinerOffen\(alt\[key\] \? \{\} : \{ \[key\]: true \}\);/
+  );
+  // Einstellungen: derselbe Gedanke ohne Speicher.
+  assert.match(
+    QUELLE,
+    /setPanelAbschnitte\(\(stand\) => \(stand\[key\] \? \{\} : \{ \[key\]: true \}\)\)/
+  );
 });
