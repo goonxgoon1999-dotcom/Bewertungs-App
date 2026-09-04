@@ -2465,6 +2465,19 @@ function tageText(minuten) {
   return text + " " + rest + (rest === 1 ? " Stunde" : " Stunden");
 }
 
+/**
+ * Dieselbe Dauer in ganzen Tagen: "221 Tage". Ohne die angebrochenen
+ * Stunden — fuer die zugeklappte Kopfzeile, wo neben "5317 Stunden"
+ * schon eine Stundenzahl steht und "221 Tage 13 Stunden" sie ein
+ * zweites Mal brachte. Unter einem Tag gibt es nichts zu uebersetzen.
+ */
+function tageKurz(minuten) {
+  const stunden = Math.round(minuten / 60);
+  if (stunden < 24) return null;
+  const tage = Math.floor(stunden / 24);
+  return tage + (tage === 1 ? " Tag" : " Tage");
+}
+
 /** Kurzform fuer die Aufschluesselung: "8 Std." */
 function stundenKurz(minuten) {
   return Math.round(minuten / 60) + " Std.";
@@ -8113,6 +8126,67 @@ function einstellungZuschlaegeText(items) {
     : anzahl + " Einträge mit offenem Zuschlag";
 }
 
+/* ------------------------------------------------------------
+   Die Zusammenfassungen der Statistik-Abschnitte
+
+   Jeder Abschnitt des Tabs traegt zugeklappt eine — auch die, die
+   frueher keine hatten: Ohne sie ist die Kopfzeile eine Zeile
+   niedriger als ihre Nachbarn, und eine Reihe zugeklappter Abschnitte
+   sah dadurch aus, als waere sie nicht ausgerichtet. Aus demselben
+   Grund gibt es hier keinen Fall, der null zurueckgibt: Wo nichts zu
+   rechnen ist, steht, dass nichts zu rechnen ist.
+
+   Geschrieben wird in normaler Schreibweise, nicht in Grossbuchstaben.
+   Die Abschnitte des Daten-Panels benutzen dieselbe Kopfzeile und
+   standen von Anfang an so da ("6 von 8 sichtbar"); die
+   Grossschreibung im Statistik-Tab war der Ausreisser.
+   ------------------------------------------------------------ */
+
+/** "264 Einträge" — die Zahl mit der passenden Form dahinter. */
+function eintraegeText(anzahl) {
+  return anzahl + (anzahl === 1 ? " Eintrag" : " Einträge");
+}
+
+/**
+ * Gesamtstatistik: worueber gezaehlt wird und wie viel es ist.
+ *
+ * Bewusst nicht Anzahl und Durchschnitt — die stehen schon unter
+ * "Detailauswertung", und zweimal dieselbe Zeile untereinander sagt
+ * nichts dazu. Hier steht stattdessen der Bereich, der den ganzen Tab
+ * traegt: bei "Alle" die Zahl der Kategorien, sonst deren Namen.
+ */
+function statsGesamtText(istAlle, aktive, anzahl) {
+  const bereich = istAlle
+    ? aktive.length + (aktive.length === 1 ? " Kategorie" : " Kategorien")
+    : aktive.map((c) => c.label).join(", ");
+  return bereich + " · " + eintraegeText(anzahl);
+}
+
+/** Top 10: der Erste der Liste samt Note. */
+function statsTopTenText(liste) {
+  const beste = liste[0];
+  if (!beste) return "Noch keine Einträge";
+  const note = typeof beste.score === "number" ? anzeigeNote(beste.score).toFixed(2) : null;
+  return beste.title + (note ? " · " + note : "");
+}
+
+/** "Bewertung prüfen": wie viele Titel das Nachsehen lohnen. */
+function statsPruefenText(anzahl) {
+  return anzahl === 1 ? "1 Titel zum Nachsehen" : anzahl + " Titel zum Nachsehen";
+}
+
+/**
+ * Die gesehene Zeit fuer die Kopfzeile: "Gesehen 5317 Stunden · 221
+ * Tage". Die Tage kommen aus `tageKurz` und damit ohne die
+ * angebrochenen Stunden — "221 Tage 13 Stunden" brachte neben den
+ * 5317 Stunden dieselbe Einheit ein zweites Mal.
+ */
+function statsZeitText(sehzeit) {
+  if (!sehzeit.moeglich || !(sehzeit.minuten > 0)) return "Noch keine Laufzeiten bekannt";
+  const tage = tageKurz(sehzeit.minuten);
+  return "Gesehen " + stundenText(sehzeit.minuten) + (tage ? " · " + tage : "");
+}
+
 /* Eine Zeile der Rangliste — dasselbe Format wie ueberall:
    Rang, Poster, Titel, Endnote. */
 function RanglistenZeile({ platz, eintrag }) {
@@ -8148,7 +8222,12 @@ function TopTen({ ranked, kategorien, offen, onUmschalten }) {
   }, [ranked, kategorien]);
 
   return (
-    <StatsAbschnitt titel="Top 10" offen={offen} onUmschalten={onUmschalten}>
+    <StatsAbschnitt
+      titel="Top 10"
+      offen={offen}
+      onUmschalten={onUmschalten}
+      zusammenfassung={statsTopTenText(liste)}
+    >
       <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14 }}>
         {kategorien.map((c) => c.label).join(", ")}
         {" · "}
@@ -8199,7 +8278,12 @@ function BewertungPruefen({ ranked, onOeffnen, offen, onUmschalten }) {
   if (!liste.length) return null;
 
   return (
-    <StatsAbschnitt titel="Bewertung prüfen" offen={offen} onUmschalten={onUmschalten}>
+    <StatsAbschnitt
+      titel="Bewertung prüfen"
+      offen={offen}
+      onUmschalten={onUmschalten}
+      zusammenfassung={statsPruefenText(liste.length)}
+    >
       <div style={{ fontSize: 12.5, color: "#77746c", marginBottom: 14, lineHeight: 1.5 }}>
         Diese Titel schneiden im Duell dauerhaft anders ab, als ihre Kriterien
         hergeben — ab {AUFFAELLIG_ZUSCHLAG.toFixed(2).replace(".", ",")} Zuschlag
@@ -8338,7 +8422,9 @@ function DuVsImdb({ ranked, kategorien, offen, onUmschalten }) {
       offen={offen}
       onUmschalten={onUmschalten}
       zusammenfassung={
-        groesste === null ? null : "GRÖSSTE ABWEICHUNG " + zuschlagText(groesste)
+        vergleiche.length < IMDB_VERGLEICH_MIN
+          ? "Noch zu wenig zum Vergleichen"
+          : "Größte Abweichung " + zuschlagText(groesste)
       }
     >
       {vergleiche.length < IMDB_VERGLEICH_MIN ? (
@@ -8550,13 +8636,10 @@ function ZeitAbschnitt({ ranked, watchlist, kategorien, offen, onUmschalten }) {
   }
 
   /* Zugeklappt steht die gesehene Zeit in der Kopfzeile: Stunden und,
-     ab einem Tag, dieselbe Dauer noch einmal in Tagen. Ohne Laufzeit
-     in der Auswahl gibt es keine Zahl und damit auch keine Zeile. */
-  const gesehenTage = tageText(sehzeit.minuten);
-  const zusammenfassung =
-    sehzeit.moeglich && sehzeit.minuten > 0
-      ? "GESEHEN " + stundenText(sehzeit.minuten) + (gesehenTage ? " · " + gesehenTage : "")
-      : null;
+     ab einem Tag, dieselbe Dauer noch einmal in ganzen Tagen. Ohne
+     Laufzeit in der Auswahl steht dort, dass es keine gibt — eine
+     fehlende Zeile machte die Kopfzeile niedriger als ihre Nachbarn. */
+  const zusammenfassung = statsZeitText(sehzeit);
 
   return (
     <StatsAbschnitt
@@ -8766,7 +8849,13 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
 
   if (!daten.jahre.length) {
     return (
-      <StatsAbschnitt titel="Jahresrückblick" gross offen={offen} onUmschalten={onUmschalten}>
+      <StatsAbschnitt
+        titel="Jahresrückblick"
+        gross
+        offen={offen}
+        onUmschalten={onUmschalten}
+        zusammenfassung="Noch kein Jahr"
+      >
         <div style={{ fontSize: 12.5, color: "#77746c", lineHeight: 1.6 }}>
           Noch nichts zu zeigen. Sobald du etwas bewertest, sammelt sich
           hier das Jahr der Erstsichtung — der Bestand aus der Zeit davor
@@ -8783,7 +8872,7 @@ function Jahresrueckblick({ ranked, offen, onUmschalten }) {
       gross
       offen={offen}
       onUmschalten={onUmschalten}
-      zusammenfassung={jahr === null ? null : String(jahr)}
+      zusammenfassung={jahr === null ? "Noch kein Jahr" : String(jahr)}
     >
       {/* Jahresauswahl — eigene Knoepfe, sie waehlen ja kein Jahr aus
           Kategorien, sondern aus Jahren. Die Reihe kommt aus den
@@ -9016,7 +9105,12 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
         onUmschalten={(key) => setAuswahl((alt) => statsAuswahlUmschalten(alt, key))}
       />
 
-      <StatsAbschnitt titel="Gesamtstatistik" gross {...klapper("gesamt")}>
+      <StatsAbschnitt
+        titel="Gesamtstatistik"
+        gross
+        zusammenfassung={statsGesamtText(istAlle, aktive, scopedStats.count)}
+        {...klapper("gesamt")}
+      >
         {istAlle && (
           <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
             {kacheln.map((k) => (
@@ -9051,11 +9145,8 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
         gross
         zusammenfassung={
           scopedStats.count === 0
-            ? null
-            : scopedStats.count +
-              (scopedStats.count === 1 ? " EINTRAG" : " EINTRÄGE") +
-              " · Ø " +
-              scopedStats.avg.toFixed(2)
+            ? "Noch keine Einträge"
+            : eintraegeText(scopedStats.count) + " · Ø " + scopedStats.avg.toFixed(2)
         }
         {...klapper("detail")}
       >
@@ -9086,11 +9177,8 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
             titel="Bewertungsverteilung"
             zusammenfassung={
               staerksteSpanne
-                ? staerksteSpanne.label +
-                  " · " +
-                  staerksteSpanne.count +
-                  (staerksteSpanne.count === 1 ? " EINTRAG" : " EINTRÄGE")
-                : null
+                ? staerksteSpanne.label + " · " + eintraegeText(staerksteSpanne.count)
+                : "Noch keine Noten"
             }
             {...klapper("verteilung")}
           >
@@ -9107,9 +9195,7 @@ function StatsPage({ ranked, watchlist, onOeffnen }) {
 
           <StatsAbschnitt
             titel="Ø je Kriterium"
-            zusammenfassung={
-              istAlle ? "ALLE" : aktive.map((c) => c.label).join(", ").toUpperCase()
-            }
+            zusammenfassung={istAlle ? "Alle" : aktive.map((c) => c.label).join(", ")}
             {...klapper("kriterien")}
           >
             {aktive.length > 1 && (
@@ -14813,8 +14899,14 @@ export default function App() {
           der Kategorie-Inhalt, der seinerseits hereingleitet — beide
           gleichzeitig im Baum zu halten wuerde die Seite fuer den
           Moment doppelt so hoch machen. `key` sorgt dafuer, dass die
-          Bewegung bei jedem Oeffnen neu laeuft. */}
-      {activeTab === "stats" ? (
+          Bewegung bei jedem Oeffnen neu laeuft.
+
+          Die Einstellungen tun dasselbe: Solange sie offen stehen,
+          bleibt hier alles weg. Vorher liefen unter ihnen weiter die
+          Unter-Reiter, "+ Neu hinzufügen", das Suchfeld und die ganze
+          Rangliste — man scrollte durch die Einstellungen mitten in
+          eine Liste hinein, die gar nicht gemeint war. */}
+      {showExport ? null : activeTab === "stats" ? (
         <div key="seite-stats" className="seite-rein">
         <StatsPage
           ranked={rankedByCategory}
