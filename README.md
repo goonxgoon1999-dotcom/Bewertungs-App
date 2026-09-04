@@ -972,8 +972,46 @@ Bei **Spielen** entfällt der Abschnitt vollständig.
 ## Filter in den Ranglisten
 
 Das Filter-Sheet öffnet sich über das Filter-Symbol neben der Suche und
-enthält ganz oben die Sortierung. Neben Notenbereich und Sortierung
-filtert es in allen Kategorien außer Spielen zusätzlich nach:
+enthält ganz oben die Sortierung, darunter den Notenbereich und die
+Filter. Ab 960 px steht dasselbe als feste Spalte neben der Liste.
+
+### Sortierung
+
+Sechs Möglichkeiten: Endnote hoch → niedrig und umgekehrt, alphabetisch
+A → Z und umgekehrt, sowie **„Zuletzt hinzugefügt"** und **„Zuerst
+hinzugefügt"**.
+
+**Die beiden letzten meinen das Anlegedatum des Eintrags, nicht das
+Erscheinungsjahr des Werks.** Sie hießen früher „Neueste/Älteste zuerst"
+und ließen genau das offen. Wer nach dem Erscheinungsjahr sortieren will,
+findet es nicht in der Sortierung, sondern im Filter **Jahrzehnt**.
+
+Als Datum gilt `createdAt`; fehlt es, springt `ratedAt` ein — der Tag,
+an dem aus dem Eintrag ein bewerteter wurde. Das ist kein Schönheits-
+korrektiv, sondern nötig: In der Datenbank stehen Zeilen mit
+`created_at = 0`, die `ensureBewertetAm()` beim Backfill ausdrücklich
+ausgelassen hat (siehe `api/_db.js`). Für sie ist das Bewertungsdatum die
+beste Näherung, die es rückwirkend gibt — dieselbe Überlegung, mit der
+der Backfill dort umgekehrt `rated_at` aus `created_at` gefüllt hat.
+
+**Einträge ohne beides stehen in beiden Richtungen am Ende**, innerhalb
+dieses Blocks alphabetisch. Sie sind weder die ältesten noch die
+neuesten, sondern die unbekannten; sie an ein Ende zu sortieren hieße,
+ein Datum zu behaupten. Wie viele es sind, steht unter dem Zähler über
+der Liste („12 Einträge ohne Datum stehen am Ende") — sonst sähe der
+Schluss der Liste nach einer Reihenfolge aus, die es dort nicht gibt.
+
+Gerechnet wird das in `sortiereListe()`, einer reinen Funktion auf
+oberster Ebene. Sie stand früher als `switch` mitten in der Komponente
+und war damit von keinem Test erreichbar: Der Vergleich las
+`(a.createdAt || 0) - (b.createdAt || 0)`, und wo beide Seiten 0 sind,
+ist die Differenz 0. Weil `Array.prototype.sort` stabil ist und die
+Liste bereits nach Endnote sortiert ankommt, blieb sie exakt so stehen —
+der Knopf war gedrückt, die Reihenfolge unverändert.
+
+### Filter
+
+Gefiltert wird zusätzlich nach:
 
 - **Genre** — als Knopfreihe, aus den tatsächlich vorkommenden Genres
 - **Jahrzehnt** — abgeleitet aus dem Erscheinungsjahr
