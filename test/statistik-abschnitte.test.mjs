@@ -42,6 +42,12 @@ const GEPRUEFT = [
   "STATISTIK_ABSCHNITTE_VORGABE",
   "ladeStatistikAbschnitte",
   "groessteImdbAbweichung",
+  "eintraegeText",
+  "statsGesamtText",
+  "statsTopTenText",
+  "statsPruefenText",
+  "statsZeitText",
+  "tageKurz",
   "StatsAbschnitt",
   "StatsPage",
   "DuellKarte",
@@ -237,10 +243,15 @@ function statsMarkup(ranked) {
 
 test("Der Tab traegt genau eine Kategorie-Auswahl", () => {
   const markup = statsMarkup(leereListen({ movie: [film("a", "Ein Film", 8)] }));
-  /* Der Knopf "Alle" gehoert genau einer Auswahl — stuende er
-     mehrfach da, waeren die alten Chip-Gruppen zurueck. */
-  const alle = markup.match(/>Alle</g) || [];
-  assert.equal(alle.length, 1);
+  /* Der KNOPF "Alle" gehoert genau einer Auswahl — stuende er
+     mehrfach da, waeren die alten Chip-Gruppen zurueck.
+
+     Gezaehlt werden ausdruecklich nur Knoepfe: Seit die zugeklappten
+     Kopfzeilen ihre Zusammenfassung in normaler Schreibweise tragen,
+     steht das Wort "Alle" auch unter "Ø je Kriterium" — als Text,
+     nicht als Auswahl. */
+  const knoepfe = markup.match(/<button[^>]*>Alle<\/button>/g) || [];
+  assert.equal(knoepfe.length, 1);
   // Und dahinter genau einmal jede sichtbare Kategorie.
   for (const c of KATEGORIEN) {
     const treffer = markup.match(new RegExp(">" + c.label.replace(/[/]/g, "\\/") + "<", "g")) || [];
@@ -343,4 +354,104 @@ test("Kurzer und langer Titel ergeben denselben Kartenaufbau", () => {
   // Und beide holen sich die Hoehe der hoeheren Karte.
   assert.match(kurz, /align-self:stretch/);
   assert.match(lang, /align-self:stretch/);
+});
+
+/* ---------------------------------------------------------------- *
+ * Jede Kopfzeile traegt eine Zusammenfassung — und zwar in normaler
+ * Schreibweise
+ *
+ * "Gesamtstatistik" und "Top 10" hatten keine und waren dadurch eine
+ * Zeile niedriger als ihre Nachbarn; die vorhandenen standen in
+ * Grossbuchstaben, waehrend dieselbe Kopfzeile im Daten-Panel von
+ * Anfang an normal schrieb ("6 von 8 sichtbar").
+ * ---------------------------------------------------------------- */
+
+const QUELLE = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+
+/* Die oeffnenden Tags eines Bausteins, samt aller Eigenschaften.
+   Geschweifte Klammern werden mitgezaehlt, damit ein ">" in einem
+   Ausdruck den Tag nicht vorzeitig beendet. */
+function oeffnendeTags(quelle, name) {
+  const marke = "<" + name;
+  const tags = [];
+  let von = quelle.indexOf(marke);
+  while (von >= 0) {
+    let tiefe = 0;
+    let i = von + marke.length;
+    for (; i < quelle.length; i++) {
+      const zeichen = quelle[i];
+      if (zeichen === "{") tiefe++;
+      else if (zeichen === "}") tiefe--;
+      else if (zeichen === ">" && tiefe === 0) break;
+    }
+    tags.push(quelle.slice(von, i + 1));
+    von = quelle.indexOf(marke, i);
+  }
+  return tags;
+}
+
+test("Kein Abschnitt bleibt ohne Zusammenfassung", () => {
+  const tags = oeffnendeTags(QUELLE, "StatsAbschnitt");
+  assert.ok(tags.length >= 10, "zu wenige Abschnitte gefunden — " + tags.length);
+  for (const tag of tags) {
+    const titel = /titel="([^"]+)"/.exec(tag);
+    assert.match(tag, /zusammenfassung[={]/, (titel ? titel[1] : tag.slice(0, 60)) + " hat keine");
+  }
+});
+
+test("Die Zusammenfassungen stehen nicht in Grossbuchstaben", () => {
+  for (const alt of ['"GRÖSSTE ABWEICHUNG ', '" EINTRÄGE"', '" EINTRAG"', '"ALLE"', '"GESEHEN "']) {
+    assert.ok(!QUELLE.includes(alt), "Grossschreibung " + alt + " steht noch da");
+  }
+  assert.equal(app.eintraegeText(1), "1 Eintrag");
+  assert.equal(app.eintraegeText(264), "264 Einträge");
+});
+
+test("Gesamtstatistik meldet Bereich und Anzahl", () => {
+  assert.equal(app.statsGesamtText(true, KATEGORIEN, 264), "8 Kategorien · 264 Einträge");
+  assert.equal(
+    app.statsGesamtText(false, [{ label: "Filme" }, { label: "Serien" }], 12),
+    "Filme, Serien · 12 Einträge"
+  );
+  assert.equal(app.statsGesamtText(false, [{ label: "Filme" }], 1), "Filme · 1 Eintrag");
+});
+
+test("Top 10 meldet den Ersten samt Note", () => {
+  assert.equal(app.statsTopTenText([]), "Noch keine Einträge");
+  assert.equal(
+    app.statsTopTenText([{ title: "Ein Film", score: 9.62 }, { title: "Zweiter", score: 9 }]),
+    "Ein Film · 9.62"
+  );
+  // Ohne Note bleibt der Titel allein stehen — erfunden wird nichts.
+  assert.equal(app.statsTopTenText([{ title: "Ohne Note" }]), "Ohne Note");
+});
+
+test("Bewertung pruefen meldet, wie viele Titel das Nachsehen lohnen", () => {
+  assert.equal(app.statsPruefenText(1), "1 Titel zum Nachsehen");
+  assert.equal(app.statsPruefenText(3), "3 Titel zum Nachsehen");
+});
+
+test("Die Zeit nennt die Stunden nicht zweimal", () => {
+  /* 5317 Stunden sind 221 Tage und 13 Stunden. In der Kopfzeile
+     standen beide Stundenzahlen: "5317 Stunden · 221 Tage 13
+     Stunden". */
+  const minuten = 5317 * 60;
+  assert.equal(app.tageKurz(minuten), "221 Tage");
+  assert.equal(
+    app.statsZeitText({ moeglich: true, minuten }),
+    "Gesehen 5317 Stunden · 221 Tage"
+  );
+});
+
+test("Unter einem Tag bleibt es bei den Stunden", () => {
+  assert.equal(app.tageKurz(10 * 60), null);
+  assert.equal(app.statsZeitText({ moeglich: true, minuten: 10 * 60 }), "Gesehen 10 Stunden");
+  assert.equal(app.tageKurz(25 * 60), "1 Tag");
+});
+
+test("Ohne Laufzeit steht dort, dass es keine gibt", () => {
+  /* Eine fehlende Zeile machte die Kopfzeile niedriger als ihre
+     Nachbarn — genau das soll nicht mehr vorkommen. */
+  assert.equal(app.statsZeitText({ moeglich: false, minuten: 0 }), "Noch keine Laufzeiten bekannt");
+  assert.equal(app.statsZeitText({ moeglich: true, minuten: 0 }), "Noch keine Laufzeiten bekannt");
 });

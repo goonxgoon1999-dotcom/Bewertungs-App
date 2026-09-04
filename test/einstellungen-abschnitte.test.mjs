@@ -265,3 +265,45 @@ test("Der Balken des aktiven Reiters ist so breit wie dessen Drittel", () => {
   assert.match(balken, /right:\s*0/);
   assert.match(balken, /bottom:\s*0/);
 });
+
+/* ---------------------------------------------------------------- *
+ * 4. Die Einstellungen ersetzen den Seiteninhalt
+ *
+ * Offene Einstellungen liessen darunter alles stehen: Unter-Reiter,
+ * "+ Neu hinzufügen", das Suchfeld und die vollstaendige Rangliste.
+ * Wer die Einstellungen zu Ende scrollte, landete mitten in einer
+ * Liste, die gar nicht gemeint war. Der Statistik-Tab macht es
+ * richtig — er tritt an die Stelle des Kategorie-Inhalts.
+ * ---------------------------------------------------------------- */
+
+/* Die Verzweigung, die entscheidet, was unter dem Kopfbereich steht. */
+const INHALT_WEICHE = (() => {
+  const anfang = QUELLE.indexOf("{/* Statistik und Minispiele treten an die Stelle des");
+  assert.ok(anfang > 0, "Die Weiche fuer den Seiteninhalt ist nicht auffindbar");
+  return QUELLE.slice(anfang, anfang + 1600);
+})();
+
+test("Bei offenen Einstellungen faellt der Seiteninhalt ganz weg", () => {
+  assert.match(
+    INHALT_WEICHE,
+    /\{showExport \? null : activeTab === "stats" \?/,
+    "showExport blendet den Inhalt nicht aus"
+  );
+});
+
+test("Der Kategorie-Inhalt haengt an derselben Weiche wie Statistik", () => {
+  /* Nicht drei einzelne Bedingungen, sondern eine Kette: Statistik,
+     Minispiele und Kategorie-Inhalt schliessen einander aus, und die
+     Einstellungen stehen vor allen dreien. */
+  assert.match(INHALT_WEICHE, /activeTab === "minigames" \?/);
+  assert.match(INHALT_WEICHE, /ref=\{inhaltRef\}/);
+});
+
+test("Die Einstellungen bleiben ueber die Seite erreichbar", () => {
+  /* Der Kategorie-Auswahlknopf steht ausserhalb dieser Weiche und
+     bleibt deshalb sichtbar — genau wie beim Statistik-Tab. Er ist
+     der Weg zurueck. */
+  const knopf = QUELLE.indexOf('className="kategorie-knopf"');
+  const weiche = QUELLE.indexOf("{showExport ? null : activeTab === \"stats\" ?");
+  assert.ok(knopf > 0 && weiche > knopf, "der Auswahlknopf steckt in der Weiche");
+});

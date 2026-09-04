@@ -1004,6 +1004,15 @@ Kategorien angezeigt werden, für welches Land die Verfügbarkeit gilt,
 Export und Import samt den Bildern im Kopfbereich, und die Sammelfunktion
 für die Duell-Zuschläge.
 
+**Die Einstellungen treten an die Stelle des Seiteninhalts.** Solange
+sie offen stehen, sind Unter-Reiter, „+ Neu hinzufügen", Suchfeld und
+Rangliste ausgeblendet — genau wie beim Statistik-Tab und bei den
+Minispielen, die den Kategorie-Inhalt ebenfalls ersetzen. Vorher lief
+das alles unter den Einstellungen weiter, und wer sie zu Ende scrollte,
+landete mitten in einer Liste, die gar nicht gemeint war. Der
+Kategorie-Auswahlknopf unter dem Kopfbereich bleibt stehen; er ist —
+wie beim Statistik-Tab — der Weg zurück.
+
 **Jeder Abschnitt ist einklappbar** — dieselbe Kopfzeile wie im
 Statistik-Tab: ein Knopf mit Pfeil, mindestens 44 px hoch, mit der
 Überschrift in derselben Schrift. Getrennt werden die Abschnitte durch
@@ -1065,12 +1074,35 @@ gewählt, steht ihre Anzahl bereits in der Kennzahl „Gesamt".
 
 **Jeder Abschnitt ist einklappbar.** Die Kopfzeile ist ein Knopf mit
 Pfeil und mindestens 44 px hoch; zugeklappt steht unter dem Titel eine
-kurze Zusammenfassung in
-der gedämpften Monospace-Schrift, gerechnet aus denselben Daten, die
-aufgeklappt ausführlich dastehen — die gesehene Zeit in Stunden und
-Tagen, Anzahl und Ø Endnote, die größte IMDb-Abweichung mit Vorzeichen,
-die stärkste Notenspanne samt Anzahl, die gewählte Kategorie, das
-gewählte Jahr. Beim Öffnen des Tabs stehen **Gesamtstatistik** und
+kurze Zusammenfassung in der gedämpften Monospace-Schrift, gerechnet aus
+denselben Daten, die aufgeklappt ausführlich dastehen:
+
+| Abschnitt | Zusammenfassung |
+| --- | --- |
+| Gesamtstatistik | der Bereich und seine Größe („8 Kategorien · 264 Einträge"; bei einer Auswahl deren Namen) |
+| Jahresrückblick | das gewählte Jahr |
+| Zeit | die gesehene Zeit („Gesehen 5317 Stunden · 221 Tage") |
+| Detailauswertung | Anzahl und Ø Endnote („264 Einträge · Ø 8.13") |
+| Du vs. IMDb | die größte Abweichung mit Vorzeichen („Größte Abweichung −6.80") |
+| Top 10 | der Erste samt Note („Der Pate · 9.62") |
+| Bewertung prüfen | wie viele Titel das Nachsehen lohnen |
+| Bewertungsverteilung | die stärkste Notenspanne samt Anzahl |
+| Ø je Kriterium | die gewählte Kategorie („Alle") |
+
+**Keiner bleibt ohne.** Wo nichts zu rechnen ist, steht, dass nichts zu
+rechnen ist („Noch keine Laufzeiten bekannt", „Noch keine Einträge") —
+eine fehlende Zeile machte die Kopfzeile eine Zeile niedriger als ihre
+Nachbarn, und eine Reihe zugeklappter Abschnitte sah dadurch aus, als
+wäre sie nicht ausgerichtet.
+
+**Geschrieben wird in normaler Schreibweise**, nicht in Großbuchstaben.
+Die Einstellungen benutzen dieselbe Kopfzeile und standen von Anfang an
+so da („6 von 8 sichtbar"); die Großschreibung im Statistik-Tab war der
+Ausreißer. Die gesehene Zeit nennt die Tage dabei **ohne** die
+angebrochenen Stunden: Neben „5317 Stunden" stand mit „221 Tage 13
+Stunden" dieselbe Einheit ein zweites Mal.
+
+Beim Öffnen des Tabs stehen **Gesamtstatistik** und
 **Top 10** offen, alles Übrige zugeklappt. Welcher Abschnitt offen ist,
 merkt sich das Gerät im `localStorage`
 (`bewertungsapp.statistikAbschnitte`) — wie die Kategorie-Ansicht auch,
