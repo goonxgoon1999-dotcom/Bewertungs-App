@@ -239,7 +239,12 @@ test("Turnier-Matches laufen durch dieselbe Auswertung wie das Head-to-Head", as
      sperrt, haengt allein daran, dass beide Spiele denselben
      onDuell-Weg nehmen — und der schreibt sie auf dem Server
      (siehe test/duell-endpunkte.test.mjs). Gaebe es fuer das Turnier
-     einen zweiten Weg, faellt es hier auf. */
+     einen zweiten Weg, faellt es hier auf.
+
+     Seit dem Uebungsmodus steht an der Stelle ein gemeinsamer
+     Rueckruf statt onDuell selbst. Geprueft wird deshalb zweierlei:
+     dass beide Spiele denselben bekommen, und dass dieser Rueckruf
+     nur zwischen onDuell und dem schreibfreien uebungsDuell waehlt. */
   const quelle = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 
   const bereich = quelle.slice(
@@ -250,8 +255,13 @@ test("Turnier-Matches laufen durch dieselbe Auswertung wie das Head-to-Head", as
 
   const anHeadToHead = bereich.slice(bereich.indexOf("<HeadToHead"));
   const anTurnier = bereich.slice(bereich.indexOf("<Turnier"));
-  assert.match(anHeadToHead.slice(0, anHeadToHead.indexOf("/>")), /onDuell=\{onDuell\}/);
-  assert.match(anTurnier.slice(0, anTurnier.indexOf("/>")), /onDuell=\{onDuell\}/);
+  assert.match(anHeadToHead.slice(0, anHeadToHead.indexOf("/>")), /onDuell=\{duellRueckruf\}/);
+  assert.match(anTurnier.slice(0, anTurnier.indexOf("/>")), /onDuell=\{duellRueckruf\}/);
+  assert.match(
+    bereich,
+    /const duellRueckruf = uebungLaeuft \? uebungsDuell : onDuell;/,
+    "der gemeinsame Rueckruf waehlt nicht mehr nur zwischen onDuell und uebungsDuell"
+  );
 
   // Und im Turnier gibt es keinen eigenen Aufruf an /api/duels.
   const turnier = quelle.slice(

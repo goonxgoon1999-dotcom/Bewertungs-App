@@ -1280,6 +1280,52 @@ Das Controller-Symbol oben rechts — links neben Statistik und Zahnrad —
 zu keiner einzelnen; weitere Spiele kommen später als eigene Kacheln in
 dieselbe Übersicht.
 
+### Übungsmodus
+
+Über den Spielkacheln steht ein Schalter **„Übungsmodus"** mit der
+Erklärung „Duelle zählen nicht. Elo, Duell-Zuschlag und Endnoten bleiben
+unverändert — der Schalter gilt nur für Head-to-Head und Turnier."
+
+Er ist **standardmäßig aus**. Sein Zustand liegt je Gerät im
+`localStorage` (`bewertungsapp.uebungsmodus`) — wie die
+[Kategorie-Ansicht](#welche-kategorien-angezeigt-werden-und-in-welcher-reihenfolge) und die
+Statistik-Abschnitte auch — und gilt, bis er wieder umgelegt wird. In
+der Datenbank steht davon nichts.
+
+**Was im Übungsmodus nicht passiert.** Bei Head-to-Head und Turnier
+geht kein einziger Schreibzugriff an den Server:
+
+- keine Änderung der **Elo-Werte**;
+- keine Änderung des **Duell-Zuschlags** und damit an keiner Endnote;
+- die Zähler für **gespielte und gewonnene Duelle** bleiben stehen;
+- **keine Zeile in `duell_paare`** — ein Übungsduell taucht in keiner
+  Statistik auf, und die beiden Zeilen über dem Spiel („X Duelle
+  gespielt", „X von Y Paarungen gespielt") zeigen weiter die echten
+  Werte.
+
+Alles andere läuft wie sonst: Die Paarungen werden wie gewohnt gebildet,
+Auswählen und Überspringen funktionieren wie bisher, und die
+Feld-Auswahl „Alle / Nach Platz / Nach Note" ebenfalls. Technisch tritt
+dafür ein schreibfreier Rückruf (`uebungsDuell`) an die Stelle von
+`onDuell` — die bestehende Duell-Logik selbst ist unverändert.
+
+**Ausgewertet wird beim Start.** Welcher Modus gilt, entscheidet sich in
+dem Moment, in dem ein Spiel aus der Übersicht geöffnet wird. Ein
+laufendes Turnier ändert seinen Modus deshalb nicht mehr, auch wenn der
+Schalter zwischendurch umgelegt wird.
+
+**Sichtbar bleibt es die ganze Zeit.** In der Kopfzeile des Spiels steht
+neben „HEAD-TO-HEAD · FILME" beziehungsweise „TURNIER · FILME" ein
+Zusatz **„ÜBUNG"** in derselben Monospace-Beschriftung. Im Turnier sitzt
+er in der Kopfzeile über der Runde und steht damit über alle Runden
+hinweg da; am Ende steht beim Sieger dabei, dass das Ergebnis nicht
+gewertet wurde.
+
+**Higher or Lower** und **„Was schau ich?"** ändern ohnehin keine Noten.
+Sie laufen unverändert weiter, der Schalter hat dort keine Wirkung — die
+Bestwerte bei Higher or Lower zählen also auch bei eingeschaltetem
+Schalter weiter wie bisher.
+
 ### Head-to-Head
 
 Zwei Titel derselben Kategorie treten gegeneinander an. Zuerst wird die
@@ -1679,7 +1725,8 @@ zurück zur Größenwahl.
 
 **Abbrechen** ist jederzeit möglich („← Turnier abbrechen"). Die bereits
 ausgespielten Paarungen behalten ihre Wirkung — sie waren richtige
-Duelle.
+Duelle. Im [Übungsmodus](#übungsmodus) gab es diese Wirkung von
+vornherein nicht.
 
 Auf den [Aktivitäts-Rang](#aktivitäts-rang) wirkt sich nichts davon aus:
 Minispiele geben keine XP.

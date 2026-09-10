@@ -9566,15 +9566,169 @@ const MINISPIELE = [
    naechste Duell kommt. Ein Tippen springt jederzeit sofort weiter. */
 const DUELL_PAUSE_MS = 1300;
 
+/* ------------------------------------------------------------
+   ÜBUNGSMODUS — Duelle spielen, ohne dass etwas gewertet wird
+
+   Head-to-Head und Turnier verschieben mit jedem Duell die Elo-Zahl
+   der beiden Beteiligten und damit ihren Zuschlag auf die Endnote.
+   Der Uebungsmodus ist der eine Weg, das zu umgehen: Er laesst die
+   Spiele genau so laufen wie sonst — dieselben Paarungen, dieselbe
+   Ziehung, dieselbe Auswahl-Leiste — und schreibt dabei nichts.
+
+   NICHT VERHANDELBARE REGELN — beim Aendern bitte lesen:
+
+   1. Im Uebungsmodus geht kein einziger Schreibzugriff an den Server.
+      Nicht die Elo, nicht der Zuschlag, nicht `duels`, nicht `siege`
+      und keine Zeile in duell_paare. Ein Uebungsduell taucht in
+      keiner Statistik auf.
+   2. Die bestehende Duell-Logik bleibt unangetastet. Der Uebungsmodus
+      tritt an die Stelle von onDuell (siehe uebungsDuell) — er
+      veraendert nicht, was onDuell tut.
+   3. Der Schalter gilt nur fuer Head-to-Head und Turnier. "Higher or
+      Lower" und "Was schau ich?" aendern ohnehin keine Noten; ihre
+      Bestwerte zaehlen auch bei eingeschaltetem Schalter weiter.
+   4. Ausgewertet wird der Schalter beim Start eines Spiels. Ein
+      laufendes Turnier behaelt seinen Modus, auch wenn der Schalter
+      zwischendurch umgelegt wird.
+   5. Solange im Uebungsmodus gespielt wird, steht das in der
+      Kopfzeile des Spiels — in jeder Runde, nicht nur zu Beginn.
+   ------------------------------------------------------------ */
+const UEBUNGSMODUS_SCHLUESSEL = "bewertungsapp.uebungsmodus";
+
+/* Aus ist die Vorgabe: Wer nichts einstellt, spielt um seine Noten. */
+function ladeUebungsmodus() {
+  try {
+    return window.localStorage.getItem(UEBUNGSMODUS_SCHLUESSEL) === "1";
+  } catch (e) {
+    // Kein localStorage: dann gilt die Vorgabe.
+    return false;
+  }
+}
+
+function speichereUebungsmodus(an) {
+  try {
+    window.localStorage.setItem(UEBUNGSMODUS_SCHLUESSEL, an ? "1" : "0");
+  } catch (e) {
+    // Ohne localStorage gilt die Einstellung nur fuer diesen Besuch.
+  }
+}
+
+/**
+ * Die Auswertung eines Duells im Uebungsmodus: es passiert nichts.
+ *
+ * Genau hier sitzt Regel 1. Der Baustein tritt in MinispielePage an
+ * die Stelle von onDuell; Head-to-Head und Turnier merken davon
+ * nichts und rufen weiter denselben Rueckruf auf.
+ *
+ * Zurueck kommt `null` — dasselbe, was onDuell liefert, wenn nichts
+ * gespeichert wurde. Damit traegt das Head-to-Head die Paarung nicht
+ * als gespielt nach, und die Zeile "X von Y Paarungen gespielt"
+ * bleibt auf ihrem echten Wert stehen.
+ */
+async function uebungsDuell() {
+  return null;
+}
+
+/* Der Hinweis in der Kopfzeile eines Spiels im Uebungsmodus — in
+   derselben Monospace-Beschriftung wie "HEAD-TO-HEAD · FILME"
+   daneben, aber abgesetzt, damit er nicht als Teil des Namens
+   gelesen wird (Regel 5). */
+function UebungAbzeichen() {
+  return (
+    <span
+      title="Übungsmodus: Dieses Duell zählt nicht."
+      style={{
+        marginLeft: 8, padding: "2px 7px", borderRadius: 4,
+        border: "1px solid #55524c", color: "#9A968C",
+        fontFamily: "'JetBrains Mono', monospace", fontSize: 10.5,
+        letterSpacing: 1, fontWeight: 700, whiteSpace: "nowrap",
+      }}
+    >
+      ÜBUNG
+    </span>
+  );
+}
+
+/* Der Schalter ueber den Spielkacheln. Er steht dort und nicht im
+   einzelnen Spiel: ausgewertet wird er beim Start (Regel 4), und an
+   dieser Stelle ist der Start noch nicht geschehen. */
+function UebungsmodusSchalter({ an, onAendern }) {
+  return (
+    <div
+      style={{
+        background: "#1D1D21", border: "1px solid " + (an ? "var(--accent, #C9A227)" : "#2A2A2E"),
+        borderRadius: 10, padding: "12px 14px", marginBottom: 14,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 12, flexWrap: "wrap",
+      }}
+    >
+      <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+        <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 4 }}>Übungsmodus</div>
+        <div style={{ fontSize: 12.5, color: "#9A968C", lineHeight: 1.5 }}>
+          Duelle zählen nicht. Elo, Duell-Zuschlag und Endnoten bleiben
+          unverändert — der Schalter gilt nur für Head-to-Head und Turnier.
+        </div>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={an}
+        aria-label="Übungsmodus"
+        onClick={() => onAendern(!an)}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0,
+          padding: "6px 12px", borderRadius: 999, fontFamily: "inherit", fontSize: 13,
+          background: "transparent",
+          color: an ? "var(--accent, #C9A227)" : "#9A968C",
+          border: "1px solid " + (an ? "var(--accent, #C9A227)" : "#33333a"),
+          fontWeight: an ? 700 : 400, cursor: "pointer",
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            width: 8, height: 8, borderRadius: 999, flexShrink: 0,
+            background: an ? "var(--accent, #C9A227)" : "#3a3a40",
+          }}
+        />
+        {an ? "An" : "Aus"}
+      </button>
+    </div>
+  );
+}
+
 function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, fehler }) {
   const [spiel, setSpiel] = useState(null);
+  /* Der eingestellte Schalter — er sagt, wie das NAECHSTE Spiel
+     laeuft. Was schon laeuft, richtet sich nach `uebungLaeuft`. */
+  const [uebung, setUebung] = useState(ladeUebungsmodus);
+  /* Der Modus des laufenden Spiels, festgehalten beim Start
+     (Regel 4). Ein Turnier, das im Uebungsmodus begonnen hat, bleibt
+     eine Uebung — auch wenn der Schalter danach umgelegt wird. */
+  const [uebungLaeuft, setUebungLaeuft] = useState(false);
+
+  function starte(key) {
+    setUebungLaeuft(uebung);
+    setSpiel(key);
+  }
+
+  function schalte(an) {
+    setUebung(an);
+    speichereUebungsmodus(an);
+  }
+
+  /* Im Uebungsmodus tritt uebungsDuell an die Stelle von onDuell:
+     Die Spiele rufen weiter denselben Rueckruf auf, nur schreibt er
+     nichts (Regel 1 und 2). */
+  const duellRueckruf = uebungLaeuft ? uebungsDuell : onDuell;
 
   if (spiel === "head-to-head") {
     return (
       <HeadToHead
         ranked={ranked}
         duellZahlen={duellZahlen}
-        onDuell={onDuell}
+        onDuell={duellRueckruf}
+        uebung={uebungLaeuft}
         fehler={fehler}
         onZurueck={() => setSpiel(null)}
       />
@@ -9587,13 +9741,17 @@ function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, f
     return (
       <Turnier
         ranked={ranked}
-        onDuell={onDuell}
+        onDuell={duellRueckruf}
+        uebung={uebungLaeuft}
         fehler={fehler}
         onZurueck={() => setSpiel(null)}
       />
     );
   }
 
+  /* Higher or Lower und "Was schau ich?" aendern ohnehin keine Noten.
+     Der Schalter wird ihnen deshalb gar nicht erst gereicht — sie
+     laufen unveraendert, Bestwerte eingeschlossen (Regel 3). */
   if (spiel === "higher-or-lower") {
     return <HigherOrLower ranked={ranked} onZurueck={() => setSpiel(null)} />;
   }
@@ -9617,11 +9775,13 @@ function MinispielePage({ ranked, watchlist, duellZahlen, onDuell, onBewerten, f
         Kleine Spiele rund um die eigene Sammlung.
       </p>
 
+      <UebungsmodusSchalter an={uebung} onAendern={schalte} />
+
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
         {MINISPIELE.map((s) => (
           <button
             key={s.key}
-            onClick={() => setSpiel(s.key)}
+            onClick={() => starte(s.key)}
             style={{
               flex: "1 1 240px", minWidth: 0, textAlign: "left", cursor: "pointer",
               background: "#1D1D21", border: "1px solid #2A2A2E", borderRadius: 12,
@@ -9895,7 +10055,7 @@ function AuswahlLeiste({
   );
 }
 
-function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
+function HeadToHead({ ranked, duellZahlen, onDuell, uebung, fehler, onZurueck }) {
   const kategorien = useKategorien();
   const [kategorieWahl, setKategorie] = useState(null);
   /* Eine ausgeblendete Kategorie gilt als nicht gewaehlt: dann steht
@@ -10177,10 +10337,12 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
 
         <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
           Head-to-Head
+          {uebung && <UebungAbzeichen />}
         </h2>
         <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
           In welcher Kategorie soll gespielt werden? Duelle finden immer
           innerhalb einer Kategorie statt.
+          {uebung && " Gespielt wird im Übungsmodus: Die Duelle zählen nicht."}
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -10243,6 +10405,7 @@ function HeadToHead({ ranked, duellZahlen, onDuell, fehler, onZurueck }) {
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
         <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
           HEAD-TO-HEAD · {catInfo.label.toUpperCase()}
+          {uebung && <UebungAbzeichen />}
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
@@ -10681,7 +10844,7 @@ function TurnierBracket({ baum, ort, akzent }) {
   );
 }
 
-function Turnier({ ranked, onDuell, fehler, onZurueck }) {
+function Turnier({ ranked, onDuell, uebung, fehler, onZurueck }) {
   const kategorien = useKategorien();
   const [kategorieWahl, setKategorie] = useState(null);
   /* Eine ausgeblendete Kategorie gilt als nicht gewaehlt: dann steht
@@ -10709,7 +10872,8 @@ function Turnier({ ranked, onDuell, fehler, onZurueck }) {
   function abbrechen() {
     /* Ein abgebrochenes Turnier ist keins: es gibt keine Punkte, und
        stehen bleibt nichts. Die bereits ausgespielten Paarungen haben
-       ihre Wirkung natuerlich behalten — sie waren richtige Duelle. */
+       ihre Wirkung natuerlich behalten — sie waren richtige Duelle.
+       Im Uebungsmodus gab es diese Wirkung von vornherein nicht. */
     gewaehltRef.current = null;
     setGewaehlt(null);
     setBaum(null);
@@ -10766,10 +10930,12 @@ function Turnier({ ranked, onDuell, fehler, onZurueck }) {
 
         <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
           Turnier
+          {uebung && <UebungAbzeichen />}
         </h2>
         <p style={{ color: "#9A968C", fontSize: 13.5, lineHeight: 1.5, margin: "0 0 18px" }}>
           In welcher Kategorie soll gespielt werden? Ein Turnier läuft
           immer innerhalb einer Kategorie.
+          {uebung && " Gespielt wird im Übungsmodus: Die Duelle zählen nicht."}
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -10827,6 +10993,7 @@ function Turnier({ ranked, onDuell, fehler, onZurueck }) {
 
         <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace", marginBottom: 16 }}>
           TURNIER · {catInfo.label.toUpperCase()}
+          {uebung && <UebungAbzeichen />}
         </div>
 
         <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 20, margin: "0 0 6px" }}>
@@ -10894,6 +11061,10 @@ function Turnier({ ranked, onDuell, fehler, onZurueck }) {
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
         <div style={{ fontSize: 12, letterSpacing: 1, color: "var(--accent, #C9A227)", fontFamily: "'JetBrains Mono', monospace" }}>
           TURNIER · {catInfo.label.toUpperCase()}
+          {/* Regel 5: Das Abzeichen sitzt in der Kopfzeile des
+              Turniers und steht damit in jeder Runde da — nach zehn
+              Duellen genauso wie beim ersten. */}
+          {uebung && <UebungAbzeichen />}
         </div>
         <div style={{ fontSize: 11.5, color: "#77746c", fontFamily: "'JetBrains Mono', monospace" }}>
           {ort
@@ -10978,6 +11149,20 @@ function Turnier({ ranked, onDuell, fehler, onZurueck }) {
             >
               {sieger.title}
             </div>
+            {/* Beim Sieger steht dabei, dass er keiner fuer die
+                Wertung ist — sonst bliebe nach dem letzten Duell
+                offen, ob der Pokal etwas gekostet hat. */}
+            {uebung && (
+              <div
+                style={{
+                  fontSize: 12, color: "#9A968C", textAlign: "center", lineHeight: 1.5,
+                  maxWidth: 320,
+                }}
+              >
+                Übungsmodus: Das Turnier wurde nicht gewertet — Elo,
+                Duell-Zuschlag und Endnoten sind unverändert.
+              </div>
+            )}
           </div>
 
           <button
